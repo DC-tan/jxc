@@ -1,0 +1,582 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 角色：管理员、业务员、采购、物料员、外发管理员、仓管
+enum StaffRole {
+  ADMIN
+  SALES
+  PURCHASE
+  MATERIAL
+  OUTSOURCE
+  WAREHOUSE
+}
+
+/// 客户质量等级
+enum CustomerQuality {
+  HIGH
+  MEDIUM
+  LOW
+  POOR
+}
+
+model User {
+  id           String   @id @default(cuid())
+  employeeNo   String   @unique /// 员工编号
+  loginName    String   @unique /// 登录名（可与编号相同，用于用户名登录）
+  name         String
+  phone        String?
+  passwordHash String
+  role         StaffRole
+  isAdmin      Boolean  @default(false)
+  avatarUrl    String?
+  /// 首页对帐提醒「本月已完成」等个人记录；交期档位等全系统配置见 SystemWorkbenchSettings
+  workbenchSettings Json?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  permissions UserPermission[]
+  /// 作为操作人记入的入库/流水（可选）
+  materialInboundOperations MaterialInbound[] @relation("MaterialInboundOperator")
+  /// 商品成品出入库流水操作人（可选）
+  productInboundOperations ProductInbound[] @relation("ProductInboundOperator")
+}
+
+/// 全系统首页工作台：交期色阶、对账起始日等，保存一条；所有员工共用
+model SystemWorkbenchSettings {
+  id        String   @id
+  data      Json
+  updatedAt DateTime @updatedAt
+}
+
+/// 系统权限定义（各功能模块下的细项）
+model PermissionDef {
+  id        String @id @default(cuid())
+  code      String @unique
+  name      String
+  module    String
+  sortOrder Int    @default(0)
+
+  roleMatrix RolePermissionMatrix[]
+  userGrants UserPermission[]
+}
+
+/// 权限管理：各角色默认可分配的权限勾选项（矩阵）
+model RolePermissionMatrix {
+  id            String @id @default(cuid())
+  role          StaffRole
+  permissionId  String
+  permission    PermissionDef @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  /// 该角色在「权限管理」中是否允许出现/勾选此项
+  enabled       Boolean  @default(true)
+
+  @@unique([role, permissionId])
+}
+
+/// 员工实际拥有的权限（管理员在员工档案中勾选，须符合角色矩阵）
+model UserPermission {
+  id            String @id @default(cuid())
+  userId        String
+  user          User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId  String
+  permission    PermissionDef @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+}
+
+model Customer {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  /// 客户全称
+  name        String
+  /// 客户简称（可选）
+  shortName   String?
+  /// 客户联系人
+  contactPerson String?
+  /// 地址
+  address     String?          @db.Text
+  mainProduct String? /// 客户主营产品
+  quality     CustomerQuality
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  products    Product[]
+  salesOrders SalesOrder[]
+  sampleOrders SampleOrder[]
+  suppliedMaterials Material[]
+}
+
+/// 样品记录状态
+enum SampleOrderStatus {
+  PENDING /// 未交样
+  DELIVERED /// 已交样
+}
+
+/// 样品详情：独立记录，不关联商品/物料档案
+model SampleOrder {
+  id            String            @id @default(cuid())
+  customerId    String
+  customer      Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  model         String
+  materialNames String            @db.Text
+  quantity      Int
+  sampleDueAt   DateTime
+  status        SampleOrderStatus @default(PENDING)
+  deliveredAt   DateTime?
+  remark        String?           @db.Text
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([customerId])
+  @@index([status])
+  @@index([sampleDueAt])
+  @@index([createdAt])
+}
+
+/// 采购订单状态
+enum PurchaseOrderStatus {
+  DRAFT /// 草稿（核对前）
+  PENDING_RECEIPT /// 待收料（未确认收料前仅出现在当日/未交列表）
+  CONFIRMED /// 已收料确认（进入采购订单查询）
+  CLOSED /// 历史旧状态，保留以兼容库内旧数据
+  CANCELLED /// 已取消
+}
+
+model Supplier {
+  id           String           @id @default(cuid())
+  code         String           @unique
+  name         String
+  shortName    String? /// 简称（可选）
+  materialType String? /// 主供物料类型
+  level        String? /// 供应商等级（文本，如 A/B/C 或优/良）
+  contactPerson String? /// 联系人
+  phone         String? /// 电话
+  address       String? @db.Text /// 地址
+  bankName      String? /// 开户银行
+  bankAccount   String? /// 帐号
+  taxRegistrationNo String? /// 税务登记号
+  /// 交货天数：新建采购单时，要求交货日 = 订单创建日（自然日）+ 本天数；未设置则采购单无默认交货日
+  deliveryLeadDays Int?
+  /// 供应商属性：生产类（如原材料供货等标记）
+  attrProduction Boolean @default(true)
+  /// 供应商属性：加工类；为 true 时出现在「物料外发 → 加工方」备选
+  attrProcessing Boolean @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  materials    Material[]
+  purchaseOrders PurchaseOrder[]
+  outsourceOrders OutsourceOrder[]
+}
+
+/// 物料种类（历史枚举，迁移完成后可删除列 kind）
+enum MaterialKind {
+  ELECTRONIC /// 电子料
+  FPC
+  PCB
+  DOME
+  AUXILIARY /// 辅料
+  OTHER /// 其它
+}
+
+/// 物料种类预设（可增删改，含种类前缀）
+model MaterialPresetKind {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  prefix    String   @default("") /// 种类前缀，如 DZL
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  materials Material[]
+  codeRules MaterialCodeRule[]
+}
+
+/// 物料名称预设（下拉选项）
+model MaterialPresetName {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  namePrefix String   @default("") /// 物料前缀（编号中的名称段），如 R、C
+  sortOrder  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  codeRules MaterialCodeRule[]
+}
+
+/// 品牌预设
+model MaterialPresetBrand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// 单位预设
+model MaterialPresetUnit {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isDefault Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// 按「种类 + 物料名称预设」生成编号：{种类前缀}-{名称前缀}-{序号}
+model MaterialCodeRule {
+  id           String @id @default(cuid())
+  presetKindId String
+  presetNameId String
+  namePrefix   String /// 如电阻侧 R
+  startNumber  Int    @default(1)
+  nextNumber   Int /// 下一个将分配的序号
+  presetKind   MaterialPresetKind @relation(fields: [presetKindId], references: [id], onDelete: Cascade)
+  presetName   MaterialPresetName @relation(fields: [presetNameId], references: [id], onDelete: Cascade)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@unique([presetKindId, presetNameId])
+}
+
+/// 物料主数据
+model Material {
+  id              String             @id @default(cuid())
+  code            String             @unique
+  name            String
+  partDescription String?            @db.Text /// 部件描述
+  brand           String? /// 品牌（存预设名称文本）
+  unit            String
+  unitPrice       Decimal            @db.Decimal(14, 4)
+  /// 迁移期保留：新数据只用 kindId
+  kind            MaterialKind?
+  kindId          String?
+  presetKind      MaterialPresetKind? @relation(fields: [kindId], references: [id])
+  /// 是否客户供料：是时不参与采购，单价固定为 0
+  isCustomerSupplied Boolean          @default(false)
+  /// 客供客户（仅当 isCustomerSupplied=true 时有值）
+  customerId      String?
+  customer        Customer?           @relation(fields: [customerId], references: [id])
+  supplierId      String
+  supplier        Supplier           @relation(fields: [supplierId], references: [id])
+  inspectionNotes String?            @db.Text
+  /// 签样图片 URL 列表，最多 3 张
+  sampleImageUrls Json               @default("[]")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  inbounds        MaterialInbound[]
+  productMaterials ProductMaterial[]
+  purchaseOrderLines PurchaseOrderLine[]
+  outsourceOrderLines OutsourceOrderLine[]
+
+  @@index([isCustomerSupplied])
+  @@index([customerId])
+}
+
+/// 采购订单头
+model PurchaseOrder {
+  id         String              @id @default(cuid())
+  orderNo    String              @unique /// 采购单号，如 CG-20260417-0001
+  supplierId String
+  supplier   Supplier            @relation(fields: [supplierId], references: [id])
+  /// 由销售订单拆分生成时关联
+  salesOrderId String?
+  salesOrder   SalesOrder?       @relation(fields: [salesOrderId], references: [id])
+  status       PurchaseOrderStatus @default(PENDING_RECEIPT)
+  remark     String?             @db.Text
+  /// 要求交货日期（下单时按供应商「交货天数」计算）
+  deliveryDueAt DateTime?
+  /// 实际交货日期（确认收料时写入）
+  actualDeliveredAt DateTime?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+  lines      PurchaseOrderLine[]
+
+  @@index([supplierId])
+  @@index([createdAt])
+  @@index([salesOrderId])
+  @@index([deliveryDueAt])
+  @@index([actualDeliveredAt])
+}
+
+/// 采购订单明细
+model PurchaseOrderLine {
+  id              String          @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  materialId      String
+  material        Material        @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  quantity        Int
+  unitPrice       Decimal         @db.Decimal(14, 4) @default(0)
+  remark          String?         @db.Text
+  sortOrder       Int             @default(0)
+
+  @@index([purchaseOrderId])
+  @@index([materialId])
+}
+
+/// 采购合同打印模板（全局单条，id 固定为 singleton）
+model PurchasePrintTemplate {
+  id        String   @id /// 固定写入 "singleton"
+  config    Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+/// 外发物料单打印模板（全局单条，id 固定为 singleton）
+model OutsourcePrintTemplate {
+  id        String   @id /// 固定写入 "singleton"
+  config    Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+/// 仓库送货单打印模板（全局单条，id 固定为 singleton）
+model DeliveryNotePrintTemplate {
+  id        String   @id /// 固定写入 "singleton"
+  config    Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+/// 销售订单头（业务主键为客户订单编号，不再使用系统销售单号）
+model SalesOrder {
+  id         String           @id @default(cuid())
+  customerId String
+  customer   Customer         @relation(fields: [customerId], references: [id])
+  /// 客户订单编号（客户侧提供的订单号，新建时必填）
+  customerOrderNo String      @default("")
+  /// 客户机型（订单维度，可选）
+  customerModel  String       @default("")
+  /// 订单交货时间（约定交付日期）
+  deliveryDueAt DateTime?
+  /// 实际交货时间（出货确认后写入；未交订单为空）
+  actualDeliveredAt DateTime?
+  /// 用户确认「本单无需向供应商采购」（如库存已满足），不再出现在「从销售订单新建采购」中
+  noPurchaseRequiredAt DateTime?
+  /// 订单总金额（保存时按明细汇总）
+  totalAmount    Decimal       @db.Decimal(14, 4) @default(0)
+  remark     String?          @db.Text
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  lines      SalesOrderLine[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([customerId])
+  @@index([createdAt])
+  @@index([customerOrderNo])
+  @@index([deliveryDueAt])
+  @@index([actualDeliveredAt])
+}
+
+/// 销售订单明细（行项目为系统商品档案）
+model SalesOrderLine {
+  id           String      @id @default(cuid())
+  salesOrderId String
+  salesOrder   SalesOrder  @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  quantity     Int
+  /// 累计已出货数量（分批出货累加；交清后整单写入 actualDeliveredAt）
+  quantityShipped Int      @default(0)
+  unitPrice    Decimal     @db.Decimal(14, 4) @default(0)
+  remark       String?     @db.Text
+  sortOrder    Int         @default(0)
+  shipLogs     SalesOrderLineShipLog[]
+
+  @@index([salesOrderId])
+  @@index([productId])
+}
+
+/// 销售订单行分批出货记录（仓库确认送货单后写入）
+model SalesOrderLineShipLog {
+  id               String         @id @default(cuid())
+  salesOrderLineId String
+  salesOrderLine   SalesOrderLine @relation(fields: [salesOrderLineId], references: [id], onDelete: Cascade)
+  quantity         Int
+  /// 本批中计为备品、送货单上记入备注「备品 N」的件数，≤ quantity；其余为表身「数量」列
+  spareQty         Int            @default(0)
+  batchDeliveredAt DateTime
+  /// 与打印送货单上 NO. 一致，本行所属批次在「完成」时写入
+  deliveryNoteNo   String?        @db.VarChar(64)
+  createdAt        DateTime       @default(now())
+
+  @@index([salesOrderLineId])
+  @@index([batchDeliveredAt])
+}
+
+/// 商品（面向客户的物料销售项）
+/// 商品加工方式：自加工 / 外发 / 外发+自加工（均可参加外发建单检索，仅纯外发走外发单）
+enum ProductProcessingMode {
+  INHOUSE
+  OUTSOURCE
+  /// 既可外发也可厂内自加工（外发建单与「外发加工」一样可选中）
+  OUTSOURCE_INHOUSE
+}
+
+model Product {
+  id              String   @id @default(cuid())
+  customerId      String
+  customer        Customer @relation(fields: [customerId], references: [id])
+  /// 客户下单物料编号（客户侧编号，非系统物料档案编号，手工录入）
+  customerMaterialCode String @default("")
+  /// 自加工 / 外发 / 外发+自加工
+  processingMode  ProductProcessingMode @default(INHOUSE)
+  /// 机型号（选商品时销售订单可自动带出为「客户机型」）
+  machineModel   String   @default("")
+  /// 商品型号
+  model           String   @default("")
+  /// 商品规格
+  spec            String   @default("") @db.Text
+  unit            String
+  price           Decimal  @db.Decimal(14, 4)
+  processingCost  Decimal  @db.Decimal(14, 4) @default(0)
+  safetyStock     Decimal  @db.Decimal(14, 4) @default(0)
+  maxStock        Decimal  @db.Decimal(14, 4) @default(0)
+  inspectionNotes String?  @db.Text /// 检料/出货注意事项
+  /// 商品备注（与检料注意事项区分）
+  productRemark   String?  @db.Text
+  /// 商品图片 URL，最多 5 张
+  imageUrls       Json     @default("[]")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  inbounds        ProductInbound[]
+  productMaterials ProductMaterial[]
+  salesOrderLines SalesOrderLine[]
+  outsourceOrders OutsourceOrder[]
+
+  @@index([customerId])
+}
+
+/// 商品 BOM 行：单一加工方式时为 DEFAULT；外发+自加工 时区分为外发用料 / 自加工用料
+enum ProductBomLineScope {
+  DEFAULT
+  OUTSOURCE
+  INHOUSE
+}
+
+/// 外发加工单状态
+enum OutsourceOrderStatus {
+  OPEN /// 未回收
+  CLOSED /// 已回收
+  FORCE_CLOSED /// 历史旧状态，保留以兼容库内旧数据
+  CANCELLED /// 已取消
+}
+
+/// 物料外发加工单（仅「外发加工」类商品可建单）
+model OutsourceOrder {
+  id          String               @id @default(cuid())
+  orderNo     String               @unique
+  productId   String
+  product     Product              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  /// 外协加工方（供应商）；指定时外发单号按「外发物料单模板」规则生成（含供应商简称与年度流水）
+  supplierId  String?
+  supplier    Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  /// 外发加工的商品套数
+  productQty  Int
+  status      OutsourceOrderStatus @default(OPEN)
+  remark      String?              @db.Text
+  receivedAt  DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  lines       OutsourceOrderLine[]
+
+  @@index([productId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// 外发单行：外发物料数量（可由 BOM 推算后手工调整）
+model OutsourceOrderLine {
+  id                String         @id @default(cuid())
+  outsourceOrderId  String
+  outsourceOrder    OutsourceOrder @relation(fields: [outsourceOrderId], references: [id], onDelete: Cascade)
+  materialId        String
+  material          Material       @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  quantity          Int
+  sortOrder         Int            @default(0)
+
+  @@index([outsourceOrderId])
+  @@index([materialId])
+}
+
+/// 商品 BOM：一个商品可关联多条系统物料及用量
+model ProductMaterial {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  materialId String
+  material   Material @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  /// 自加工/外发/外发+自加工 的用料归属；同物料可各出现一行（外发与自加工各一条）
+  scope      ProductBomLineScope @default(DEFAULT)
+  usageQty   Decimal  @db.Decimal(14, 4)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@unique([productId, materialId, scope])
+  @@index([materialId])
+}
+
+/// 商品成品库存流水类型
+enum ProductInboundEntryType {
+  REGULAR
+  /// 商品信息中「手动调整库存」产生的差额
+  MANUAL_STOCK_ADJUST
+}
+
+/// 商品入库 / 库存流水
+model ProductInbound {
+  id                String   @id @default(cuid())
+  productId         String
+  product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity          Int
+  receivedAt        DateTime @default(now())
+  purchaseOrderNo   String? /// 采购/销售订单编号
+  partDescription   String?  @db.Text /// 本行部件/商品描述
+  remark            String?  @db.Text
+  entryType         ProductInboundEntryType @default(REGULAR)
+  createdAt         DateTime @default(now())
+  operatorUserId    String?
+  operator          User?    @relation("ProductInboundOperator", fields: [operatorUserId], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@index([receivedAt])
+  @@index([operatorUserId])
+}
+
+/// 送货单 NO 年流水（公历年从 1 自增，单号 001,002,…）
+model DeliveryNoteSerial {
+  year    Int @id
+  lastSeq Int @default(0)
+}
+
+/// 收料/库存流水：采购收料、外发扣料（可为负数量）、或盘点手动调整
+enum MaterialInboundEntryType {
+  REGULAR
+  /// 物料信息中「手动调整库存」产生的差额，用于与采购收料区分
+  MANUAL_STOCK_ADJUST
+  /// 物料信息中「客供料入口」产生的入库记录
+  CUSTOMER_SUPPLY_RECEIPT
+}
+
+/// 收料入库记录（同一物料可多次收料）
+model MaterialInbound {
+  id                String   @id @default(cuid())
+  materialId        String
+  material          Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  quantity          Int
+  receivedAt        DateTime @default(now())
+  purchaseOrderNo   String?
+  partDescription   String?  @db.Text
+  /// 常规收料/扣料流水与盘点手动调整
+  entryType         MaterialInboundEntryType @default(REGULAR)
+  createdAt         DateTime @default(now())
+  operatorUserId    String?
+  operator          User?    @relation("MaterialInboundOperator", fields: [operatorUserId], references: [id], onDelete: SetNull)
+
+  @@index([materialId])
+  @@index([receivedAt])
+  @@index([operatorUserId])
+}

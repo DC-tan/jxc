@@ -1,0 +1,162 @@
+/**
+ * 正式送货单：版心宽度与 A5 横一致；高度随内容（紧凑样式在组件内），避免裁切
+ */
+.delivery-note-print-area-wrap {
+  overflow: visible;
+}
+
+/* A5 横：根节点占满可印高度；内部三段 space-between 均分竖向留白 */
+.delivery-note-print-root.delivery-note-a5-landscape {
+  width: 210mm;
+  max-width: min(210mm, 100%);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 138mm;
+}
+
+.delivery-note-slip-a5-balance {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 132mm;
+}
+
+/* 出货行较少：三块内容整体靠竖向中间，段间距均匀 */
+.delivery-note-slip-a5-balance--center {
+  justify-content: center;
+  gap: clamp(5mm, 2.5vw, 12mm);
+}
+
+/* 出货行较多：头、表、脚向上下拉开，优先占满幅面 */
+.delivery-note-slip-a5-balance--spread {
+  justify-content: space-between;
+  gap: 0;
+}
+
+.delivery-note-slip-a5-zone {
+  flex-shrink: 0;
+}
+
+/* 屏上可改「数量」；打印/PDF 仅显示字 */
+.slip-qty-for-print {
+  display: none;
+}
+@media print {
+  .slip-qty-for-screen,
+  .slip-qty-for-screen * {
+    display: none !important;
+  }
+  .slip-qty-for-print {
+    display: inline !important;
+  }
+}
+
+@media print {
+  .warehouse-delivery-no-print {
+    display: none !important;
+  }
+
+  @page {
+    size: A5 landscape;
+    margin: 5mm;
+  }
+
+  html,
+  body {
+    height: auto !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /**
+   * 仅「送货单打印」页（body.delivery-slip-print-mode，由页面挂载时添加）
+   */
+  body.delivery-slip-print-mode {
+    background: #fff !important;
+  }
+
+  body.delivery-slip-print-mode .ant-layout,
+  body.delivery-slip-print-mode .ant-layout .ant-layout {
+    min-height: 0 !important;
+    background: #fff !important;
+  }
+
+  body.delivery-slip-print-mode .ant-layout-sider,
+  body.delivery-slip-print-mode .ant-layout-header {
+    display: none !important;
+  }
+
+  body.delivery-slip-print-mode .ant-layout-content {
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+  }
+
+  /* 弹层不打入纸张 */
+  body.delivery-slip-print-mode .ant-modal-wrap,
+  body.delivery-slip-print-mode .ant-modal-mask,
+  body.delivery-slip-print-mode .ant-message,
+  body.delivery-slip-print-mode .ant-notification {
+    display: none !important;
+  }
+
+  body.delivery-slip-print-mode .warehouse-delivery-slip-print-scope .ant-card-head {
+    display: none !important;
+  }
+
+  body.delivery-slip-print-mode .warehouse-delivery-slip-print-scope.ant-card {
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  body.delivery-slip-print-mode .warehouse-delivery-slip-print-scope .ant-card-body {
+    padding: 0 !important;
+  }
+
+  /* 仅保留送货单版心区域：隐藏工具条、加载、错误提示等兄弟节点 */
+  body.delivery-slip-print-mode
+    .warehouse-delivery-slip-print-scope
+    .ant-card-body
+    > *:not(.delivery-note-print-area-wrap) {
+    display: none !important;
+  }
+
+  body.delivery-slip-print-mode .ant-spin-nested-loading,
+  body.delivery-slip-print-mode .ant-spin-container {
+    min-height: 0 !important;
+  }
+
+  body.delivery-slip-print-mode .ant-card.warehouse-delivery-slip-print-scope,
+  body.delivery-slip-print-mode .ant-card.warehouse-delivery-slip-print-scope .ant-card-body {
+    overflow: visible !important;
+  }
+
+  .delivery-note-print-area-wrap {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: hidden;
+    box-sizing: border-box;
+  }
+
+  .delivery-note-print-root {
+    max-width: 100% !important;
+    border: none !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+    box-sizing: border-box;
+  }
+
+  /* 单页优先：不超出可印区 */
+  .delivery-note-print-root.delivery-note-a5-landscape {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-height: 0;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    zoom: 0.92;
+    overflow: hidden;
+  }
+}
