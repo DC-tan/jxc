@@ -38,11 +38,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
+import { CustomerChangeReminderTab } from "./CustomerChangeReminderTab";
 
 const SALES_TAB_PERM: Record<string, string> = {
   add: "tab.sales.add",
   pending: "tab.sales.undelivered",
   query: "tab.sales.query",
+  reminder: "tab.sales.changeReminder",
 };
 
 type CustomerOpt = { id: string; code: string; name: string };
@@ -118,6 +120,19 @@ type DetailPayload = {
   createdAt: string;
   updatedAt: string;
   lines: DetailLine[];
+};
+
+type PendingChangeReminder = {
+  id: string;
+  productModel: string;
+  customerMaterialCode: string;
+  changeSummary: string;
+  proposedAt: string;
+  status: "ACTIVE" | "DONE" | "VOIDED";
+  salesConfirmCount: number;
+  purchaseConfirmCount: number;
+  salesLastConfirmedAt: string | null;
+  salesLastConfirmedByName: string | null;
 };
 
 function newLineKey(): string {
@@ -996,7 +1011,7 @@ function SoLinesEditor({
 }
 
 export function SalesPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1068,6 +1083,72 @@ export function SalesPage() {
   const createCustomerId = Form.useWatch("customerId", createForm) as
     | string
     | undefined;
+
+  const confirmPendingCustomerChanges = useCallback(
+    async (customerId: string, productIds: string[]): Promise<boolean> => {
+      const uniq = [...new Set(productIds.filter(Boolean))];
+      if (!customerId || uniq.length === 0) return true;
+      const hit = await fetchJson<{ list: PendingChangeReminder[] }>(
+        "/api/customer-change-reminders/match",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customerId, productIds: uniq, channel: "sales" }),
+        },
+      );
+      const reminders = hit.list ?? [];
+      if (reminders.length === 0) return true;
+      return new Promise<boolean>((resolve) => {
+        modal.confirm({
+          title: `检测到 ${reminders.length} 条客户变更提醒`,
+          width: 760,
+          okText: "已确认本次变更，继续下单",
+          cancelText: "取消",
+          content: (
+            <Space
+              direction="vertical"
+              style={{ maxHeight: 420, overflowY: "auto", color: "#cf1322" }}
+            >
+              {reminders.map((r) => (
+                <div key={r.id} style={{ border: "1px solid #f0f0f0", borderRadius: 6, padding: 10 }}>
+                  <Typography.Text strong style={{ color: "#cf1322" }}>
+                    销售提醒（{r.salesConfirmCount}/2）
+                  </Typography.Text>
+                  <br />
+                  <Typography.Text style={{ color: "#cf1322" }}>
+                    商品：{r.productModel?.trim() || "—"} / {r.customerMaterialCode?.trim() || "—"}
+                  </Typography.Text>
+                  <br />
+                  <Typography.Text style={{ color: "#cf1322" }}>
+                    变更：{r.changeSummary}
+                  </Typography.Text>
+                  <br />
+                  <Typography.Text style={{ color: "#cf1322" }}>
+                    提出：{dayjs(r.proposedAt).format("YYYY-MM-DD")}
+                    {r.salesLastConfirmedAt
+                      ? `；上次确认：${r.salesLastConfirmedByName ?? "—"} ${dayjs(r.salesLastConfirmedAt).format("YYYY-MM-DD HH:mm")}`
+                      : ""}
+                  </Typography.Text>
+                </div>
+              ))}
+            </Space>
+          ),
+          onOk: async () => {
+            await fetchJson("/api/customer-change-reminders/ack", {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ids: reminders.map((x) => x.id), channel: "sales" }),
+            });
+            resolve(true);
+          },
+          onCancel: () => resolve(false),
+        });
+      });
+    },
+    [modal],
+  );
 
   const loadPresets = useCallback(async () => {
     setLoadingPresets(true);
@@ -1266,6 +1347,11 @@ export function SalesPage() {
       message.error("每行数量须大于 0");
       return;
     }
+    const reminderOk = await confirmPendingCustomerChanges(
+      String(v.customerId),
+      filled.map((x) => String(x.productId)),
+    );
+    if (!reminderOk) return;
     setSubmitting(true);
     try {
       const firstLine = soLines.find((l) => l.productId);
@@ -1489,7 +1575,7 @@ export function SalesPage() {
 
   const visibleSalesTabKeys = useMemo(
     () =>
-      (["add", "pending", "query"] as const).filter((k) =>
+      (["add", "pending", "query", "reminder"] as const).filter((k) =>
         allowed([SALES_TAB_PERM[k]]),
       ),
     [allowed],
@@ -1725,6 +1811,11 @@ export function SalesPage() {
                 />
               </Space>
             ),
+          },
+          {
+            key: "reminder",
+            label: "客户变更待提醒",
+            children: <CustomerChangeReminderTab />,
           },
         ].filter((item) => {
           const code = SALES_TAB_PERM[String(item.key)];

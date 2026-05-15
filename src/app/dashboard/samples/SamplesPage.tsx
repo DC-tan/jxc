@@ -102,8 +102,8 @@ function attachResizeSampleList<T extends object>(
   defaults: Record<string, number>,
 ): ColumnsType<T> {
   return columns.map((col) => {
-    const keyFromDataIndex =
-      typeof col.dataIndex === "string" ? col.dataIndex : "";
+    // 修复：先检查 col 是否有 dataIndex 属性（排除分组列）
+    const keyFromDataIndex = ('dataIndex' in col && typeof col.dataIndex === "string") ? col.dataIndex : "";
     const key = col.key != null ? String(col.key) : keyFromDataIndex;
     if (!key) return col;
     const w = widths[key] ?? defaults[key] ?? (col.width as number) ?? 120;

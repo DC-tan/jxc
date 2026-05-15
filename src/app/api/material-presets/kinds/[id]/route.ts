@@ -70,22 +70,22 @@ export async function DELETE(
 
   const { id } = await ctx.params;
 
-  const [matCount, ruleCount] = await Promise.all([
-    prisma.material.count({ where: { kindId: id } }),
-    prisma.materialCodeRule.count({ where: { presetKindId: id } }),
-  ]);
+  const matCount = await prisma.material.count({ where: { kindId: id } });
 
-  if (matCount > 0 || ruleCount > 0) {
+  if (matCount > 0) {
     return NextResponse.json(
       {
-        error: `无法删除：已有 ${matCount} 条物料或 ${ruleCount} 条编号规则引用该种类`,
+        error: `无法删除：已有 ${matCount} 条物料引用该种类`,
       },
       { status: 400 },
     );
   }
 
   try {
-    await prisma.materialPresetKind.delete({ where: { id } });
+    await prisma.$transaction([
+      prisma.materialCodeRule.deleteMany({ where: { presetKindId: id } }),
+      prisma.materialPresetKind.delete({ where: { id } }),
+    ]);
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "删除失败" }, { status: 500 });

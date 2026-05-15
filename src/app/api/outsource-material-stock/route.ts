@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
+import { OutsourceOrderStatus } from '@prisma/client';
 
 type StockAgg = {
   supplierId: string | null;
@@ -30,10 +31,10 @@ export async function GET(req: Request) {
   try {
     const outsourceOrderFilter =
       supplierFilter == null || supplierFilter.length === 0
-        ? { status: { in: ["OPEN", "CLOSED"] as const } }
+        ? { status: { in: [OutsourceOrderStatus.OPEN, OutsourceOrderStatus.CLOSED] } }
         : supplierFilter === "NONE"
-          ? { status: { in: ["OPEN", "CLOSED"] as const }, supplierId: null }
-          : { status: { in: ["OPEN", "CLOSED"] as const }, supplierId: supplierFilter };
+          ? { status: { in: [OutsourceOrderStatus.OPEN, OutsourceOrderStatus.CLOSED] }, supplierId: null }
+          : { status: { in: [OutsourceOrderStatus.OPEN, OutsourceOrderStatus.CLOSED] }, supplierId: supplierFilter };
 
     const rows = await prisma.outsourceOrderLine.findMany({
       where: {

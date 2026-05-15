@@ -15,12 +15,30 @@ const createSchema = z.object({
   brand: z.string().optional().nullable(),
   unit: z.string().min(1, "请选择单位"),
   unitPrice: z.union([z.number(), z.string()]).transform((v) => String(v)).optional(),
+  safetyStock: z.union([z.number(), z.string()]).optional(),
+  maxStock: z.union([z.number(), z.string()]).optional(),
   supplierId: z.string().optional(),
   isCustomerSupplied: z.boolean().optional(),
   customerId: z.string().optional().nullable(),
   inspectionNotes: z.string().optional().nullable(),
   sampleImageUrls: z.array(z.string()).max(3).optional(),
 });
+
+function toNonNegativeInteger(
+  v: unknown,
+  fieldLabel: string,
+): { ok: true; value: number | null } | { ok: false; error: string } {
+  if (v === undefined || v === null || String(v).trim() === "") {
+    return { ok: true, value: null };
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    return { ok: false, error: `${fieldLabel}必须为非负整数` };
+  }
+  // 业务约定：0 视为未设置，不参与库存预警
+  if (n === 0) return { ok: true, value: null };
+  return { ok: true, value: n };
+}
 
 function parseSampleUrls(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -82,6 +100,8 @@ export async function GET(req: Request) {
         brand: m.brand,
         unit: m.unit,
         unitPrice: m.unitPrice.toString(),
+        safetyStock: m.safetyStock,
+        maxStock: m.maxStock,
         kindId: m.kindId,
         kindName: kindDisplay(m),
         kind: m.kind,
@@ -140,6 +160,17 @@ export async function POST(req: Request) {
 
   const urls = (parsed.data.sampleImageUrls ?? []).slice(0, 3);
   const manualCode = parsed.data.code?.trim();
+  const safetyStockParsed = toNonNegativeInteger(
+    parsed.data.safetyStock,
+    "安全库存",
+  );
+  if (!safetyStockParsed.ok) {
+    return NextResponse.json({ error: safetyStockParsed.error }, { status: 400 });
+  }
+  const maxStockParsed = toNonNegativeInteger(parsed.data.maxStock, "最大库存");
+  if (!maxStockParsed.ok) {
+    return NextResponse.json({ error: maxStockParsed.error }, { status: 400 });
+  }
 
   const isCustomerSupplied = Boolean(parsed.data.isCustomerSupplied);
   const customerId = parsed.data.customerId?.trim() || null;
@@ -210,6 +241,8 @@ export async function POST(req: Request) {
           brand: parsed.data.brand?.trim() || null,
           unit: parsed.data.unit.trim(),
           unitPrice: isCustomerSupplied ? "0" : (parsed.data.unitPrice ?? "0"),
+          safetyStock: safetyStockParsed.value,
+          maxStock: maxStockParsed.value,
           kindId: parsed.data.kindId,
           kind: null,
           isCustomerSupplied,

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 
-/** 物料设置页：一次性拉取种类、名称、品牌、单位、编号规则 */
+/** 物料设置页：一次性拉取种类、名称、品牌、单位 */
 export async function GET() {
   try {
     const auth = await requirePermission("material.view");
@@ -10,21 +10,14 @@ export async function GET() {
       return NextResponse.json({ error: auth.message }, { status: auth.status });
     }
 
-    const [kinds, names, brands, units, codeRules] = await Promise.all([
+    const [kinds, names, brands, units] = await Promise.all([
       prisma.materialPresetKind.findMany({ orderBy: { sortOrder: "asc" } }),
       prisma.materialPresetName.findMany({ orderBy: { sortOrder: "asc" } }),
       prisma.materialPresetBrand.findMany({ orderBy: { sortOrder: "asc" } }),
       prisma.materialPresetUnit.findMany({ orderBy: { sortOrder: "asc" } }),
-      prisma.materialCodeRule.findMany({
-        include: {
-          presetKind: { select: { id: true, name: true, prefix: true } },
-          presetName: { select: { id: true, name: true, namePrefix: true } },
-        },
-        orderBy: { id: "asc" },
-      }),
     ]);
 
-    return NextResponse.json({ kinds, names, brands, units, codeRules });
+    return NextResponse.json({ kinds, names, brands, units });
   } catch (e) {
     console.error("[GET /api/material-presets]", e);
     return NextResponse.json(

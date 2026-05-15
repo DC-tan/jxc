@@ -29,6 +29,7 @@ type Row = {
   name: string;
   shortName: string | null;
   contactPerson: string | null;
+  phone: string | null;
   address: string | null;
   mainProduct: string | null;
   quality: CustomerQuality;
@@ -85,6 +86,13 @@ export function CustomersPage() {
       render: (t: string | null) => t?.trim() || "—",
     },
     {
+      title: "联系电话",
+      dataIndex: "phone",
+      width: 140,
+      ellipsis: true,
+      render: (t: string | null) => t?.trim() || "—",
+    },
+    {
       title: "地址",
       dataIndex: "address",
       ellipsis: true,
@@ -128,6 +136,7 @@ export function CustomersPage() {
       name: r.name,
       shortName: r.shortName,
       contactPerson: r.contactPerson,
+      phone: r.phone,
       address: r.address,
       mainProduct: r.mainProduct,
       quality: r.quality,
@@ -252,10 +261,18 @@ export function CustomersPage() {
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
+              <Form.Item name="phone" label="联系人电话">
+                <Input allowClear placeholder="可选" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
               <Form.Item name="address" label="地址">
                 <Input.TextArea rows={2} allowClear placeholder="可选" />
               </Form.Item>
             </Col>
+            <Col xs={24} sm={12} />
           </Row>
           <Row gutter={16}>
             <Col xs={24} sm={12}>

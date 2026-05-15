@@ -96,6 +96,11 @@ export const PERMISSION_DEFINITIONS: {
   { module: "销售订单", name: "销售订单查询", code: "tab.sales.query", sortOrder: 62, expandTo: [
     "sales.view",
   ] },
+  { module: "销售订单", name: "客户变更待提醒", code: "tab.sales.changeReminder", sortOrder: 63, expandTo: [
+    "sales.view",
+    "sales.create",
+    "sales.edit",
+  ] },
   { module: "采购订单", name: "新增采购订单", code: "tab.pur.add", sortOrder: 70, expandTo: [
     "purchase.view",
     "purchase.create",
@@ -172,10 +177,12 @@ export const PERMISSION_DEFINITIONS: {
   { module: "首页", name: "收料提醒", code: "tab.home.receiving", sortOrder: 112, expandTo: [] },
   { module: "首页", name: "外发提醒", code: "tab.home.outsource", sortOrder: 113, expandTo: [] },
   { module: "首页", name: "回收外发提醒", code: "tab.home.outsourceNeed", sortOrder: 114, expandTo: [] },
-  { module: "首页", name: "样品提醒", code: "tab.home.samples", sortOrder: 114, expandTo: [] },
-  { module: "首页", name: "客户对帐提醒", code: "tab.home.reconcileCustomer", sortOrder: 115, expandTo: [] },
-  { module: "首页", name: "供应商对帐提醒", code: "tab.home.reconcileSupplier", sortOrder: 116, expandTo: [] },
-  { module: "首页", name: "设置", code: "tab.workbench", sortOrder: 117, expandTo: [] },
+  { module: "首页", name: "样品提醒", code: "tab.home.samples", sortOrder: 115, expandTo: [] },
+  { module: "首页", name: "商品库存预警", code: "tab.home.prodStockAlert", sortOrder: 116, expandTo: [] },
+  { module: "首页", name: "物料库存预警", code: "tab.home.matStockAlert", sortOrder: 117, expandTo: [] },
+  { module: "首页", name: "客户对帐提醒", code: "tab.home.reconcileCustomer", sortOrder: 118, expandTo: [] },
+  { module: "首页", name: "供应商对帐提醒", code: "tab.home.reconcileSupplier", sortOrder: 119, expandTo: [] },
+  { module: "首页", name: "设置", code: "tab.workbench", sortOrder: 120, expandTo: [] },
 ];
 
 const EXPAND_MAP: Map<string, string[]> = (() => {
@@ -225,6 +232,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.sales.add",
     "tab.sales.undelivered",
     "tab.sales.query",
+    "tab.sales.changeReminder",
     "tab.sample.add",
     "tab.sample.open",
     "tab.sample.query",
@@ -236,6 +244,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.home.outsource",
     "tab.home.outsourceNeed",
     "tab.home.samples",
+    "tab.home.prodStockAlert",
     "tab.home.reconcileCustomer",
     "tab.home.reconcileSupplier",
   ]);
@@ -253,6 +262,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.stats.reconcile",
     "tab.home.purchase",
     "tab.home.receiving",
+    "tab.home.matStockAlert",
     "tab.home.reconcileSupplier",
   ]);
   const material = new Set([
@@ -266,6 +276,8 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.supplier",
     "tab.stats.overview",
     "tab.stats.reconcile",
+    "tab.home.prodStockAlert",
+    "tab.home.matStockAlert",
   ]);
   const outsource = new Set([
     "tab.os.add",
@@ -279,6 +291,8 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.stats.reconcile",
     "tab.home.outsource",
     "tab.home.outsourceNeed",
+    "tab.home.prodStockAlert",
+    "tab.home.matStockAlert",
   ]);
   const warehouse = new Set([
     "tab.wh.ship",
@@ -288,6 +302,8 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.prod.inv",
     "tab.stats.overview",
     "tab.stats.reconcile",
+    "tab.home.prodStockAlert",
+    "tab.home.matStockAlert",
     "tab.home.reconcileCustomer",
   ]);
 

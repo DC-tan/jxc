@@ -25,6 +25,13 @@ enum CustomerQuality {
   POOR
 }
 
+/// 客户变更提醒状态：进行中 -> 完成（或作废）
+enum CustomerChangeReminderStatus {
+  ACTIVE
+  DONE
+  VOIDED
+}
+
 model User {
   id           String   @id @default(cuid())
   employeeNo   String   @unique /// 员工编号
@@ -46,6 +53,9 @@ model User {
   materialInboundOperations MaterialInbound[] @relation("MaterialInboundOperator")
   /// 商品成品出入库流水操作人（可选）
   productInboundOperations ProductInbound[] @relation("ProductInboundOperator")
+  createdChangeReminders CustomerChangeReminder[] @relation("ChangeReminderCreator")
+  salesConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderSalesConfirmer")
+  purchaseConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderPurchaseConfirmer")
 }
 
 /// 全系统首页工作台：交期色阶、对账起始日等，保存一条；所有员工共用
@@ -99,6 +109,8 @@ model Customer {
   shortName   String?
   /// 客户联系人
   contactPerson String?
+  /// 客户联系人电话
+  phone       String?
   /// 地址
   address     String?          @db.Text
   mainProduct String? /// 客户主营产品
@@ -109,6 +121,7 @@ model Customer {
   salesOrders SalesOrder[]
   sampleOrders SampleOrder[]
   suppliedMaterials Material[]
+  changeReminders CustomerChangeReminder[]
 }
 
 /// 样品记录状态
@@ -252,6 +265,10 @@ model Material {
   brand           String? /// 品牌（存预设名称文本）
   unit            String
   unitPrice       Decimal            @db.Decimal(14, 4)
+  /// 安全库存（数量，未设置时为 null）
+  safetyStock     Int?
+  /// 最大库存（数量，未设置时为 null）
+  maxStock        Int?
   /// 迁移期保留：新数据只用 kindId
   kind            MaterialKind?
   kindId          String?
@@ -432,8 +449,10 @@ model Product {
   unit            String
   price           Decimal  @db.Decimal(14, 4)
   processingCost  Decimal  @db.Decimal(14, 4) @default(0)
-  safetyStock     Decimal  @db.Decimal(14, 4) @default(0)
-  maxStock        Decimal  @db.Decimal(14, 4) @default(0)
+  /// 安全库存（数量，未设置时为 null）
+  safetyStock     Decimal? @db.Decimal(14, 4)
+  /// 最大库存（数量，未设置时为 null）
+  maxStock        Decimal? @db.Decimal(14, 4)
   inspectionNotes String?  @db.Text /// 检料/出货注意事项
   /// 商品备注（与检料注意事项区分）
   productRemark   String?  @db.Text
@@ -445,8 +464,39 @@ model Product {
   productMaterials ProductMaterial[]
   salesOrderLines SalesOrderLine[]
   outsourceOrders OutsourceOrder[]
+  changeReminders CustomerChangeReminder[]
 
   @@index([customerId])
+}
+
+/// 客户提出但延后在下次订单执行的变更提醒
+model CustomerChangeReminder {
+  id                 String                       @id @default(cuid())
+  customerId         String
+  customer           Customer                     @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  productId          String
+  product            Product                      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  changeSummary      String                       @db.Text
+  proposedAt         DateTime                     @default(now())
+  status             CustomerChangeReminderStatus @default(ACTIVE)
+  /// 销售下单提醒确认次数（0~2）
+  salesConfirmCount  Int                          @default(0)
+  /// 采购下单提醒确认次数（0~2）
+  purchaseConfirmCount Int                        @default(0)
+  salesLastConfirmedAt DateTime?
+  salesLastConfirmedById String?
+  salesLastConfirmedBy   User?                    @relation("ChangeReminderSalesConfirmer", fields: [salesLastConfirmedById], references: [id], onDelete: SetNull)
+  purchaseLastConfirmedAt DateTime?
+  purchaseLastConfirmedById String?
+  purchaseLastConfirmedBy   User?                 @relation("ChangeReminderPurchaseConfirmer", fields: [purchaseLastConfirmedById], references: [id], onDelete: SetNull)
+  createdById        String
+  createdBy          User                         @relation("ChangeReminderCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  @@index([customerId, productId])
+  @@index([status, proposedAt])
+  @@index([createdById])
 }
 
 /// 商品 BOM 行：单一加工方式时为 DEFAULT；外发+自加工 时区分为外发用料 / 自加工用料

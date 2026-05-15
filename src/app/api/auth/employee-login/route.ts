@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { setSessionCookie, signSession } from "@/lib/auth";
+import { signSession } from "@/lib/auth";
 
 export async function POST(req: Request) {
   let body: { account?: string; password?: string };
@@ -43,9 +43,9 @@ export async function POST(req: Request) {
     role: user.role,
     loginName: user.loginName,
   });
-  await setSessionCookie(token);
 
-  return NextResponse.json({
+  // 直接设置 Cookie，不再调用 setSessionCookie
+  const response = NextResponse.json({
     ok: true,
     user: {
       name: user.name,
@@ -55,4 +55,14 @@ export async function POST(req: Request) {
       isAdmin: false,
     },
   });
+
+  response.cookies.set("jxc_session", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: false,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 7,
+  });
+
+  return response;
 }

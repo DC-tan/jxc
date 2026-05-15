@@ -62,6 +62,8 @@ type MaterialRow = {
   brand: string | null;
   unit: string;
   unitPrice: string;
+  safetyStock: number | null;
+  maxStock: number | null;
   kindId: string | null;
   kindName: string;
   isCustomerSupplied: boolean;
@@ -81,6 +83,8 @@ type InventoryRow = {
   brand: string | null;
   unit: string;
   unitPrice: string;
+  safetyStock: number | null;
+  maxStock: number | null;
   kindId: string | null;
   kindName: string;
   isCustomerSupplied: boolean;
@@ -126,6 +130,8 @@ type DetailPayload = {
   brand: string | null;
   unit: string;
   unitPrice: string;
+  safetyStock: number | null;
+  maxStock: number | null;
   kindId: string | null;
   kindName: string;
   isCustomerSupplied: boolean;
@@ -163,7 +169,6 @@ type PresetBundle = {
   names: { id: string; name: string; namePrefix: string; sortOrder: number }[];
   brands: { id: string; name: string; sortOrder: number }[];
   units: { id: string; name: string; isDefault: boolean; sortOrder: number }[];
-  codeRules: unknown[];
 };
 
 const LS_MAT_COLS = "materials.table.visibleCols.mat.v2";
@@ -637,6 +642,8 @@ export function MaterialsPage() {
     addFormFieldsPendingRef.current = {
       unit: defUnit,
       unitPrice: 0,
+      safetyStock: 0,
+      maxStock: 0,
       isCustomerSupplied: false,
     };
     setAddOpen(true);
@@ -770,6 +777,8 @@ export function MaterialsPage() {
         brand: d.brand,
         unit: d.unit,
         unitPrice: Number(d.unitPrice),
+        safetyStock: d.safetyStock ?? 0,
+        maxStock: d.maxStock ?? 0,
         isCustomerSupplied: d.isCustomerSupplied,
         customerId: d.customer?.id,
         kindId: d.kindId ?? undefined,
@@ -1005,7 +1014,22 @@ export function MaterialsPage() {
           ? `客供：${r.customer?.name ?? "未设置客户"}`
           : r.supplier.name,
     },
-    { key: "totalQty", title: "库存数量", dataIndex: "totalQty" },
+    {
+      key: "totalQty",
+      title: "库存数量",
+      dataIndex: "totalQty",
+      render: (v: number, r) => {
+        const safety = r.safetyStock ?? 0;
+        const max = r.maxStock ?? 0;
+        if (safety > 0 && v < safety) {
+          return <Typography.Text type="danger">{v}</Typography.Text>;
+        }
+        if (max > 0 && v > max) {
+          return <Typography.Text style={{ color: "#389e0d" }}>{v}</Typography.Text>;
+        }
+        return v;
+      },
+    },
     {
       title: "操作",
       key: "op",
@@ -1077,7 +1101,22 @@ export function MaterialsPage() {
           ? `客供：${r.customer?.name ?? "未设置客户"}`
           : r.supplier.name,
     },
-    { key: "totalQty", title: "库存数量", dataIndex: "totalQty" },
+    {
+      key: "totalQty",
+      title: "库存数量",
+      dataIndex: "totalQty",
+      render: (v: number, r) => {
+        const safety = r.safetyStock ?? 0;
+        const max = r.maxStock ?? 0;
+        if (safety > 0 && v < safety) {
+          return <Typography.Text type="danger">{v}</Typography.Text>;
+        }
+        if (max > 0 && v > max) {
+          return <Typography.Text style={{ color: "#389e0d" }}>{v}</Typography.Text>;
+        }
+        return v;
+      },
+    },
     {
       key: "lastReceivedAt",
       title: "最近入库",
@@ -1869,7 +1908,7 @@ export function MaterialsPage() {
       >
         <Form form={addForm} layout="vertical">
           <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            请先在「物料设置」中维护种类/名称/编号规则。保存时按规则生成物料号（格式：种类前缀-名称前缀-四位序号），建档日期为保存时间。编号重复时会提示失败。
+            请先在「物料设置」中维护种类与名称前缀。保存时系统自动生成物料号（格式：种类前缀-名称前缀-三位序号，起始为 001），建档日期为保存时间。编号重复时会提示失败。
           </Typography.Paragraph>
           <Row gutter={16}>
             <Col xs={24} sm={12}>
@@ -2009,6 +2048,16 @@ export function MaterialsPage() {
                 </Col>
               </>
             )}
+            <Col xs={24} sm={12}>
+              <Form.Item name="safetyStock" label="安全库存">
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item name="maxStock" label="最大库存">
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
             <Col span={24}>
               <Form.Item name="inspectionNotes" label="检料注意事项">
                 <Input.TextArea rows={3} placeholder="可选" />
@@ -2174,6 +2223,16 @@ export function MaterialsPage() {
                 </Form.Item>
               </Col>
             ) : null}
+            <Col xs={24} sm={12}>
+              <Form.Item name="safetyStock" label="安全库存">
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item name="maxStock" label="最大库存">
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
             <Col span={24}>
               <Form.Item name="inspectionNotes" label="检料注意事项">
                 <Input.TextArea rows={3} />
@@ -2249,6 +2308,11 @@ export function MaterialsPage() {
                   <Typography.Paragraph style={{ marginBottom: 0 }}>
                     <strong>单位 / 单价：</strong>
                     {detail.unit} / {detail.unitPrice}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph style={{ marginBottom: 0 }}>
+                    <strong>安全库存 / 最大库存：</strong>
+                    {(detail.safetyStock ?? 0) > 0 ? detail.safetyStock : "未设置"} /{" "}
+                    {(detail.maxStock ?? 0) > 0 ? detail.maxStock : "未设置"}
                   </Typography.Paragraph>
                 </Space>
               </Col>

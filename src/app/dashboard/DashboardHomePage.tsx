@@ -100,6 +100,31 @@ type HomePayload = {
     }[];
     count: number;
   } | null;
+  productStockAlerts: {
+    rows: {
+      id: string;
+      customerName: string;
+      customerMaterialCode: string;
+      model: string;
+      totalQty: number;
+      safetyStock: number | null;
+      maxStock: number | null;
+      alertType: "LOW" | "HIGH";
+    }[];
+    count: number;
+  } | null;
+  materialStockAlerts: {
+    rows: {
+      id: string;
+      code: string;
+      name: string;
+      totalQty: number;
+      safetyStock: number | null;
+      maxStock: number | null;
+      alertType: "LOW" | "HIGH";
+    }[];
+    count: number;
+  } | null;
   reconcileReminders?: {
     supplier: { show: true; message: string; link: string } | null;
     customer: { show: true; message: string; link: string } | null;
@@ -350,6 +375,65 @@ export function DashboardHomePage() {
     [],
   );
 
+  const productStockAlertColumns: ColumnsType<
+    NonNullable<HomePayload["productStockAlerts"]>["rows"][number]
+  > = useMemo(
+    () => [
+      { title: "客户", dataIndex: "customerName", width: 90, ellipsis: true },
+      { title: "物料编号", dataIndex: "customerMaterialCode", width: 100, ellipsis: true },
+      { title: "型号", dataIndex: "model", width: 88, ellipsis: true },
+      { title: "库存", dataIndex: "totalQty", width: 56, align: "right" },
+      {
+        title: "阈值",
+        key: "limit",
+        width: 90,
+        render: (_, r) =>
+          r.alertType === "LOW" ? `安全 ${r.safetyStock ?? "—"}` : `最大 ${r.maxStock ?? "—"}`,
+      },
+      {
+        title: "状态",
+        dataIndex: "alertType",
+        width: 60,
+        render: (t: "LOW" | "HIGH") =>
+          t === "LOW" ? (
+            <Typography.Text type="danger">不足</Typography.Text>
+          ) : (
+            <Typography.Text style={{ color: "#389e0d" }}>超储</Typography.Text>
+          ),
+      },
+    ],
+    [],
+  );
+
+  const materialStockAlertColumns: ColumnsType<
+    NonNullable<HomePayload["materialStockAlerts"]>["rows"][number]
+  > = useMemo(
+    () => [
+      { title: "物料编号", dataIndex: "code", width: 110, ellipsis: true },
+      { title: "名称", dataIndex: "name", width: 110, ellipsis: true },
+      { title: "库存", dataIndex: "totalQty", width: 56, align: "right" },
+      {
+        title: "阈值",
+        key: "limit",
+        width: 90,
+        render: (_, r) =>
+          r.alertType === "LOW" ? `安全 ${r.safetyStock ?? "—"}` : `最大 ${r.maxStock ?? "—"}`,
+      },
+      {
+        title: "状态",
+        dataIndex: "alertType",
+        width: 60,
+        render: (t: "LOW" | "HIGH") =>
+          t === "LOW" ? (
+            <Typography.Text type="danger">不足</Typography.Text>
+          ) : (
+            <Typography.Text style={{ color: "#389e0d" }}>超储</Typography.Text>
+          ),
+      },
+    ],
+    [],
+  );
+
   const wb = useMemo((): WorkbenchStateFromApi => {
     const d = defaultWorkbenchSettings();
     if (!data?.workbench) return d;
@@ -389,6 +473,14 @@ export function DashboardHomePage() {
     !loading && data?.sampleReminders != null,
     data?.sampleReminders?.rows?.length ?? 0,
   );
+  const productStockAlertTableScroll = useDashboardTableScrollY(
+    !loading && data?.productStockAlerts != null,
+    data?.productStockAlerts?.rows?.length ?? 0,
+  );
+  const materialStockAlertTableScroll = useDashboardTableScrollY(
+    !loading && data?.materialStockAlerts != null,
+    data?.materialStockAlerts?.rows?.length ?? 0,
+  );
 
   if (loading) {
     return (
@@ -411,6 +503,8 @@ export function DashboardHomePage() {
   const hasOut = data.needOutsourceRows != null;
   const hasRecoverOut = data.outsourceUnrecovered != null;
   const hasSamples = data.sampleReminders != null;
+  const hasProductStockAlerts = data.productStockAlerts != null;
+  const hasMaterialStockAlerts = data.materialStockAlerts != null;
   const rec = data.reconcileReminders;
   const hasReconcileBanner =
     !!rec &&
@@ -427,6 +521,8 @@ export function DashboardHomePage() {
     hasOut ||
     hasRecoverOut ||
     hasSamples ||
+    hasProductStockAlerts ||
+    hasMaterialStockAlerts ||
     hasReconcileBanner ||
     canStats;
 
@@ -791,6 +887,74 @@ export function DashboardHomePage() {
                 </div>
                 <Link href="/dashboard/samples" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
                   前往样品详情（未交样品）
+                </Link>
+              </div>
+            </Col>
+          )}
+
+          {hasProductStockAlerts && data.productStockAlerts && (
+            <Col xs={24} sm={12} lg={8}>
+              <div style={cardShell}>
+                <Typography.Title level={5} style={{ margin: 0, marginBottom: 8, fontSize: 16 }}>
+                  商品库存预警
+                </Typography.Title>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                  安全库存/最大库存中任一阈值触发即显示。未设置阈值（空值或 0）不预警。当前共{" "}
+                  <strong style={{ color: data.productStockAlerts.count > 0 ? "#cf1322" : undefined }}>
+                    {data.productStockAlerts.count}
+                  </strong>{" "}
+                  条。
+                </Typography.Paragraph>
+                <div ref={productStockAlertTableScroll.ref} style={dashboardTableWrapStyle}>
+                  {data.productStockAlerts.rows.length === 0 ? (
+                    <Typography.Text type="secondary">暂无商品库存预警。</Typography.Text>
+                  ) : (
+                    <Table
+                      size="small"
+                      rowKey="id"
+                      dataSource={data.productStockAlerts.rows.slice(0, 8)}
+                      columns={productStockAlertColumns}
+                      pagination={false}
+                      scroll={{ y: productStockAlertTableScroll.scrollY, x: 520 }}
+                    />
+                  )}
+                </div>
+                <Link href="/dashboard/products" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
+                  前往商品信息（商品库存）
+                </Link>
+              </div>
+            </Col>
+          )}
+
+          {hasMaterialStockAlerts && data.materialStockAlerts && (
+            <Col xs={24} sm={12} lg={8}>
+              <div style={cardShell}>
+                <Typography.Title level={5} style={{ margin: 0, marginBottom: 8, fontSize: 16 }}>
+                  物料库存预警
+                </Typography.Title>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
+                  安全库存/最大库存中任一阈值触发即显示。未设置阈值（空值或 0）不预警。当前共{" "}
+                  <strong style={{ color: data.materialStockAlerts.count > 0 ? "#cf1322" : undefined }}>
+                    {data.materialStockAlerts.count}
+                  </strong>{" "}
+                  条。
+                </Typography.Paragraph>
+                <div ref={materialStockAlertTableScroll.ref} style={dashboardTableWrapStyle}>
+                  {data.materialStockAlerts.rows.length === 0 ? (
+                    <Typography.Text type="secondary">暂无物料库存预警。</Typography.Text>
+                  ) : (
+                    <Table
+                      size="small"
+                      rowKey="id"
+                      dataSource={data.materialStockAlerts.rows.slice(0, 8)}
+                      columns={materialStockAlertColumns}
+                      pagination={false}
+                      scroll={{ y: materialStockAlertTableScroll.scrollY, x: 460 }}
+                    />
+                  )}
+                </div>
+                <Link href="/dashboard/materials" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
+                  前往物料信息（物料库存）
                 </Link>
               </div>
             </Col>

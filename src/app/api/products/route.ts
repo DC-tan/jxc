@@ -46,6 +46,22 @@ function toDecimal(v: unknown, fallback = "0"): string {
   return String(v);
 }
 
+function toOptionalPositiveIntegerString(
+  v: unknown,
+  fieldLabel: string,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (v === undefined || v === null || String(v).trim() === "") {
+    return { ok: true, value: null };
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    return { ok: false, error: `${fieldLabel}必须为非负整数` };
+  }
+  // 业务约定：0 视为未设置，不参与库存预警
+  if (n === 0) return { ok: true, value: null };
+  return { ok: true, value: String(n) };
+}
+
 export async function GET(req: Request) {
   try {
     const auth = await requirePermission("product.view");
@@ -88,8 +104,8 @@ export async function GET(req: Request) {
         unit: p.unit,
         price: p.price.toString(),
         processingCost: p.processingCost.toString(),
-        safetyStock: p.safetyStock.toString(),
-        maxStock: p.maxStock.toString(),
+        safetyStock: p.safetyStock?.toString() ?? null,
+        maxStock: p.maxStock?.toString() ?? null,
         inspectionNotes: p.inspectionNotes,
         productRemark: p.productRemark,
         imageUrls: parseProductImageUrls(p.imageUrls),
@@ -138,8 +154,19 @@ export async function POST(req: Request) {
 
   const price = toDecimal(d.price, "0");
   const processingCost = toDecimal(d.processingCost, "0");
-  const safetyStock = toDecimal(d.safetyStock, "0");
-  const maxStock = toDecimal(d.maxStock, "0");
+  const safetyStockParsed = toOptionalPositiveIntegerString(
+    d.safetyStock,
+    "安全库存",
+  );
+  if (!safetyStockParsed.ok) {
+    return NextResponse.json({ error: safetyStockParsed.error }, { status: 400 });
+  }
+  const maxStockParsed = toOptionalPositiveIntegerString(d.maxStock, "最大库存");
+  if (!maxStockParsed.ok) {
+    return NextResponse.json({ error: maxStockParsed.error }, { status: 400 });
+  }
+  const safetyStock = safetyStockParsed.value;
+  const maxStock = maxStockParsed.value;
   const customerMaterialCode = d.customerMaterialCode.trim();
 
   const mode = d.processingMode ?? "INHOUSE";
@@ -236,8 +263,8 @@ export async function POST(req: Request) {
       unit: row.unit,
       price: row.price.toString(),
       processingCost: row.processingCost.toString(),
-      safetyStock: row.safetyStock.toString(),
-      maxStock: row.maxStock.toString(),
+      safetyStock: row.safetyStock?.toString() ?? null,
+      maxStock: row.maxStock?.toString() ?? null,
       inspectionNotes: row.inspectionNotes,
       productRemark: row.productRemark,
       imageUrls: parseProductImageUrls(row.imageUrls),

@@ -35,6 +35,10 @@ export async function GET() {
   const showHomeOutsourceNeed = () =>
     r("tab.home.outsourceNeed") || p("outsource.view") || p("sales.view");
   const showHomeSamples = () => r("tab.home.samples") || p("sample.view");
+  const showHomeProductStockAlert = () =>
+    r("tab.home.prodStockAlert") || p("product.view");
+  const showHomeMaterialStockAlert = () =>
+    r("tab.home.matStockAlert") || p("material.view");
   /** 首页顶部对帐横幅：供应商侧 / 客户侧，与权限矩阵「首页」子项一致；旧版凭 purchase.view / warehouse.view 仍可见 */
   const showHomeReconcileSupplier = () =>
     r("tab.home.reconcileSupplier") || r("purchase.view");
@@ -135,6 +139,31 @@ export async function GET() {
         }[];
         count: number;
       } | null;
+      productStockAlerts: {
+        rows: {
+          id: string;
+          customerName: string;
+          customerMaterialCode: string;
+          model: string;
+          totalQty: number;
+          safetyStock: number | null;
+          maxStock: number | null;
+          alertType: "LOW" | "HIGH";
+        }[];
+        count: number;
+      } | null;
+      materialStockAlerts: {
+        rows: {
+          id: string;
+          code: string;
+          name: string;
+          totalQty: number;
+          safetyStock: number | null;
+          maxStock: number | null;
+          alertType: "LOW" | "HIGH";
+        }[];
+        count: number;
+      } | null;
       reconcileReminders: {
         supplier: { show: true; message: string; link: string } | null;
         customer: { show: true; message: string; link: string } | null;
@@ -149,6 +178,8 @@ export async function GET() {
       outsourceUnrecovered: null,
       needOutsourceRows: null,
       sampleReminders: null,
+      productStockAlerts: null,
+      materialStockAlerts: null,
       reconcileReminders: { supplier: null, customer: null, other: null },
     };
 
@@ -428,6 +459,113 @@ export async function GET() {
             urgency: urgencyBucket(daysUntil, urgencyT),
           };
         }),
+      };
+    }
+
+    if (showHomeProductStockAlert()) {
+      const products = await prisma.product.findMany({
+        where: {
+          OR: [{ safetyStock: { not: null } }, { maxStock: { not: null } }],
+        },
+        include: {
+          customer: { select: { name: true } },
+          inbounds: { select: { quantity: true } },
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 1000,
+      });
+      const rows = products
+        .map((p) => {
+          const totalQty = p.inbounds.reduce((s, i) => s + Number(i.quantity), 0);
+          const safety = p.safetyStock != null ? Number(p.safetyStock) : null;
+          const max = p.maxStock != null ? Number(p.maxStock) : null;
+          if (safety != null && safety > 0 && totalQty < safety) {
+            return {
+              id: p.id,
+              customerName: p.customer.name?.trim() || "—",
+              customerMaterialCode: p.customerMaterialCode?.trim() || "—",
+              model: p.model?.trim() || "—",
+              totalQty,
+              safetyStock: safety,
+              maxStock: max,
+              alertType: "LOW" as const,
+              diff: safety - totalQty,
+            };
+          }
+          if (max != null && max > 0 && totalQty > max) {
+            return {
+              id: p.id,
+              customerName: p.customer.name?.trim() || "—",
+              customerMaterialCode: p.customerMaterialCode?.trim() || "—",
+              model: p.model?.trim() || "—",
+              totalQty,
+              safetyStock: safety,
+              maxStock: max,
+              alertType: "HIGH" as const,
+              diff: totalQty - max,
+            };
+          }
+          return null;
+        })
+        .filter((x): x is NonNullable<typeof x> => x != null);
+      rows.sort((a, b) => {
+        if (a.alertType !== b.alertType) return a.alertType === "LOW" ? -1 : 1;
+        return b.diff - a.diff;
+      });
+      payload.productStockAlerts = {
+        count: rows.length,
+        rows: rows.slice(0, 50).map(({ diff: _diff, ...rest }) => rest),
+      };
+    }
+
+    if (showHomeMaterialStockAlert()) {
+      const materials = await prisma.material.findMany({
+        where: {
+          OR: [{ safetyStock: { not: null } }, { maxStock: { not: null } }],
+        },
+        include: { inbounds: { select: { quantity: true } } },
+        orderBy: { updatedAt: "desc" },
+        take: 1000,
+      });
+      const rows = materials
+        .map((m) => {
+          const totalQty = m.inbounds.reduce((s, i) => s + Number(i.quantity), 0);
+          const safety = m.safetyStock ?? null;
+          const max = m.maxStock ?? null;
+          if (safety != null && safety > 0 && totalQty < safety) {
+            return {
+              id: m.id,
+              code: m.code,
+              name: m.name,
+              totalQty,
+              safetyStock: safety,
+              maxStock: max,
+              alertType: "LOW" as const,
+              diff: safety - totalQty,
+            };
+          }
+          if (max != null && max > 0 && totalQty > max) {
+            return {
+              id: m.id,
+              code: m.code,
+              name: m.name,
+              totalQty,
+              safetyStock: safety,
+              maxStock: max,
+              alertType: "HIGH" as const,
+              diff: totalQty - max,
+            };
+          }
+          return null;
+        })
+        .filter((x): x is NonNullable<typeof x> => x != null);
+      rows.sort((a, b) => {
+        if (a.alertType !== b.alertType) return a.alertType === "LOW" ? -1 : 1;
+        return b.diff - a.diff;
+      });
+      payload.materialStockAlerts = {
+        count: rows.length,
+        rows: rows.slice(0, 50).map(({ diff: _diff, ...rest }) => rest),
       };
     }
 

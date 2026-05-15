@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { setSessionCookie, signSession } from "@/lib/auth";
+import { signSession } from "@/lib/auth";
 
 export async function POST(req: Request) {
   let body: { password?: string };
@@ -21,7 +21,10 @@ export async function POST(req: Request) {
   });
 
   if (!user) {
-    return NextResponse.json({ error: "管理员账户未初始化，请先执行数据库种子" }, { status: 500 });
+    return NextResponse.json(
+      { error: "管理员账户未初始化，请先执行数据库种子" },
+      { status: 500 }
+    );
   }
 
   const ok = await bcrypt.compare(password, user.passwordHash);
@@ -35,10 +38,20 @@ export async function POST(req: Request) {
     role: user.role,
     loginName: user.loginName,
   });
-  await setSessionCookie(token);
 
-  return NextResponse.json({
+  // 创建响应并直接设置 Cookie（绕过 setSessionCookie）
+  const response = NextResponse.json({
     ok: true,
     user: { name: user.name, loginName: user.loginName, isAdmin: true },
   });
+
+  response.cookies.set("jxc_session", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: false,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 7,
+  });
+
+  return response;
 }

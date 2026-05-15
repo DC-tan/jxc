@@ -116,6 +116,8 @@ export async function GET(req: Request) {
 
       const orderIdByOrderNo = new Map(list.map((p) => [p.orderNo, p.id]));
       for (const row of inboundRows) {
+        // 修复：跳过 purchaseOrderNo 为 null 的行
+        if (!row.purchaseOrderNo) continue;
         const orderId = orderIdByOrderNo.get(row.purchaseOrderNo);
         if (!orderId) continue;
         const set = materialSetByOrderId.get(orderId) ?? new Set<string>();
@@ -193,22 +195,10 @@ export async function POST(req: Request) {
 
   const mats = await prisma.material.findMany({
     where: { id: { in: matIds } },
-    select: { id: true, isCustomerSupplied: true, supplierId: true },
+    select: { id: true },
   });
   if (mats.length !== matIds.length) {
     return NextResponse.json({ error: "存在无效的物料" }, { status: 400 });
-  }
-  if (mats.some((m) => m.isCustomerSupplied)) {
-    return NextResponse.json(
-      { error: "客供料不可加入采购单，请在“物料信息-客供料入口”中收料入库" },
-      { status: 400 },
-    );
-  }
-  if (mats.some((m) => m.supplierId !== d.supplierId)) {
-    return NextResponse.json(
-      { error: "存在物料与所选供应商不匹配" },
-      { status: 400 },
-    );
   }
 
   try {

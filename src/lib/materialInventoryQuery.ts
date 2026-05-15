@@ -24,6 +24,8 @@ export type MaterialInventoryListRow = {
   brand: string | null;
   unit: string;
   unitPrice: string;
+  safetyStock: number | null;
+  maxStock: number | null;
   kindId: string | null;
   kindName: string;
   kind: import("@prisma/client").MaterialKind | null;
@@ -136,6 +138,8 @@ export async function queryMaterialInventoryList(
         brand: m.brand,
         unit: m.unit,
         unitPrice: m.unitPrice.toString(),
+        safetyStock: m.safetyStock,
+        maxStock: m.maxStock,
         kindId: m.kindId,
         kindName: kindName(m),
         kind: m.kind,

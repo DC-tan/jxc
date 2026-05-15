@@ -1879,7 +1879,23 @@ export function ProductsPage() {
       ellipsis: true,
       render: (v: string | null) => v ?? "—",
     },
-    { key: "totalQty", title: "库存数量", dataIndex: "totalQty", width: 96 },
+    {
+      key: "totalQty",
+      title: "库存数量",
+      dataIndex: "totalQty",
+      width: 96,
+      render: (v: number, r) => {
+        const safety = Number(r.safetyStock ?? 0);
+        const max = Number(r.maxStock ?? 0);
+        if (Number.isFinite(safety) && safety > 0 && v < safety) {
+          return <Typography.Text type="danger">{v}</Typography.Text>;
+        }
+        if (Number.isFinite(max) && max > 0 && v > max) {
+          return <Typography.Text style={{ color: "#389e0d" }}>{v}</Typography.Text>;
+        }
+        return v;
+      },
+    },
     {
       key: "lastReceivedAt",
       title: "最近入库",
@@ -2516,12 +2532,12 @@ export function ProductsPage() {
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item name="safetyStock" label="安全库存">
-                <InputNumber min={0} precision={4} style={{ width: "100%" }} />
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item name="maxStock" label="最大库存">
-                <InputNumber min={0} precision={4} style={{ width: "100%" }} />
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
             <Col span={24}>
@@ -2682,12 +2698,12 @@ export function ProductsPage() {
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item name="safetyStock" label="安全库存">
-                <InputNumber min={0} precision={4} style={{ width: "100%" }} />
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={8}>
               <Form.Item name="maxStock" label="最大库存">
-                <InputNumber min={0} precision={4} style={{ width: "100%" }} />
+                <InputNumber min={0} precision={0} step={1} style={{ width: "100%" }} />
               </Form.Item>
             </Col>
             <Col span={24}>

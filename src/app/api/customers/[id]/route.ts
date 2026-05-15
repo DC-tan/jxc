@@ -10,6 +10,7 @@ const patchSchema = z.object({
   name: z.string().min(1).optional(),
   shortName: z.string().optional().nullable(),
   contactPerson: z.string().optional().nullable(),
+  phone: z.string().optional().nullable(),
   address: z.string().optional().nullable(),
   mainProduct: z.string().optional().nullable(),
   quality: z.nativeEnum(CustomerQuality).optional(),
@@ -48,6 +49,7 @@ export async function PATCH(
   if (raw.shortName !== undefined) data.shortName = raw.shortName?.trim() || null;
   if (raw.contactPerson !== undefined)
     data.contactPerson = raw.contactPerson?.trim() || null;
+  if (raw.phone !== undefined) data.phone = raw.phone?.trim() || null;
   if (raw.address !== undefined) data.address = raw.address?.trim() || null;
   if (raw.mainProduct !== undefined)
     data.mainProduct = raw.mainProduct?.trim() || null;

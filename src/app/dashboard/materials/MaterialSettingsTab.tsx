@@ -11,7 +11,6 @@ import {
   InputNumber,
   Modal,
   Row,
-  Select,
   Space,
   Table,
   Typography,
@@ -24,23 +23,12 @@ type KindRow = { id: string; name: string; prefix: string; sortOrder: number };
 type NameRow = { id: string; name: string; namePrefix: string; sortOrder: number };
 type BrandRow = { id: string; name: string; sortOrder: number };
 type UnitRow = { id: string; name: string; isDefault: boolean; sortOrder: number };
-type CodeRuleRow = {
-  id: string;
-  presetKindId: string;
-  presetNameId: string;
-  namePrefix: string;
-  startNumber: number;
-  nextNumber: number;
-  presetKind: { id: string; name: string; prefix: string };
-  presetName: { id: string; name: string; namePrefix: string };
-};
 
 type Bundle = {
   kinds: KindRow[];
   names: NameRow[];
   brands: BrandRow[];
   units: UnitRow[];
-  codeRules: CodeRuleRow[];
 };
 
 export function MaterialSettingsTab() {
@@ -52,13 +40,11 @@ export function MaterialSettingsTab() {
   const [nameModal, setNameModal] = useState<null | { mode: "create" | "edit"; row?: NameRow }>(null);
   const [brandModal, setBrandModal] = useState<null | { mode: "create" | "edit"; row?: BrandRow }>(null);
   const [unitModal, setUnitModal] = useState<null | { mode: "create" | "edit"; row?: UnitRow }>(null);
-  const [ruleModal, setRuleModal] = useState<null | { mode: "create" | "edit"; row?: CodeRuleRow }>(null);
 
   const [kindForm] = Form.useForm();
   const [nameForm] = Form.useForm();
   const [brandForm] = Form.useForm();
   const [unitForm] = Form.useForm();
-  const [ruleForm] = Form.useForm();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -285,69 +271,6 @@ export function MaterialSettingsTab() {
     },
   ];
 
-  const ruleColumns: ColumnsType<CodeRuleRow> = [
-    {
-      title: "物料种类",
-      key: "kn",
-      render: (_, r) => r.presetKind.name,
-    },
-    {
-      title: "物料名称",
-      key: "nn",
-      render: (_, r) => r.presetName.name,
-    },
-    { title: "名称前缀", dataIndex: "namePrefix", width: 100 },
-    { title: "起始号", dataIndex: "startNumber", width: 80 },
-    { title: "下一号", dataIndex: "nextNumber", width: 80 },
-    {
-      title: "操作",
-      key: "op",
-      width: 180,
-      render: (_, r) => (
-        <Space wrap>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => {
-              setRuleModal({ mode: "edit", row: r });
-              ruleForm.setFieldsValue({
-                namePrefix: r.namePrefix,
-                startNumber: r.startNumber,
-                nextNumber: r.nextNumber,
-              });
-            }}
-          >
-            编辑
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            danger
-            onClick={() => {
-              Modal.confirm({
-                title: "删除该编号规则？",
-                onOk: async () => {
-                  try {
-                    await fetchJson(`/api/material-presets/code-rules/${r.id}`, {
-                      method: "DELETE",
-                      credentials: "include",
-                    });
-                    message.success("已删除");
-                    await load();
-                  } catch (e) {
-                    message.error(e instanceof Error ? e.message : "删除失败");
-                  }
-                },
-              });
-            }}
-          >
-            删除
-          </Button>
-        </Space>
-      ),
-    },
-  ];
-
   const submitKind = async () => {
     const v = await kindForm.validateFields();
     try {
@@ -452,32 +375,6 @@ export function MaterialSettingsTab() {
     }
   };
 
-  const submitRule = async () => {
-    const v = await ruleForm.validateFields();
-    try {
-      if (ruleModal?.mode === "create") {
-        await fetchJson("/api/material-presets/code-rules", {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(v),
-        });
-      } else if (ruleModal?.row) {
-        await fetchJson(`/api/material-presets/code-rules/${ruleModal.row.id}`, {
-          method: "PATCH",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(v),
-        });
-      }
-      message.success("已保存");
-      setRuleModal(null);
-      await load();
-    } catch (e) {
-      message.error(e instanceof Error ? e.message : "保存失败");
-    }
-  };
-
   if (!bundle && loading) {
     return <Typography.Text type="secondary">加载中…</Typography.Text>;
   }
@@ -485,8 +382,8 @@ export function MaterialSettingsTab() {
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        在此维护物料种类、物料名称、品牌、单位；并为「种类 + 物料名称」配置编号规则（种类前缀在种类表中维护）。新建物料时将按规则生成编号，格式为：
-        <strong>种类前缀-名称前缀-四位序号</strong>（如 DZL-R-0001）。若仅需改已有物料编号，请在「新增物料」列表中编辑。
+        在此维护物料种类、物料名称、品牌、单位。新建物料时，系统会按
+        <strong>种类前缀-名称前缀-三位序号</strong>自动生成编号（起始为 001）。若仅需改已有物料编号，请在「新增物料」列表中编辑。
       </Typography.Paragraph>
 
       <Row gutter={[16, 16]}>
@@ -607,35 +504,6 @@ export function MaterialSettingsTab() {
         </Col>
       </Row>
 
-      <div>
-        <Space style={{ marginBottom: 8 }}>
-          <Typography.Title level={5} style={{ margin: 0 }}>
-            编号规则（种类 + 物料名称）
-          </Typography.Title>
-          <Button
-            type="primary"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => {
-              ruleForm.resetFields();
-              ruleForm.setFieldsValue({ startNumber: 1 });
-              setRuleModal({ mode: "create" });
-            }}
-          >
-            新增规则
-          </Button>
-        </Space>
-        <Table<CodeRuleRow>
-          rowKey="id"
-          size="small"
-          loading={loading}
-          columns={ruleColumns}
-          dataSource={bundle?.codeRules ?? []}
-          pagination={false}
-          scroll={{ x: 720 }}
-        />
-      </div>
-
       <Modal
         title={kindModal?.mode === "create" ? "新增种类" : "编辑种类"}
         open={!!kindModal}
@@ -667,8 +535,12 @@ export function MaterialSettingsTab() {
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input placeholder="如 电阻" />
           </Form.Item>
-          <Form.Item name="namePrefix" label="物料前缀">
-            <Input placeholder="编号中的名称段，如 R、C（可选）" allowClear />
+          <Form.Item
+            name="namePrefix"
+            label="物料前缀"
+            rules={[{ required: true, message: "请填写物料前缀" }]}
+          >
+            <Input placeholder="编号中的名称段，如 R、C" allowClear />
           </Form.Item>
           <Form.Item name="sortOrder" label="排序">
             <InputNumber min={0} style={{ width: "100%" }} />
@@ -713,85 +585,6 @@ export function MaterialSettingsTab() {
         </Form>
       </Modal>
 
-      <Modal
-        title={ruleModal?.mode === "create" ? "新增编号规则" : "编辑编号规则"}
-        open={!!ruleModal}
-        onCancel={() => setRuleModal(null)}
-        onOk={() => void submitRule()}
-        destroyOnHidden
-        width={520}
-      >
-        <Form form={ruleForm} layout="vertical">
-          {ruleModal?.mode === "create" ? (
-            <>
-              <Form.Item
-                name="presetKindId"
-                label="物料种类"
-                rules={[{ required: true, message: "请选择" }]}
-              >
-                <Select
-                  placeholder="选择种类"
-                  options={(bundle?.kinds ?? []).map((k) => ({
-                    value: k.id,
-                    label: `${k.name}（前缀 ${k.prefix || "未设"}）`,
-                  }))}
-                />
-              </Form.Item>
-              <Form.Item
-                name="presetNameId"
-                label="物料名称"
-                rules={[{ required: true, message: "请选择" }]}
-              >
-                <Select
-                  placeholder="选择物料名称"
-                  options={(bundle?.names ?? []).map((n) => ({
-                    value: n.id,
-                    label: n.name,
-                  }))}
-                  onChange={(id) => {
-                    const n = bundle?.names.find((x) => x.id === id);
-                    if (n?.namePrefix) {
-                      ruleForm.setFieldsValue({ namePrefix: n.namePrefix });
-                    }
-                  }}
-                />
-              </Form.Item>
-              <Form.Item
-                name="namePrefix"
-                label="名称前缀"
-                rules={[{ required: true, message: "如 电阻填 R" }]}
-              >
-                <Input placeholder="如 R" />
-              </Form.Item>
-              <Form.Item
-                name="startNumber"
-                label="起始号"
-                rules={[{ required: true }]}
-                initialValue={1}
-              >
-                <InputNumber min={1} style={{ width: "100%" }} />
-              </Form.Item>
-            </>
-          ) : (
-            <>
-              <Typography.Paragraph type="secondary">
-                {ruleModal?.row
-                  ? `${ruleModal.row.presetKind.name} + ${ruleModal.row.presetName.name}`
-                  : null}
-              </Typography.Paragraph>
-              <Form.Item name="namePrefix" label="名称前缀" rules={[{ required: true }]}>
-                <Input />
-              </Form.Item>
-              <Form.Item name="startNumber" label="起始号（记录用）">
-                <InputNumber min={1} style={{ width: "100%" }} />
-              </Form.Item>
-              <Form.Item name="nextNumber" label="下一分配序号">
-                <InputNumber min={1} style={{ width: "100%" }} />
-              </Form.Item>
-            </>
-          )}
-        </Form>
-      </Modal>
     </Space>
   );
 }

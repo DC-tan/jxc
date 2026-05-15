@@ -16,6 +16,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "进销存管理系统",
   description: "企业内部进销存与权限管理",
+  icons: {
+    icon: [{ url: "/site-logo.png", type: "image/png" }],
+    shortcut: [{ url: "/site-logo.png", type: "image/png" }],
+    apple: [{ url: "/site-logo.png", type: "image/png" }],
+  },
 };
 
 export default function RootLayout({
@@ -24,7 +29,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className={`${geistSans.variable} ${geistMono.variable} h-full`}>
+    <html
+      lang="zh-CN"
+      className={`${geistSans.variable} ${geistMono.variable} h-full`}
+      suppressHydrationWarning
+    >
       <body className="min-h-full antialiased">
         <AppProviders>{children}</AppProviders>
       </body>

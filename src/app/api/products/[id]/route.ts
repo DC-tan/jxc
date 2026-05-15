@@ -40,6 +40,14 @@ function toDecimal(v: unknown): string | undefined {
   return String(v);
 }
 
+function toOptionalPositiveIntegerString(v: unknown): string | null | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return undefined;
+  if (n === 0) return null;
+  return String(n);
+}
+
 function parseSampleUrls(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((x): x is string => typeof x === "string").slice(0, 3);
@@ -117,8 +125,8 @@ export async function GET(
       unit: p.unit,
       price: p.price.toString(),
       processingCost: p.processingCost.toString(),
-      safetyStock: p.safetyStock.toString(),
-      maxStock: p.maxStock.toString(),
+      safetyStock: p.safetyStock?.toString() ?? null,
+      maxStock: p.maxStock?.toString() ?? null,
       inspectionNotes: p.inspectionNotes,
       productRemark: p.productRemark,
       imageUrls: parseProductImageUrls(p.imageUrls),
@@ -233,12 +241,24 @@ export async function PATCH(
     if (p !== undefined) update.processingCost = p;
   }
   if (data.safetyStock !== undefined) {
-    const p = toDecimal(data.safetyStock);
-    if (p !== undefined) update.safetyStock = p;
+    const p = toOptionalPositiveIntegerString(data.safetyStock);
+    if (p === undefined) {
+      return NextResponse.json(
+        { error: "安全库存必须为非负整数" },
+        { status: 400 },
+      );
+    }
+    update.safetyStock = p;
   }
   if (data.maxStock !== undefined) {
-    const p = toDecimal(data.maxStock);
-    if (p !== undefined) update.maxStock = p;
+    const p = toOptionalPositiveIntegerString(data.maxStock);
+    if (p === undefined) {
+      return NextResponse.json(
+        { error: "最大库存必须为非负整数" },
+        { status: 400 },
+      );
+    }
+    update.maxStock = p;
   }
   if (data.inspectionNotes !== undefined) {
     update.inspectionNotes = data.inspectionNotes?.trim() || null;

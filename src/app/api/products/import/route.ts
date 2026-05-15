@@ -12,6 +12,24 @@ import {
 
 type RowErr = { row: number; message: string };
 
+function parseOptionalPositiveInteger(
+  raw: unknown,
+  fieldLabel: string,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  const text = String(raw ?? "").trim();
+  if (!text) return { ok: true, value: null };
+  const parsed = parseNonNegativeDecimal(text);
+  if (parsed === null) {
+    return { ok: false, error: `${fieldLabel}须为非负整数` };
+  }
+  const n = Number(parsed);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    return { ok: false, error: `${fieldLabel}须为非负整数` };
+  }
+  if (n === 0) return { ok: true, value: null };
+  return { ok: true, value: String(n) };
+}
+
 function cell(
   row: unknown[],
   colMap: Map<string, number>,
@@ -100,8 +118,8 @@ export async function POST(req: Request) {
     unit: string;
     price: string;
     processingCost: string;
-    safetyStock: string;
-    maxStock: string;
+    safetyStock: string | null;
+    maxStock: string | null;
     inspectionNotes: string | null;
   }[] = [];
 
@@ -161,8 +179,16 @@ export async function POST(req: Request) {
     }
 
     const processingCost = parseNonNegativeDecimal(pcRaw) ?? "0";
-    const safetyStock = parseNonNegativeDecimal(safeRaw) ?? "0";
-    const maxStock = parseNonNegativeDecimal(maxRaw) ?? "0";
+    const safetyStockParsed = parseOptionalPositiveInteger(safeRaw, "安全库存");
+    if (!safetyStockParsed.ok) {
+      validationErrors.push({ row: excelRow, message: safetyStockParsed.error });
+      continue;
+    }
+    const maxStockParsed = parseOptionalPositiveInteger(maxRaw, "最大库存");
+    if (!maxStockParsed.ok) {
+      validationErrors.push({ row: excelRow, message: maxStockParsed.error });
+      continue;
+    }
 
     parsed.push({
       excelRow,
@@ -174,8 +200,8 @@ export async function POST(req: Request) {
       unit,
       price,
       processingCost,
-      safetyStock,
-      maxStock,
+      safetyStock: safetyStockParsed.value,
+      maxStock: maxStockParsed.value,
       inspectionNotes: inspectionNotes || null,
     });
   }

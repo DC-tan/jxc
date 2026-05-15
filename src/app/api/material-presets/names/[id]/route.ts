@@ -5,7 +5,7 @@ import { requirePermission } from "@/lib/api-auth";
 
 const patchSchema = z.object({
   name: z.string().min(1).optional(),
-  namePrefix: z.string().optional(),
+  namePrefix: z.string().trim().min(1).optional(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -70,19 +70,11 @@ export async function DELETE(
 
   const { id } = await ctx.params;
 
-  const ruleCount = await prisma.materialCodeRule.count({
-    where: { presetNameId: id },
-  });
-
-  if (ruleCount > 0) {
-    return NextResponse.json(
-      { error: `无法删除：已有 ${ruleCount} 条编号规则引用该物料名称` },
-      { status: 400 },
-    );
-  }
-
   try {
-    await prisma.materialPresetName.delete({ where: { id } });
+    await prisma.$transaction([
+      prisma.materialCodeRule.deleteMany({ where: { presetNameId: id } }),
+      prisma.materialPresetName.delete({ where: { id } }),
+    ]);
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "删除失败" }, { status: 500 });

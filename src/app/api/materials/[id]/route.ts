@@ -16,6 +16,8 @@ const patchSchema = z.object({
   brand: z.string().optional().nullable(),
   unit: z.string().min(1).optional(),
   unitPrice: z.union([z.number(), z.string()]).transform((v) => String(v)).optional(),
+  safetyStock: z.union([z.number(), z.string()]).optional(),
+  maxStock: z.union([z.number(), z.string()]).optional(),
   kindId: z.string().min(1).optional(),
   supplierId: z.string().optional(),
   isCustomerSupplied: z.boolean().optional(),
@@ -23,6 +25,21 @@ const patchSchema = z.object({
   inspectionNotes: z.string().optional().nullable(),
   sampleImageUrls: z.array(z.string()).max(3).optional(),
 });
+
+function toOptionalPositiveInteger(
+  v: unknown,
+  fieldLabel: string,
+): { ok: true; value: number | null } | { ok: false; error: string } {
+  if (v === undefined || v === null || String(v).trim() === "") {
+    return { ok: true, value: null };
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    return { ok: false, error: `${fieldLabel}必须为非负整数` };
+  }
+  if (n === 0) return { ok: true, value: null };
+  return { ok: true, value: n };
+}
 
 function kindDisplay(m: {
   kind: import("@prisma/client").MaterialKind | null;
@@ -90,6 +107,8 @@ export async function GET(
       brand: m.brand,
       unit: m.unit,
       unitPrice: m.unitPrice.toString(),
+      safetyStock: m.safetyStock,
+      maxStock: m.maxStock,
       kindId: m.kindId ?? kd.kindId,
       kindName: kd.kindName,
       kind: m.kind,
@@ -167,8 +186,21 @@ export async function PATCH(
       return NextResponse.json({ error: "物料种类不存在" }, { status: 400 });
     }
   }
-
   const data = parsed.data;
+  const safetyStockParsed =
+    data.safetyStock !== undefined
+      ? toOptionalPositiveInteger(data.safetyStock, "安全库存")
+      : null;
+  if (safetyStockParsed && !safetyStockParsed.ok) {
+    return NextResponse.json({ error: safetyStockParsed.error }, { status: 400 });
+  }
+  const maxStockParsed =
+    data.maxStock !== undefined
+      ? toOptionalPositiveInteger(data.maxStock, "最大库存")
+      : null;
+  if (maxStockParsed && !maxStockParsed.ok) {
+    return NextResponse.json({ error: maxStockParsed.error }, { status: 400 });
+  }
   const nextIsCustomerSupplied = data.isCustomerSupplied ?? exists.isCustomerSupplied;
   const nextCustomerId =
     data.customerId !== undefined
@@ -214,6 +246,16 @@ export async function PATCH(
           : data.unitPrice !== undefined
             ? { unitPrice: data.unitPrice }
             : {}),
+        ...(data.safetyStock !== undefined
+          ? {
+              safetyStock: safetyStockParsed!.value,
+            }
+          : {}),
+        ...(data.maxStock !== undefined
+          ? {
+              maxStock: maxStockParsed!.value,
+            }
+          : {}),
         ...(data.kindId !== undefined
           ? { kindId: data.kindId, kind: null }
           : {}),

@@ -5,7 +5,7 @@ import { requirePermission } from "@/lib/api-auth";
 
 const createSchema = z.object({
   name: z.string().min(1, "名称不能为空"),
-  namePrefix: z.string().optional(),
+  namePrefix: z.string().trim().min(1, "物料前缀不能为空"),
   sortOrder: z.number().int().optional(),
 });
 
@@ -31,7 +31,7 @@ export async function POST(req: Request) {
   }
 
   const name = parsed.data.name.trim();
-  const namePrefix = (parsed.data.namePrefix ?? "").trim();
+  const namePrefix = parsed.data.namePrefix.trim();
 
   try {
     const row = await prisma.materialPresetName.create({

@@ -99,6 +99,79 @@ type SplitPayload = {
   supplierGroups: SplitGroup[];
 };
 
+type PendingChangeReminder = {
+  id: string;
+  productModel: string;
+  customerMaterialCode: string;
+  changeSummary: string;
+  proposedAt: string;
+  status: "ACTIVE" | "DONE" | "VOIDED";
+  salesConfirmCount: number;
+  purchaseConfirmCount: number;
+  purchaseLastConfirmedAt: string | null;
+  purchaseLastConfirmedByName: string | null;
+};
+
+async function confirmPurchaseChannelReminders(
+  modal: { confirm: (config: Parameters<typeof Modal.confirm>[0]) => void },
+  reminders: PendingChangeReminder[],
+) {
+  if (reminders.length === 0) return true;
+  return new Promise<boolean>((resolve) => {
+    modal.confirm({
+      title: `检测到 ${reminders.length} 条客户变更提醒`,
+      width: 760,
+      okText: "已确认本次变更，继续生成预览",
+      cancelText: "取消",
+      content: (
+        <Space
+          direction="vertical"
+          style={{ maxHeight: 420, overflowY: "auto", color: "#cf1322" }}
+        >
+          {reminders.map((r) => (
+            <div
+              key={r.id}
+              style={{ border: "1px solid #f0f0f0", borderRadius: 6, padding: 10 }}
+            >
+              <Typography.Text strong style={{ color: "#cf1322" }}>
+                采购提醒（{r.purchaseConfirmCount}/2）
+              </Typography.Text>
+              <br />
+              <Typography.Text style={{ color: "#cf1322" }}>
+                商品：{r.productModel?.trim() || "—"} / {r.customerMaterialCode?.trim() || "—"}
+              </Typography.Text>
+              <br />
+              <Typography.Text style={{ color: "#cf1322" }}>
+                变更：{r.changeSummary}
+              </Typography.Text>
+              <br />
+              <Typography.Text style={{ color: "#cf1322" }}>
+                提出：{new Date(r.proposedAt).toLocaleDateString("zh-CN")}
+                {r.purchaseLastConfirmedAt
+                  ? `；上次确认：${r.purchaseLastConfirmedByName ?? "—"} ${new Date(r.purchaseLastConfirmedAt).toLocaleString("zh-CN")}`
+                  : ""}
+              </Typography.Text>
+            </div>
+          ))}
+        </Space>
+      ),
+      onOk: async () => {
+        await fetchJson("/api/customer-change-reminders/ack", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ids: reminders.map((x) => x.id),
+            channel: "purchase",
+          }),
+        });
+        resolve(true);
+      },
+      onCancel: () => resolve(false),
+    });
+  });
+}
+
 type EditableLine = SplitLine & {
   quantity: number;
   unitPriceNum: number;
@@ -890,10 +963,33 @@ export function PurchaseFromSalesWizard({
                 )}
                 <Button
                   type={allQuantitiesAreZero ? "default" : "primary"}
-                  onClick={() => {
+                  onClick={async () => {
                     if (positiveQtyGroups.length === 0) {
                       message.warning(
                         "没有可采购的明细：数量 0 表示不采购。请至少保留一条数量大于 0 的物料。",
+                      );
+                      return;
+                    }
+                    try {
+                      const reminderPayload = await fetchJson<{
+                        list: PendingChangeReminder[];
+                      }>("/api/customer-change-reminders/match", {
+                        method: "POST",
+                        credentials: "include",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          salesOrderId: split.salesOrder.id,
+                          channel: "purchase",
+                        }),
+                      });
+                      const proceed = await confirmPurchaseChannelReminders(
+                        modal,
+                        reminderPayload.list ?? [],
+                      );
+                      if (!proceed) return;
+                    } catch (e) {
+                      message.error(
+                        e instanceof Error ? e.message : "加载客户变更提醒失败",
                       );
                       return;
                     }
