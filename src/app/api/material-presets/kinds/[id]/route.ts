@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/api-auth";
 const patchSchema = z.object({
   name: z.string().min(1).optional(),
   prefix: z.string().optional(),
+  namingMode: z.enum(["STANDARD", "CUSTOM"]).optional(),
   sortOrder: z.number().int().optional(),
 });
 
@@ -46,6 +47,7 @@ export async function PATCH(
       data: {
         ...(data.name !== undefined ? { name: data.name.trim() } : {}),
         ...(data.prefix !== undefined ? { prefix: data.prefix.trim() } : {}),
+        ...(data.namingMode !== undefined ? { namingMode: data.namingMode } : {}),
         ...(data.sortOrder !== undefined ? { sortOrder: data.sortOrder } : {}),
       },
     });

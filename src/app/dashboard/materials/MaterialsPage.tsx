@@ -4,6 +4,7 @@ import {
   DownloadOutlined,
   FileExcelOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   SettingOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -28,6 +29,7 @@ import {
   Spin,
   Table,
   Tabs,
+  Tooltip,
   Typography,
   Upload,
 } from "antd";
@@ -165,11 +167,26 @@ type CustomerSupplyInboundRow = {
 };
 
 type PresetBundle = {
-  kinds: { id: string; name: string; prefix: string; sortOrder: number }[];
+  kinds: {
+    id: string;
+    name: string;
+    prefix: string;
+    namingMode: "STANDARD" | "CUSTOM";
+    sortOrder: number;
+  }[];
   names: { id: string; name: string; namePrefix: string; sortOrder: number }[];
   brands: { id: string; name: string; sortOrder: number }[];
   units: { id: string; name: string; isDefault: boolean; sortOrder: number }[];
 };
+
+function inferCustomNamePrefixFromCode(code: string): string {
+  const seg = String(code ?? "")
+    .split("-")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (seg.length >= 3) return seg[1] ?? "";
+  return "";
+}
 
 const LS_MAT_COLS = "materials.table.visibleCols.mat.v2";
 const LS_INV_COLS = "materials.table.visibleCols.inv.v2";
@@ -310,6 +327,16 @@ function ColumnSettingButton({
   );
 }
 
+function HelpTip({ text }: { text: string }) {
+  return (
+    <Tooltip title={text} placement="top">
+      <QuestionCircleOutlined
+        style={{ color: "rgba(0,0,0,0.45)", fontSize: 14, cursor: "help" }}
+      />
+    </Tooltip>
+  );
+}
+
 export function MaterialsPage() {
   const { message } = App.useApp();
   const router = useRouter();
@@ -335,11 +362,13 @@ export function MaterialsPage() {
 
   const [filterForm] = Form.useForm();
   const addIsCustomerSupplied = Form.useWatch("isCustomerSupplied", addForm);
+  const addKindId = Form.useWatch("kindId", addForm) as string | undefined;
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm] = Form.useForm();
   const editIsCustomerSupplied = Form.useWatch("isCustomerSupplied", editForm);
+  const editKindId = Form.useWatch("kindId", editForm) as string | undefined;
   /** 弹窗带 destroyOnHidden 时，须在打开后再 setFieldsValue，否则表单未挂载会报警告 */
   const editFormFieldsPendingRef = useRef<Record<string, unknown> | null>(null);
   const [editSamples, setEditSamples] = useState<string[]>([]);
@@ -390,6 +419,15 @@ export function MaterialsPage() {
   >([]);
   const [loadingCustomerSupply, setLoadingCustomerSupply] = useState(false);
   const [submittingCustomerSupply, setSubmittingCustomerSupply] = useState(false);
+
+  const addSelectedKind = useMemo(
+    () => (presets?.kinds ?? []).find((k) => k.id === addKindId),
+    [addKindId, presets?.kinds],
+  );
+  const editSelectedKind = useMemo(
+    () => (presets?.kinds ?? []).find((k) => k.id === editKindId),
+    [editKindId, presets?.kinds],
+  );
 
   useEffect(() => {
     setMatColKeys(loadVisibleColKeys(LS_MAT_COLS, MAT_ALL_KEYS, MAT_ALL_KEYS));
@@ -447,7 +485,12 @@ export function MaterialsPage() {
       });
       setCustomers(data.list ?? []);
     } catch (e) {
-      message.error(e instanceof Error ? e.message : "加载客户失败");
+      // 物料库存页并不依赖客户列表；缺少 customer.view 时静默降级，避免误报“没有操作权限”
+      const msg = e instanceof Error ? e.message : "";
+      if (!msg.includes("没有操作权限")) {
+        message.error(msg || "加载客户失败");
+      }
+      setCustomers([]);
     }
   }, [message]);
 
@@ -558,10 +601,6 @@ export function MaterialsPage() {
   }, [loadPresets]);
 
   useEffect(() => {
-    void loadCustomers();
-  }, [loadCustomers]);
-
-  useEffect(() => {
     void loadMaterials();
   }, [loadMaterials]);
 
@@ -570,13 +609,14 @@ export function MaterialsPage() {
       void loadInventory({});
     }
     if (tab === "customerSupply") {
+      void loadCustomers();
       customerSupplyEntryForm.setFieldsValue({
         quantity: 1,
         receivedAt: dayjs(),
       });
       void loadCustomerSupply({});
     }
-  }, [tab, loadInventory, loadCustomerSupply, customerSupplyEntryForm]);
+  }, [tab, loadInventory, loadCustomerSupply, customerSupplyEntryForm, loadCustomers]);
 
   const uploadSample = async (file: File) => {
     const fd = new FormData();
@@ -634,6 +674,7 @@ export function MaterialsPage() {
   };
 
   const openCreateMaterial = () => {
+    void loadCustomers();
     setSampleUrls([]);
     const defUnit =
       presets?.units.find((u) => u.isDefault)?.name ??
@@ -766,13 +807,20 @@ export function MaterialsPage() {
   };
 
   const openEdit = async (id: string) => {
+    void loadCustomers();
     setEditingId(id);
     try {
       const d = await fetchJson<DetailPayload>(`/api/materials/${id}`, {
         credentials: "include",
       });
+      const matchedPresetNameId = (presets?.names ?? []).find(
+        (n) => n.name.trim() === d.name.trim(),
+      )?.id;
       editFormFieldsPendingRef.current = {
         name: d.name,
+        presetNameId: matchedPresetNameId,
+        customName: d.name,
+        customNamePrefix: inferCustomNamePrefixFromCode(d.code),
         partDescription: d.partDescription,
         brand: d.brand,
         unit: d.unit,
@@ -835,6 +883,28 @@ export function MaterialsPage() {
   const submitEdit = async () => {
     const v = await editForm.validateFields();
     if (!editingId) return;
+    const selectedKind = (presets?.kinds ?? []).find((k) => k.id === v.kindId);
+    let resolvedName = String(v.name ?? "").trim();
+    if (selectedKind?.namingMode === "CUSTOM") {
+      resolvedName = String(v.customName ?? "").trim();
+      if (!resolvedName) {
+        message.error("请填写物料名称");
+        return;
+      }
+    } else {
+      const presetNameId = String(v.presetNameId ?? "").trim();
+      if (presetNameId) {
+        const p = (presets?.names ?? []).find((n) => n.id === presetNameId);
+        if (!p) {
+          message.error("所选物料名称无效，请重新选择");
+          return;
+        }
+        resolvedName = p.name;
+      } else if (!resolvedName) {
+        message.error("请选择物料名称");
+        return;
+      }
+    }
     const savedId = editingId;
     try {
       await fetchJson(`/api/materials/${savedId}`, {
@@ -843,6 +913,7 @@ export function MaterialsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...v,
+          name: resolvedName,
           sampleImageUrls: editSamples,
         }),
       });
@@ -1454,10 +1525,6 @@ export function MaterialsPage() {
                   <Button icon={<FileExcelOutlined />} onClick={openImportModal}>
                     Excel 导入
                   </Button>
-                  <Typography.Text type="secondary">
-                    下方列表仅显示<strong>当天新建</strong>的物料档案；物料编号与建档日期在保存时由系统自动生成。收料入库请在采购订单中操作。Excel
-                    导入需在「供应商」列填写编号或名称（与系统中供应商档案一致），物料编号为 IMP- 前缀自动生成。
-                  </Typography.Text>
                 </Space>
 
                 <div
@@ -1473,11 +1540,14 @@ export function MaterialsPage() {
                   <Typography.Title level={5} style={{ margin: 0 }}>
                     已建档物料（当日）
                   </Typography.Title>
-                  <ColumnSettingButton
-                    options={MAT_COL_OPTIONS}
-                    value={matColKeys}
-                    onChange={setMatColKeys}
-                  />
+                  <Space size={8}>
+                    <ColumnSettingButton
+                      options={MAT_COL_OPTIONS}
+                      value={matColKeys}
+                      onChange={setMatColKeys}
+                    />
+                    <HelpTip text="下方列表仅显示当天新建的物料档案；物料编号与建档日期保存时自动生成。收料入库请在采购订单中操作。Excel 导入需在“供应商”列填写系统内供应商编号或名称，物料编号为 IMP- 前缀自动生成。" />
+                  </Space>
                 </div>
                 <Table<MaterialRow>
                   rowKey="id"
@@ -1517,7 +1587,11 @@ export function MaterialsPage() {
                   loading={loadingInv}
                   columns={invTableColumns}
                   dataSource={inventory}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
                   components={{
@@ -1540,9 +1614,9 @@ export function MaterialsPage() {
             label: "客供料入口",
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  仅用于客供料收料入库。采购单不会生成客供料，请在本页登记收料。
-                </Typography.Paragraph>
+                <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+                  <HelpTip text="仅用于客供料收料入库。采购单不会生成客供料，请在本页登记收料。" />
+                </div>
                 <Card size="small" title="收料入库">
                   <Form
                     form={customerSupplyEntryForm}
@@ -1721,9 +1795,9 @@ export function MaterialsPage() {
             label: "手动调整",
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  本页为库存盘点与档案维护入口：可录入与系统当前库存的差额（可增可减，保存后记为「盘点调整」流水），或打开「修改物料」编辑基础资料与签样。需要相应权限。列表与上方查询条件、当前「物料库存」页数据一致，请先点「查询」或切换页签时自动加载。
-                </Typography.Paragraph>
+                <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+                  <HelpTip text="本页为库存盘点与档案维护入口：可录入与系统当前库存的差额（可增可减，保存后记为盘点调整流水），或打开“修改物料”编辑基础资料与签样。列表与上方查询条件、当前物料库存页数据一致。" />
+                </div>
                 <Table<InventoryRow>
                   rowKey="id"
                   loading={loadingInv}
@@ -1760,7 +1834,11 @@ export function MaterialsPage() {
                     },
                   ]}
                   dataSource={inventory}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                   scroll={{ x: 780 }}
                 />
               </Space>
@@ -1908,7 +1986,7 @@ export function MaterialsPage() {
       >
         <Form form={addForm} layout="vertical">
           <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            请先在「物料设置」中维护种类与名称前缀。保存时系统自动生成物料号（格式：种类前缀-名称前缀-三位序号，起始为 001），建档日期为保存时间。编号重复时会提示失败。
+            标准件：需先维护物料名称预设，编码为「种类前缀-名称前缀-三位序号」（起始 001）；自定义种类：建档时手填名称与名称前缀，编码为「种类前缀-名称前缀-两位序号」（起始 01）。
           </Typography.Paragraph>
           <Row gutter={16}>
             <Col xs={24} sm={12}>
@@ -1919,36 +1997,67 @@ export function MaterialsPage() {
               >
                 <Select
                   placeholder="选择种类"
+                  onChange={() => {
+                    addForm.setFieldsValue({
+                      presetNameId: undefined,
+                      customName: undefined,
+                      customNamePrefix: undefined,
+                    });
+                  }}
                   options={(presets?.kinds ?? []).map((k) => ({
                     value: k.id,
-                    label: `${k.name}${k.prefix ? `（前缀 ${k.prefix}）` : ""}`,
+                    label: `${k.name}${k.prefix ? `（前缀 ${k.prefix}）` : ""}${k.namingMode === "CUSTOM" ? " · 自定义" : ""}`,
                   }))}
                 />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={12}>
-              <Form.Item
-                name="presetNameId"
-                label="物料名称"
-                rules={[{ required: true, message: "请选择物料名称" }]}
-              >
-                <Select
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="下拉选择或输入关键字筛选"
-                  options={(presets?.names ?? []).map((n) => ({
-                    value: n.id,
-                    label: n.name,
-                  }))}
-                  filterOption={(input, option) =>
-                    String(option?.label ?? "")
-                      .toLowerCase()
-                      .includes(String(input ?? "").trim().toLowerCase())
-                  }
-                />
-              </Form.Item>
-            </Col>
+            {addSelectedKind?.namingMode === "CUSTOM" ? (
+              <>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="customName"
+                    label="物料名称（自定义）"
+                    rules={[{ required: true, message: "请填写物料名称" }]}
+                  >
+                    <Input allowClear placeholder="如 FPC C62" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="customNamePrefix"
+                    label="名称前缀"
+                    rules={[{ required: true, message: "请填写名称前缀" }]}
+                    extra="编码中的名称段，如 C62（将自动转大写）"
+                  >
+                    <Input allowClear placeholder="如 C62" />
+                  </Form.Item>
+                </Col>
+              </>
+            ) : (
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="presetNameId"
+                  label="物料名称"
+                  rules={[{ required: true, message: "请选择物料名称" }]}
+                >
+                  <Select
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="下拉选择或输入关键字筛选"
+                    options={(presets?.names ?? []).map((n) => ({
+                      value: n.id,
+                      label: n.name,
+                    }))}
+                    filterOption={(input, option) =>
+                      String(option?.label ?? "")
+                        .toLowerCase()
+                        .includes(String(input ?? "").trim().toLowerCase())
+                    }
+                  />
+                </Form.Item>
+              </Col>
+            )}
             <Col span={24}>
               <Form.Item name="partDescription" label="部件描述">
                 <Input.TextArea rows={2} allowClear placeholder="可选" />
@@ -2097,16 +2206,81 @@ export function MaterialsPage() {
         }}
       >
         <Form form={editForm} layout="vertical">
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+            标准件：优先从预设名称选择；自定义种类：手填物料名称。编辑时仅更新档案信息，不重编物料编号。
+          </Typography.Paragraph>
           <Row gutter={16}>
-            <Col span={24}>
+            <Col xs={24} sm={12}>
               <Form.Item
-                name="name"
-                label="物料名称"
-                rules={[{ required: true, message: "请填写物料名称" }]}
+                name="kindId"
+                label="物料种类"
+                rules={[{ required: true, message: "请选择物料种类" }]}
               >
-                <Input />
+                <Select
+                  placeholder="选择种类"
+                  onChange={() => {
+                    editForm.setFieldsValue({
+                      presetNameId: undefined,
+                      customName: undefined,
+                      customNamePrefix: undefined,
+                    });
+                  }}
+                  options={(presets?.kinds ?? []).map((k) => ({
+                    value: k.id,
+                    label: `${k.name}${k.prefix ? `（前缀 ${k.prefix}）` : ""}${k.namingMode === "CUSTOM" ? " · 自定义" : ""}`,
+                  }))}
+                />
               </Form.Item>
             </Col>
+            {editSelectedKind?.namingMode === "CUSTOM" ? (
+              <>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="customName"
+                    label="物料名称（自定义）"
+                    rules={[{ required: true, message: "请填写物料名称" }]}
+                  >
+                    <Input allowClear />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12}>
+                  <Form.Item
+                    name="customNamePrefix"
+                    label="名称前缀（编码参考）"
+                    extra="仅用于查看原有编码段，编辑不会重编物料编号"
+                  >
+                    <Input allowClear />
+                  </Form.Item>
+                </Col>
+              </>
+            ) : (
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="presetNameId"
+                  label="物料名称"
+                  extra="可重新选择预设；不选择则沿用当前物料名称"
+                >
+                  <Select
+                    allowClear
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="下拉选择或输入关键字筛选"
+                    options={(presets?.names ?? []).map((n) => ({
+                      value: n.id,
+                      label: n.name,
+                    }))}
+                    filterOption={(input, option) =>
+                      String(option?.label ?? "")
+                        .toLowerCase()
+                        .includes(String(input ?? "").trim().toLowerCase())
+                    }
+                  />
+                </Form.Item>
+              </Col>
+            )}
+            <Form.Item name="name" hidden>
+              <Input />
+            </Form.Item>
             <Col span={24}>
               <Form.Item name="partDescription" label="部件描述">
                 <Input.TextArea rows={2} allowClear />
@@ -2190,21 +2364,6 @@ export function MaterialsPage() {
                 </Form.Item>
               </Col>
             )}
-            <Col xs={24} sm={12}>
-              <Form.Item
-                name="kindId"
-                label="物料种类"
-                rules={[{ required: true, message: "请选择物料种类" }]}
-              >
-                <Select
-                  placeholder="选择种类"
-                  options={(presets?.kinds ?? []).map((k) => ({
-                    value: k.id,
-                    label: k.name,
-                  }))}
-                />
-              </Form.Item>
-            </Col>
             {!editIsCustomerSupplied ? (
               <Col span={24}>
                 <Form.Item

@@ -1,5 +1,6 @@
 "use client";
 
+import { QuestionCircleOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
@@ -13,12 +14,14 @@ import {
   Spin,
   Table,
   Tabs,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
@@ -112,6 +115,14 @@ function buildQuery(
     sp.set("includePartialInquiry", "1");
   }
   return sp.toString();
+}
+
+function HelpTip({ text }: { text: ReactNode }) {
+  return (
+    <Tooltip title={<span style={{ whiteSpace: "normal" }}>{text}</span>} placement="topLeft">
+      <QuestionCircleOutlined style={{ color: "#8c8c8c", cursor: "help" }} />
+    </Tooltip>
+  );
 }
 
 export function WarehousePage() {
@@ -593,32 +604,50 @@ export function WarehousePage() {
             label: "出货",
             children: (
               <Space direction="vertical" style={{ width: "100%" }} size="middle">
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写<strong>本批实际出货</strong>（可超过待交/订单行数量）。自加工且成品不足时先<strong>补产入库存</strong>，再进<strong>送货单打印</strong>。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>后登记库存；全部交清后写入
-                  <strong>实际交货时间</strong>。
-                </Typography.Paragraph>
-                <Space>
-                  <Button onClick={() => void loadPending()}>刷新</Button>
-                  <Button
-                    onClick={() => {
-                      setPendingSelectMode((v) => !v);
-                      setSelectedPendingIds([]);
-                    }}
-                  >
-                    {pendingSelectMode ? "取消选择" : "选择"}
-                  </Button>
-                  {pendingSelectMode ? (
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <Space>
+                    <Button onClick={() => void loadPending()}>刷新</Button>
                     <Button
-                      danger
-                      type="primary"
-                      onClick={() => void closeSelectedPending()}
-                      disabled={selectedPendingIds.length === 0}
-                      loading={closingPending}
+                      onClick={() => {
+                        setPendingSelectMode((v) => !v);
+                        setSelectedPendingIds([]);
+                      }}
                     >
-                      结单
+                      {pendingSelectMode ? "取消选择" : "选择"}
                     </Button>
-                  ) : null}
-                </Space>
+                    {pendingSelectMode ? (
+                      <Button
+                        danger
+                        type="primary"
+                        onClick={() => void closeSelectedPending()}
+                        disabled={selectedPendingIds.length === 0}
+                        loading={closingPending}
+                      >
+                        结单
+                      </Button>
+                    ) : null}
+                  </Space>
+                  <HelpTip
+                    text={
+                      <>
+                        以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
+                        <strong>本批实际出货</strong>
+                        （可超过待交/订单行数量）。自加工且成品不足时先
+                        <strong>补产入库存</strong>，再进<strong>送货单打印</strong>
+                        。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>
+                        后登记库存；全部交清后写入<strong>实际交货时间</strong>。
+                      </>
+                    }
+                  />
+                </div>
                 <Table<WarehouseSalesRow>
                   rowKey="id"
                   loading={loadingPending}
@@ -646,9 +675,6 @@ export function WarehousePage() {
             forceRender: true,
             children: (
               <Space direction="vertical" style={{ width: "100%" }} size="middle">
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  按<strong>整单实际交货</strong>或<strong>分批出货时间</strong>区间与关键字查询：含已交清单、仅分批出货且<strong>整单未结</strong>的订单。未结订单备注列会标注「订单未交完」。
-                </Typography.Paragraph>
                 <Form
                   form={queryForm}
                   layout="inline"
@@ -699,6 +725,17 @@ export function WarehousePage() {
                       </Button>
                     </Form.Item>
                   ) : null}
+                  <Form.Item style={{ marginInlineStart: "auto" }}>
+                    <HelpTip
+                      text={
+                        <>
+                          按<strong>整单实际交货</strong>或<strong>分批出货时间</strong>
+                          区间与关键字查询：含已交清单、仅分批出货且
+                          <strong>整单未结</strong>的订单。未结订单备注列会标注「订单未交完」。
+                        </>
+                      }
+                    />
+                  </Form.Item>
                 </Form>
                 <Table<WarehouseSalesRow>
                   rowKey="id"
@@ -772,7 +809,21 @@ export function WarehousePage() {
       )}
 
       <Modal
-        title={`确认出货 — ${deliverOrderLabel}`}
+        title={
+          <Space size={6}>
+            <span>{`确认出货 — ${deliverOrderLabel}`}</span>
+            <HelpTip
+              text={
+                <>
+                  请在此填写每行<strong>本批实际要出货</strong>
+                  数量（默认等于待交，可少填分批，也可<strong>大于待交/订单行数量</strong>以多发）。若自加工行成品不足，下一步将进入
+                  <strong>补产入库存</strong>。打印送货单上仅展示本处数量，不再改数；备品/附加备注在送货单页添加。点送货单
+                  <strong>完成</strong>后登记库存。
+                </>
+              }
+            />
+          </Space>
+        }
         open={deliverOpen}
         onCancel={() => {
           setDeliverOpen(false);
@@ -786,9 +837,6 @@ export function WarehousePage() {
         destroyOnHidden
         forceRender
       >
-        <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
-          请在此填写每行<strong>本批实际要出货</strong>数量（默认等于待交，可少填分批，也可<strong>大于待交/订单行数量</strong>以多发）。若自加工行成品不足，下一步将进入<strong>补产入库存</strong>。打印送货单上仅展示本处数量，不再改数；备品/附加备注在送货单页添加。点送货单<strong>完成</strong>后登记库存。
-        </Typography.Paragraph>
         {deliverFetchLoading ? (
           <Spin />
         ) : deliverDetail ? (

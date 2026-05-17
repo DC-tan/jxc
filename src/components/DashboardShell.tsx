@@ -34,6 +34,14 @@ import {
 } from "@/lib/last-employee-login";
 
 const { Header, Sider, Content } = Layout;
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION ?? "v0.0.0";
+const SIDER_WIDTH = 220;
+const HEADER_HEIGHT = 64;
+
+function formatSystemTime(d: Date) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 
 type Me = {
   name: string;
@@ -141,6 +149,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
     let cancelled = false;
@@ -182,6 +191,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     };
   }, [router]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(new Date());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const menuItems = useMemo(() => {
     if (!me) return [];
     const perms = new Set(me.permissions);
@@ -205,7 +221,21 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
-      <Sider breakpoint="lg" collapsedWidth={0} width={220}>
+      <Sider
+        breakpoint="lg"
+        collapsedWidth={0}
+        width={SIDER_WIDTH}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          position: "fixed",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          height: "100vh",
+          zIndex: 1100,
+        }}
+      >
         <div
           style={{
             minHeight: 56,
@@ -251,9 +281,28 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           mode="inline"
           selectedKeys={[selectedKey]}
           items={menuItems}
+          style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 92 }}
         />
+        <div
+          style={{
+            position: "absolute",
+            left: 12,
+            right: 12,
+            bottom: 8,
+            paddingTop: 10,
+            borderTop: "1px solid rgba(255,255,255,0.12)",
+            background: "#001529",
+            color: "rgba(255,255,255,0.72)",
+            fontSize: 12,
+            lineHeight: 1.6,
+          }}
+        >
+          <div>版本：{APP_VERSION}</div>
+          <div>开发者：深圳键坤科技</div>
+          <div>系统时间：{formatSystemTime(now)}</div>
+        </div>
       </Sider>
-      <Layout>
+      <Layout style={{ marginLeft: SIDER_WIDTH, minHeight: "100vh" }}>
         <Header
           style={{
             background: "#fff",
@@ -263,6 +312,13 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             alignItems: "center",
             gap: 12,
             borderBottom: "1px solid #f0f0f0",
+            position: "fixed",
+            top: 0,
+            left: SIDER_WIDTH,
+            right: 0,
+            height: HEADER_HEIGHT,
+            lineHeight: `${HEADER_HEIGHT}px`,
+            zIndex: 1000,
           }}
         >
           <div />
@@ -303,7 +359,9 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             </Dropdown>
           </div>
         </Header>
-        <Content style={{ margin: 24, minHeight: 360 }}>{children}</Content>
+        <Content style={{ margin: `${HEADER_HEIGHT + 24}px 24px 24px`, minHeight: 360 }}>
+          {children}
+        </Content>
       </Layout>
     </Layout>
   );

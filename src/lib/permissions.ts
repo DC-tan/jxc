@@ -182,7 +182,14 @@ export const PERMISSION_DEFINITIONS: {
   { module: "首页", name: "物料库存预警", code: "tab.home.matStockAlert", sortOrder: 117, expandTo: [] },
   { module: "首页", name: "客户对帐提醒", code: "tab.home.reconcileCustomer", sortOrder: 118, expandTo: [] },
   { module: "首页", name: "供应商对帐提醒", code: "tab.home.reconcileSupplier", sortOrder: 119, expandTo: [] },
-  { module: "首页", name: "设置", code: "tab.workbench", sortOrder: 120, expandTo: [] },
+  { module: "首页", name: "待办事项", code: "tab.home.todo", sortOrder: 120, expandTo: [
+    "todo.view",
+    "todo.create",
+    "todo.edit",
+    "todo.delete",
+    "todo.complete",
+  ] },
+  { module: "首页", name: "设置", code: "tab.workbench", sortOrder: 121, expandTo: [] },
 ];
 
 const EXPAND_MAP: Map<string, string[]> = (() => {
@@ -245,6 +252,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.home.outsourceNeed",
     "tab.home.samples",
     "tab.home.prodStockAlert",
+    "tab.home.todo",
     "tab.home.reconcileCustomer",
     "tab.home.reconcileSupplier",
   ]);
@@ -263,6 +271,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.home.purchase",
     "tab.home.receiving",
     "tab.home.matStockAlert",
+    "tab.home.todo",
     "tab.home.reconcileSupplier",
   ]);
   const material = new Set([
@@ -278,6 +287,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.stats.reconcile",
     "tab.home.prodStockAlert",
     "tab.home.matStockAlert",
+    "tab.home.todo",
   ]);
   const outsource = new Set([
     "tab.os.add",
@@ -293,6 +303,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.home.outsourceNeed",
     "tab.home.prodStockAlert",
     "tab.home.matStockAlert",
+    "tab.home.todo",
   ]);
   const warehouse = new Set([
     "tab.wh.ship",
@@ -304,6 +315,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.stats.reconcile",
     "tab.home.prodStockAlert",
     "tab.home.matStockAlert",
+    "tab.home.todo",
     "tab.home.reconcileCustomer",
   ]);
 

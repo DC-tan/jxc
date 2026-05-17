@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
   Row,
   Space,
   Table,
@@ -19,7 +20,13 @@ import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 
-type KindRow = { id: string; name: string; prefix: string; sortOrder: number };
+type KindRow = {
+  id: string;
+  name: string;
+  prefix: string;
+  namingMode: "STANDARD" | "CUSTOM";
+  sortOrder: number;
+};
 type NameRow = { id: string; name: string; namePrefix: string; sortOrder: number };
 type BrandRow = { id: string; name: string; sortOrder: number };
 type UnitRow = { id: string; name: string; isDefault: boolean; sortOrder: number };
@@ -67,6 +74,12 @@ export function MaterialSettingsTab() {
   const kindColumns: ColumnsType<KindRow> = [
     { title: "种类名称", dataIndex: "name", ellipsis: true },
     { title: "种类前缀", dataIndex: "prefix", width: 120, render: (v: string) => v || "—" },
+    {
+      title: "类型",
+      dataIndex: "namingMode",
+      width: 88,
+      render: (v: KindRow["namingMode"]) => (v === "CUSTOM" ? "自定义" : "标准件"),
+    },
     { title: "排序", dataIndex: "sortOrder", width: 80 },
     {
       title: "操作",
@@ -382,8 +395,10 @@ export function MaterialSettingsTab() {
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        在此维护物料种类、物料名称、品牌、单位。新建物料时，系统会按
-        <strong>种类前缀-名称前缀-三位序号</strong>自动生成编号（起始为 001）。若仅需改已有物料编号，请在「新增物料」列表中编辑。
+        在此维护物料种类、物料名称、品牌、单位。种类可设为
+        <strong>标准件</strong>或<strong>自定义</strong>：标准件沿用预设名称并按
+        <strong>种类前缀-名称前缀-三位序号</strong>编码；自定义种类可在建档时手填名称+前缀，并按
+        <strong>种类前缀-名称前缀-两位序号</strong>编码（起始 01）。
       </Typography.Paragraph>
 
       <Row gutter={[16, 16]}>
@@ -399,6 +414,7 @@ export function MaterialSettingsTab() {
                 icon={<PlusOutlined />}
                 onClick={() => {
                   kindForm.resetFields();
+                  kindForm.setFieldsValue({ namingMode: "STANDARD" });
                   setKindModal({ mode: "create" });
                 }}
               >
@@ -509,7 +525,6 @@ export function MaterialSettingsTab() {
         open={!!kindModal}
         onCancel={() => setKindModal(null)}
         onOk={() => void submitKind()}
-        destroyOnHidden
       >
         <Form form={kindForm} layout="vertical">
           <Form.Item name="name" label="种类名称" rules={[{ required: true }]}>
@@ -517,6 +532,20 @@ export function MaterialSettingsTab() {
           </Form.Item>
           <Form.Item name="prefix" label="种类前缀" rules={[{ required: true, message: "请填写种类前缀" }]}>
             <Input placeholder="如 DZL" />
+          </Form.Item>
+          <Form.Item
+            name="namingMode"
+            label="类型"
+            initialValue="STANDARD"
+            rules={[{ required: true, message: "请选择类型" }]}
+          >
+            <Radio.Group
+              options={[
+                { label: "标准件", value: "STANDARD" },
+                { label: "自定义", value: "CUSTOM" },
+              ]}
+              optionType="button"
+            />
           </Form.Item>
           <Form.Item name="sortOrder" label="排序">
             <InputNumber min={0} style={{ width: "100%" }} />
@@ -529,7 +558,6 @@ export function MaterialSettingsTab() {
         open={!!nameModal}
         onCancel={() => setNameModal(null)}
         onOk={() => void submitName()}
-        destroyOnHidden
       >
         <Form form={nameForm} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
@@ -553,7 +581,6 @@ export function MaterialSettingsTab() {
         open={!!brandModal}
         onCancel={() => setBrandModal(null)}
         onOk={() => void submitBrand()}
-        destroyOnHidden
       >
         <Form form={brandForm} layout="vertical">
           <Form.Item name="name" label="品牌" rules={[{ required: true }]}>
@@ -570,7 +597,6 @@ export function MaterialSettingsTab() {
         open={!!unitModal}
         onCancel={() => setUnitModal(null)}
         onOk={() => void submitUnit()}
-        destroyOnHidden
       >
         <Form form={unitForm} layout="vertical">
           <Form.Item name="name" label="单位" rules={[{ required: true }]}>

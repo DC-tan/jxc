@@ -5,6 +5,7 @@ import {
   FileExcelOutlined,
   InboxOutlined,
   PlusOutlined,
+  QuestionCircleOutlined,
   SettingOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -30,6 +31,7 @@ import {
   Spin,
   Table,
   Tabs,
+  Tooltip,
   Typography,
   Upload,
 } from "antd";
@@ -170,6 +172,15 @@ const DEFAULT_INV_COL_WIDTH: Record<string, number> = {
   lastReceivedAt: 168,
 };
 
+const DEFAULT_BOM_EDITOR_COL_WIDTH: Record<string, number> = {
+  materialName: 260,
+  partDescription: 260,
+  unit: 88,
+  usageQty: 120,
+  supplierLabel: 220,
+  op: 64,
+};
+
 function attachResize<T extends object>(
   columns: ColumnsType<T>,
   widths: Record<string, number>,
@@ -246,6 +257,16 @@ function ColumnSettingButton({
     >
       <Button type="text" icon={<SettingOutlined />} aria-label="列设置" />
     </Popover>
+  );
+}
+
+function HelpTip({ text }: { text: string }) {
+  return (
+    <Tooltip title={text} placement="top">
+      <QuestionCircleOutlined
+        style={{ color: "rgba(0,0,0,0.45)", fontSize: 14, cursor: "help" }}
+      />
+    </Tooltip>
   );
 }
 
@@ -446,6 +467,7 @@ function ProductBomTable({
     { id: string; code: string; name: string }[]
   >([]);
   const [bomPickerSuppliersLoading, setBomPickerSuppliersLoading] = useState(false);
+  const [bomEditorColWidths, setBomEditorColWidths] = useState<Record<string, number>>({});
 
   const loadBomPickerSuppliers = useCallback(async () => {
     setBomPickerSuppliersLoading(true);
@@ -486,6 +508,32 @@ function ProductBomTable({
 
   const removeLine = (key: string) => {
     setLines((prev) => prev.filter((l) => l.key !== key));
+  };
+
+  const clearLineMaterial = (key: string) => {
+    updateLine(key, {
+      materialId: undefined,
+      name: "",
+      partDescription: null,
+      unit: "",
+      supplierLabel: "",
+    });
+  };
+
+  const applyMaterialToLine = (key: string, materialId?: string) => {
+    if (!materialId) {
+      clearLineMaterial(key);
+      return;
+    }
+    const opt = materialOptions.find((o) => o.id === materialId);
+    if (!opt) return;
+    updateLine(key, {
+      materialId: opt.id,
+      name: opt.name,
+      partDescription: opt.partDescription,
+      unit: opt.unit,
+      supplierLabel: `${opt.supplier.code} ${opt.supplier.name}`,
+    });
   };
 
   const addLine = () => {
@@ -618,6 +666,165 @@ function ProductBomTable({
     [lines],
   );
 
+  const bomEditorColumns = useMemo<ColumnsType<BomLine>>(
+    () => [
+      {
+        key: "materialName",
+        title: "物料名称",
+        dataIndex: "name",
+        width: bomEditorColWidths.materialName ?? DEFAULT_BOM_EDITOR_COL_WIDTH.materialName,
+        onHeaderCell: () => ({
+          width: bomEditorColWidths.materialName ?? DEFAULT_BOM_EDITOR_COL_WIDTH.materialName,
+          onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+            setBomEditorColWidths((prev) => ({ ...prev, materialName: data.size.width }));
+          },
+        }),
+        render: (_, row) => {
+          const taken = new Set(
+            lines
+              .filter((l) => l.key !== row.key && l.materialId)
+              .map((l) => l.materialId as string),
+          );
+          const opts = materialOptions.filter(
+            (o) => !taken.has(o.id) || o.id === row.materialId,
+          );
+          return (
+            <Select
+              placeholder="选择系统物料"
+              allowClear
+              showSearch
+              style={{ width: "100%" }}
+              optionFilterProp="label"
+              value={row.materialId}
+              options={opts.map((o) => ({
+                value: o.id,
+                label: `${o.code} ${o.name}${o.partDescription ? `（${o.partDescription}）` : ""}`,
+              }))}
+              onChange={(mid) => applyMaterialToLine(row.key, mid)}
+            />
+          );
+        },
+      },
+      {
+        key: "partDescription",
+        title: "部件描述",
+        dataIndex: "partDescription",
+        width: bomEditorColWidths.partDescription ?? DEFAULT_BOM_EDITOR_COL_WIDTH.partDescription,
+        onHeaderCell: () => ({
+          width:
+            bomEditorColWidths.partDescription ??
+            DEFAULT_BOM_EDITOR_COL_WIDTH.partDescription,
+          onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+            setBomEditorColWidths((prev) => ({ ...prev, partDescription: data.size.width }));
+          },
+        }),
+        ellipsis: true,
+        render: (_, row) => {
+          const taken = new Set(
+            lines
+              .filter((l) => l.key !== row.key && l.materialId)
+              .map((l) => l.materialId as string),
+          );
+          const opts = materialOptions.filter(
+            (o) => !taken.has(o.id) || o.id === row.materialId,
+          );
+          return (
+            <Select
+              placeholder="输入部件描述自动筛选"
+              allowClear
+              showSearch
+              style={{ width: "100%" }}
+              optionFilterProp="label"
+              value={row.materialId}
+              options={opts.map((o) => ({
+                value: o.id,
+                label: `${o.partDescription?.trim() || "—"}（${o.code} ${o.name}）`,
+              }))}
+              onChange={(mid) => applyMaterialToLine(row.key, mid)}
+            />
+          );
+        },
+      },
+      {
+        key: "unit",
+        title: "单位",
+        dataIndex: "unit",
+        width: bomEditorColWidths.unit ?? DEFAULT_BOM_EDITOR_COL_WIDTH.unit,
+        onHeaderCell: () => ({
+          width: bomEditorColWidths.unit ?? DEFAULT_BOM_EDITOR_COL_WIDTH.unit,
+          onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+            setBomEditorColWidths((prev) => ({ ...prev, unit: data.size.width }));
+          },
+        }),
+        render: (t) => t || "—",
+      },
+      {
+        key: "usageQty",
+        title: "用量",
+        dataIndex: "usageQty",
+        width: bomEditorColWidths.usageQty ?? DEFAULT_BOM_EDITOR_COL_WIDTH.usageQty,
+        onHeaderCell: () => ({
+          width: bomEditorColWidths.usageQty ?? DEFAULT_BOM_EDITOR_COL_WIDTH.usageQty,
+          onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+            setBomEditorColWidths((prev) => ({ ...prev, usageQty: data.size.width }));
+          },
+        }),
+        render: (_, row) => (
+          <InputNumber
+            min={1}
+            max={999999999}
+            precision={0}
+            step={1}
+            style={{ width: "100%" }}
+            value={row.usageQty}
+            onChange={(v) => {
+              if (v === null || v === undefined) {
+                updateLine(row.key, { usageQty: 1 });
+                return;
+              }
+              const n = Math.round(Number(v));
+              updateLine(row.key, {
+                usageQty:
+                  Number.isFinite(n) && n >= 1 ? n : 1,
+              });
+            }}
+          />
+        ),
+      },
+      {
+        key: "supplierLabel",
+        title: "供应商",
+        dataIndex: "supplierLabel",
+        width: bomEditorColWidths.supplierLabel ?? DEFAULT_BOM_EDITOR_COL_WIDTH.supplierLabel,
+        onHeaderCell: () => ({
+          width:
+            bomEditorColWidths.supplierLabel ?? DEFAULT_BOM_EDITOR_COL_WIDTH.supplierLabel,
+          onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+            setBomEditorColWidths((prev) => ({ ...prev, supplierLabel: data.size.width }));
+          },
+        }),
+        ellipsis: true,
+        render: (t: string) => t || "—",
+      },
+      {
+        title: "操作",
+        key: "op",
+        width: DEFAULT_BOM_EDITOR_COL_WIDTH.op,
+        render: (_, row) => (
+          <Button
+            type="text"
+            danger
+            size="small"
+            icon={<DeleteOutlined />}
+            aria-label="删除"
+            onClick={() => removeLine(row.key)}
+          />
+        ),
+      },
+    ],
+    [bomEditorColWidths, lines, materialOptions],
+  );
+
   return (
     <div>
       <Typography.Text strong>
@@ -630,112 +837,12 @@ function ProductBomTable({
         pagination={false}
         dataSource={lines}
         locale={{ emptyText: "请点击下方按钮添加物料" }}
-        columns={[
-          {
-            title: "物料名称",
-            dataIndex: "name",
-            width: 200,
-            render: (_, row) => {
-              const taken = new Set(
-                lines
-                  .filter((l) => l.key !== row.key && l.materialId)
-                  .map((l) => l.materialId as string),
-              );
-              const opts = materialOptions.filter(
-                (o) => !taken.has(o.id) || o.id === row.materialId,
-              );
-              return (
-                <Select
-                  placeholder="选择系统物料"
-                  allowClear
-                  showSearch
-                  style={{ width: "100%" }}
-                  optionFilterProp="label"
-                  value={row.materialId}
-                  options={opts.map((o) => ({
-                    value: o.id,
-                    label: `${o.code} ${o.name}`,
-                  }))}
-                  onChange={(mid) => {
-                    if (!mid) {
-                      updateLine(row.key, {
-                        materialId: undefined,
-                        name: "",
-                        partDescription: null,
-                        unit: "",
-                        supplierLabel: "",
-                      });
-                      return;
-                    }
-                    const opt = materialOptions.find((o) => o.id === mid);
-                    if (!opt) return;
-                    updateLine(row.key, {
-                      materialId: opt.id,
-                      name: opt.name,
-                      partDescription: opt.partDescription,
-                      unit: opt.unit,
-                      supplierLabel: `${opt.supplier.code} ${opt.supplier.name}`,
-                    });
-                  }}
-                />
-              );
-            },
-          },
-          {
-            title: "部件描述",
-            dataIndex: "partDescription",
-            ellipsis: true,
-            render: (v: string | null) => v ?? "—",
-          },
-          { title: "单位", dataIndex: "unit", width: 72, render: (t) => t || "—" },
-          {
-            title: "用量",
-            dataIndex: "usageQty",
-            width: 120,
-            render: (_, row) => (
-              <InputNumber
-                min={1}
-                max={999999999}
-                precision={0}
-                step={1}
-                style={{ width: "100%" }}
-                value={row.usageQty}
-                onChange={(v) => {
-                  if (v === null || v === undefined) {
-                    updateLine(row.key, { usageQty: 1 });
-                    return;
-                  }
-                  const n = Math.round(Number(v));
-                  updateLine(row.key, {
-                    usageQty:
-                      Number.isFinite(n) && n >= 1 ? n : 1,
-                  });
-                }}
-              />
-            ),
-          },
-          {
-            title: "供应商",
-            dataIndex: "supplierLabel",
-            ellipsis: true,
-            render: (t: string) => t || "—",
-          },
-          {
-            title: "操作",
-            key: "op",
-            width: 64,
-            render: (_, row) => (
-              <Button
-                type="text"
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
-                aria-label="删除"
-                onClick={() => removeLine(row.key)}
-              />
-            ),
-          },
-        ]}
+        columns={bomEditorColumns}
+        scroll={{ x: "max-content" }}
+        tableLayout="fixed"
+        components={{
+          header: { cell: ResizableTableTitle },
+        }}
         summary={() => (
           <Table.Summary fixed>
             <Table.Summary.Row>
@@ -2207,9 +2314,6 @@ export function ProductsPage() {
                   >
                     新增商品
                   </Button>
-                  <Typography.Text type="secondary">
-                    下方列表仅显示<strong>当天新建</strong>的商品档案；日期在保存时由系统自动生成。「物料编号」为客户下单提供的编号（手工录入），非本系统物料档案编号；商品图请在编辑中上传。
-                  </Typography.Text>
                 </Space>
 
                 <div
@@ -2225,11 +2329,14 @@ export function ProductsPage() {
                   <Typography.Title level={5} style={{ margin: 0 }}>
                     已建档商品（当日）
                   </Typography.Title>
-                  <ColumnSettingButton
-                    options={PROD_COL_OPTIONS}
-                    value={prodColKeys}
-                    onChange={setProdColKeys}
-                  />
+                  <Space size={8}>
+                    <ColumnSettingButton
+                      options={PROD_COL_OPTIONS}
+                      value={prodColKeys}
+                      onChange={setProdColKeys}
+                    />
+                    <HelpTip text="下方列表仅显示当天新建的商品档案；日期在保存时自动生成。“物料编号”为客户下单提供编号（手工录入），非系统物料档案编号；商品图请在编辑中上传。" />
+                  </Space>
                 </div>
                 <Table<ProductRow>
                   rowKey="id"
@@ -2269,7 +2376,11 @@ export function ProductsPage() {
                   loading={loadingInv}
                   columns={invTableColumns}
                   dataSource={inventory}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
                   components={{
@@ -2292,9 +2403,9 @@ export function ProductsPage() {
             label: "手动调整",
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  本页为成品库存盘点与档案维护入口：可录入与系统当前库存的差额（可增可减，保存后记为「盘点调整」流水），或打开「修改商品」编辑 BOM/图片等。需要相应权限。列表与上方查询条件、当前「商品库存」页数据一致，切换页签时会自动按条件加载。
-                </Typography.Paragraph>
+                <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+                  <HelpTip text="本页为成品库存盘点与档案维护入口：可录入与系统当前库存的差额（可增可减，保存后记为盘点调整流水），或打开“修改商品”编辑 BOM/图片等。列表与当前商品库存页查询条件保持一致。" />
+                </div>
                 <Table<InventoryRow>
                   rowKey="id"
                   loading={loadingInv}
@@ -2348,7 +2459,11 @@ export function ProductsPage() {
                     },
                   ]}
                   dataSource={inventory}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                   scroll={{ x: 900 }}
                 />
               </Space>
@@ -2430,7 +2545,7 @@ export function ProductsPage() {
         open={addOpen}
         onCancel={closeAddModal}
         onOk={() => void submitAdd()}
-        width={addProcessingMode === "OUTSOURCE_INHOUSE" ? 1100 : 800}
+        width={addProcessingMode === "OUTSOURCE_INHOUSE" ? 1450 : 1080}
         destroyOnHidden
         afterOpenChange={(open) => {
           if (open && addFormFieldsPendingRef.current) {

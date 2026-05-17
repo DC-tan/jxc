@@ -4,6 +4,13 @@ export type AllocateCodeResult =
   | { ok: true; code: string }
   | { ok: false; error: string };
 
+type AllocateMaterialCodeInput = {
+  kindId: string;
+  presetNameId?: string;
+  namePrefix?: string;
+  sequencePadLength?: number;
+};
+
 function escapeRegExp(v: string): string {
   return v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -14,23 +21,24 @@ function escapeRegExp(v: string): string {
  */
 export async function allocateMaterialCode(
   tx: Prisma.TransactionClient,
-  kindId: string,
-  presetNameId: string,
+  input: AllocateMaterialCodeInput,
 ): Promise<AllocateCodeResult> {
-  const [kind, presetName] = await Promise.all([
-    tx.materialPresetKind.findUnique({ where: { id: kindId } }),
-    tx.materialPresetName.findUnique({ where: { id: presetNameId } }),
-  ]);
-
-  if (!kind || !presetName) {
-    return {
-      ok: false,
-      error: "物料种类或物料名称不存在，请刷新后重试",
-    };
+  const kind = await tx.materialPresetKind.findUnique({ where: { id: input.kindId } });
+  if (!kind) {
+    return { ok: false, error: "物料种类不存在，请刷新后重试" };
   }
 
   const kp = kind.prefix.trim();
-  const np = presetName.namePrefix.trim();
+  let np = input.namePrefix?.trim() ?? "";
+  if (!np && input.presetNameId) {
+    const presetName = await tx.materialPresetName.findUnique({
+      where: { id: input.presetNameId },
+    });
+    if (!presetName) {
+      return { ok: false, error: "物料名称预设不存在，请刷新后重试" };
+    }
+    np = presetName.namePrefix.trim();
+  }
   if (!kp || !np) {
     return {
       ok: false,
@@ -55,7 +63,8 @@ export async function allocateMaterialCode(
   }
 
   const nextSeq = maxSeq + 1;
-  const code = `${codePrefix}${String(nextSeq).padStart(3, "0")}`;
+  const padLength = Math.max(1, Math.trunc(input.sequencePadLength ?? 3));
+  const code = `${codePrefix}${String(nextSeq).padStart(padLength, "0")}`;
 
   const dup = await tx.material.findUnique({ where: { code } });
   if (dup) {

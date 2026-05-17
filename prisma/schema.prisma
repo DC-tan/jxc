@@ -32,6 +32,12 @@ enum CustomerChangeReminderStatus {
   VOIDED
 }
 
+enum TodoStatus {
+  TODO
+  DEFERRED
+  DONE
+}
+
 model User {
   id           String   @id @default(cuid())
   employeeNo   String   @unique /// 员工编号
@@ -56,6 +62,21 @@ model User {
   createdChangeReminders CustomerChangeReminder[] @relation("ChangeReminderCreator")
   salesConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderSalesConfirmer")
   purchaseConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderPurchaseConfirmer")
+  todoItems TodoItem[]
+}
+
+model TodoItem {
+  id        String     @id @default(cuid())
+  serialNo  Int        @unique @default(autoincrement())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content   String     @db.Text
+  status    TodoStatus @default(TODO)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([userId, status, createdAt])
+  @@index([userId, updatedAt])
 }
 
 /// 全系统首页工作台：交期色阶、对账起始日等，保存一条；所有员工共用
@@ -196,11 +217,18 @@ enum MaterialKind {
   OTHER /// 其它
 }
 
+/// 物料种类的名称来源模式：标准件走预设名称，自定义可在建档时手输名称+前缀
+enum MaterialKindNamingMode {
+  STANDARD
+  CUSTOM
+}
+
 /// 物料种类预设（可增删改，含种类前缀）
 model MaterialPresetKind {
   id        String   @id @default(cuid())
   name      String   @unique
   prefix    String   @default("") /// 种类前缀，如 DZL
+  namingMode MaterialKindNamingMode @default(STANDARD)
   sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/api-auth";
 const createSchema = z.object({
   name: z.string().min(1, "名称不能为空"),
   prefix: z.string().optional().default(""),
+  namingMode: z.enum(["STANDARD", "CUSTOM"]).optional().default("STANDARD"),
   sortOrder: z.number().int().optional(),
 });
 
@@ -38,6 +39,7 @@ export async function POST(req: Request) {
       data: {
         name,
         prefix,
+        namingMode: parsed.data.namingMode,
         sortOrder: parsed.data.sortOrder ?? 0,
       },
     });

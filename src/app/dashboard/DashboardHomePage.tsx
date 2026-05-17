@@ -1,12 +1,13 @@
 "use client";
 
-import { SettingOutlined } from "@ant-design/icons";
-import { App, Button, Col, ConfigProvider, Row, Space, Spin, Table, Typography } from "antd";
+import { QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons";
+import { App, Button, Col, ConfigProvider, Row, Space, Spin, Table, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WorkbenchSettingsModal } from "@/app/dashboard/WorkbenchSettingsModal";
+import { TodoBoard } from "@/app/dashboard/TodoBoard";
 import { ROW_BACKGROUND } from "@/lib/dashboard-urgency";
 import { fetchJson } from "@/lib/fetch-json";
 import { defaultWorkbenchSettings } from "@/lib/workbench-settings";
@@ -153,6 +154,16 @@ function dayLabel(days: number) {
   return `还有 ${days} 天`;
 }
 
+function HelpTip({ text }: { text: string }) {
+  return (
+    <Tooltip title={text} placement="top">
+      <QuestionCircleOutlined
+        style={{ color: "rgba(0,0,0,0.45)", fontSize: 14, cursor: "help" }}
+      />
+    </Tooltip>
+  );
+}
+
 function useDashboardTableScrollY(enabled: boolean, rowTick: number) {
   const ref = useRef<HTMLDivElement>(null);
   const [scrollY, setScrollY] = useState(200);
@@ -190,6 +201,7 @@ export function DashboardHomePage() {
   const [loading, setLoading] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [ackLoading, setAckLoading] = useState<"supplier" | "customer" | "other" | null>(null);
+  const [activeMainTab, setActiveMainTab] = useState<"workbench" | "todo">("workbench");
 
   const baseDate = useMemo(() => dayjs().format("YYYY-MM-DD"), []);
 
@@ -482,6 +494,42 @@ export function DashboardHomePage() {
     data?.materialStockAlerts?.rows?.length ?? 0,
   );
 
+  const canStats = me?.permissions?.includes("stats.view") ?? false;
+  const canTodo =
+    Boolean(me?.isAdmin) ||
+    (me?.permissions?.includes("tab.home.todo") ?? false);
+  const hasSales = data?.salesDeliveries != null;
+  const hasPurchase = data?.purchaseSummary != null;
+  const hasReceive = data?.purchasePendingReceive != null;
+  const hasOut = data?.needOutsourceRows != null;
+  const hasRecoverOut = data?.outsourceUnrecovered != null;
+  const hasSamples = data?.sampleReminders != null;
+  const hasProductStockAlerts = data?.productStockAlerts != null;
+  const hasMaterialStockAlerts = data?.materialStockAlerts != null;
+  const rec = data?.reconcileReminders;
+  const hasReconcileBanner =
+    !!rec &&
+    (rec.supplier != null || rec.customer != null || rec.other != null);
+  const anyBlock =
+    hasSales ||
+    hasPurchase ||
+    hasReceive ||
+    hasOut ||
+    hasRecoverOut ||
+    hasSamples ||
+    hasProductStockAlerts ||
+    hasMaterialStockAlerts ||
+    hasReconcileBanner ||
+    canStats;
+
+  useEffect(() => {
+    if (canTodo && !anyBlock) {
+      setActiveMainTab("todo");
+      return;
+    }
+    setActiveMainTab("workbench");
+  }, [canTodo, anyBlock]);
+
   if (loading) {
     return (
       <div style={{ padding: 80, textAlign: "center" }}>
@@ -497,34 +545,9 @@ export function DashboardHomePage() {
   }
 
   const sRows = data.salesDeliveries?.rows ?? [];
-  const hasSales = data.salesDeliveries != null;
-  const hasPurchase = data.purchaseSummary != null;
-  const hasReceive = data.purchasePendingReceive != null;
-  const hasOut = data.needOutsourceRows != null;
-  const hasRecoverOut = data.outsourceUnrecovered != null;
-  const hasSamples = data.sampleReminders != null;
-  const hasProductStockAlerts = data.productStockAlerts != null;
-  const hasMaterialStockAlerts = data.materialStockAlerts != null;
-  const rec = data.reconcileReminders;
-  const hasReconcileBanner =
-    !!rec &&
-    (rec.supplier != null || rec.customer != null || rec.other != null);
-  const canStats = me?.permissions?.includes("stats.view") ?? false;
   const canOutsourceNav = me?.permissions?.includes("outsource.view") ?? false;
   /** 首页工作台齿轮：仅系统管理员可见，与业务角色无关 */
   const canEditGlobalWorkbench = Boolean(me?.isAdmin);
-
-  const anyBlock =
-    hasSales ||
-    hasPurchase ||
-    hasReceive ||
-    hasOut ||
-    hasRecoverOut ||
-    hasSamples ||
-    hasProductStockAlerts ||
-    hasMaterialStockAlerts ||
-    hasReconcileBanner ||
-    canStats;
 
   return (
     <div>
@@ -538,10 +561,41 @@ export function DashboardHomePage() {
           marginBottom: 4,
         }}
       >
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          工作台
-        </Typography.Title>
-        {canEditGlobalWorkbench ? (
+        <Space size={18} align="baseline">
+          <Typography.Title
+            level={3}
+            style={{
+              margin: 0,
+              cursor: canTodo ? "pointer" : "default",
+              color:
+                activeMainTab === "workbench"
+                  ? "rgba(0,0,0,0.88)"
+                  : "rgba(0,0,0,0.45)",
+            }}
+            onClick={() => {
+              if (canTodo) setActiveMainTab("workbench");
+            }}
+          >
+            工作台
+          </Typography.Title>
+          {canTodo ? (
+            <Typography.Title
+              level={3}
+              style={{
+                margin: 0,
+                cursor: "pointer",
+                color:
+                  activeMainTab === "todo"
+                    ? "rgba(0,0,0,0.88)"
+                    : "rgba(0,0,0,0.45)",
+              }}
+              onClick={() => setActiveMainTab("todo")}
+            >
+              待办事项
+            </Typography.Title>
+          ) : null}
+        </Space>
+        {canEditGlobalWorkbench && activeMainTab === "workbench" ? (
           <Button
             type="text"
             icon={<SettingOutlined style={{ fontSize: 20 }} />}
@@ -551,70 +605,67 @@ export function DashboardHomePage() {
           />
         ) : null}
       </div>
-      {me && (
-        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 20 }}>
-          当前登录用户：{me.name}（{me.loginName}）
-          {me.isAdmin ? " · 系统管理员" : ""}
-        </Typography.Text>
-      )}
+      {activeMainTab === "todo" && canTodo ? (
+        <TodoBoard splitStorageKey={`dashboard.todo.split.${me?.id ?? "me"}`} />
+      ) : (
+        <>
+          {!anyBlock ? (
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              当前账号下暂无可展示的业务提醒，请从左侧菜单进入有权限的模块。
+            </Typography.Paragraph>
+          ) : null}
 
-      {!anyBlock ? (
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          当前账号下暂无可展示的业务提醒，请从左侧菜单进入有权限的模块。
-        </Typography.Paragraph>
-      ) : null}
+          {hasReconcileBanner ? (
+            <div style={{ marginBottom: 12 }}>
+              {(
+                [
+                  { key: "supplier" as const, v: rec?.supplier },
+                  { key: "customer" as const, v: rec?.customer },
+                  { key: "other" as const, v: rec?.other },
+                ] as const
+              ).map((row) =>
+                row.v ? (
+                  <div
+                    key={row.key}
+                    style={{
+                      marginBottom: 6,
+                      color: "#cf1322",
+                      fontSize: 14,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {row.v.message}
+                    <Link
+                      href={row.v.link}
+                      style={{
+                        marginLeft: 8,
+                        color: "#cf1322",
+                        textDecoration: "underline",
+                      }}
+                    >
+                      打开统计与对帐（对帐）
+                    </Link>
+                    <Button
+                      size="small"
+                      type="primary"
+                      loading={ackLoading === row.key}
+                      onClick={() => void onReconcileAck(row.key)}
+                      style={{ marginLeft: 8, verticalAlign: "middle" }}
+                    >
+                      完成
+                    </Button>
+                  </div>
+                ) : null,
+              )}
+            </div>
+          ) : null}
 
-      {hasReconcileBanner ? (
-        <div style={{ marginBottom: 12 }}>
-          {(
-            [
-              { key: "supplier" as const, v: rec?.supplier },
-              { key: "customer" as const, v: rec?.customer },
-              { key: "other" as const, v: rec?.other },
-            ] as const
-          ).map((row) =>
-            row.v ? (
-              <div
-                key={row.key}
-                style={{
-                  marginBottom: 6,
-                  color: "#cf1322",
-                  fontSize: 14,
-                  lineHeight: 1.5,
-                }}
-              >
-                {row.v.message}
-                <Link
-                  href={row.v.link}
-                  style={{
-                    marginLeft: 8,
-                    color: "#cf1322",
-                    textDecoration: "underline",
-                  }}
-                >
-                  打开统计与对帐（对帐）
-                </Link>
-                <Button
-                  size="small"
-                  type="primary"
-                  loading={ackLoading === row.key}
-                  onClick={() => void onReconcileAck(row.key)}
-                  style={{ marginLeft: 8, verticalAlign: "middle" }}
-                >
-                  完成
-                </Button>
-              </div>
-            ) : null,
-          )}
-        </div>
-      ) : null}
-
-      <ConfigProvider
-        theme={{
-          components: { Table: { cellPaddingBlock: 4, cellPaddingInline: 8, headerBg: "#fafafa" } },
-        }}
-      >
-        <Row gutter={[16, 16]}>
+          <ConfigProvider
+            theme={{
+              components: { Table: { cellPaddingBlock: 4, cellPaddingInline: 8, headerBg: "#fafafa" } },
+            }}
+          >
+            <Row gutter={[16, 16]}>
           {hasSales && (
             <Col xs={24} sm={12} lg={8}>
               <div style={cardShell}>
@@ -624,19 +675,16 @@ export function DashboardHomePage() {
                     alignItems: "flex-start",
                     justifyContent: "space-between",
                     gap: 8,
-                    marginBottom: 8,
+                    marginBottom: 10,
                   }}
                 >
-                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
-                    销售提醒 · 交付
-                  </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    基准日（北京时间）{baseDate}
-                  </Typography.Text>
+                  <Space size={6}>
+                    <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                      销售提醒 · 交付
+                    </Typography.Title>
+                    <HelpTip text={salesUrgencyNote} />
+                  </Space>
                 </div>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  {salesUrgencyNote}
-                </Typography.Paragraph>
                 <div ref={salesTableScroll.ref} style={dashboardTableWrapStyle}>
                   {sRows.length === 0 ? (
                     <Typography.Text type="secondary">暂无逾期或交期临近的未交单。</Typography.Text>
@@ -644,7 +692,7 @@ export function DashboardHomePage() {
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={sRows.slice(0, 8)}
+                      dataSource={sRows}
                       columns={salesColumns}
                       pagination={false}
                       scroll={{ y: salesTableScroll.scrollY, x: 480 }}
@@ -668,34 +716,24 @@ export function DashboardHomePage() {
                     alignItems: "flex-start",
                     justifyContent: "space-between",
                     gap: 8,
-                    marginBottom: 8,
+                    marginBottom: 10,
                   }}
                 >
-                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
-                    采购提醒
-                  </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    基准日（北京时间）{baseDate}
-                  </Typography.Text>
+                  <Space size={6}>
+                    <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                      采购提醒
+                    </Typography.Title>
+                    <HelpTip
+                      text={`在办采购单（未结案且未取消）共 ${data.purchaseSummary.openOrderCount} 张；明细中仍有未收满行数 ${data.purchaseSummary.partialLineNotFullCount} 条。待从销售下采购或跟进的客户订单共 ${data.purchaseSummary.waitSalesPurchaseOrderCount} 单，其中尚未从本单建立关联采购单的 ${data.purchaseSummary.waitSalesUnlinkedFromPurchaseCount} 单。`}
+                    />
+                  </Space>
                 </div>
-                <Typography.Paragraph style={{ fontSize: 13, marginBottom: 6 }}>
-                  在办采购单（未结案且未取消）共{" "}
-                  <strong>{data.purchaseSummary.openOrderCount}</strong> 张；明细中仍有未收满行数{" "}
-                  <strong>{data.purchaseSummary.partialLineNotFullCount}</strong> 条。
-                </Typography.Paragraph>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  待从销售下采购或跟进的客户订单共{" "}
-                  <strong>{data.purchaseSummary.waitSalesPurchaseOrderCount}</strong> 单，其中
-                  <strong> 尚未从本单建立关联采购单</strong>的{" "}
-                  <strong>{data.purchaseSummary.waitSalesUnlinkedFromPurchaseCount}</strong>{" "}
-                  单（新建销售单默认在此，直至下推采购或标为无需采购）。已建单待向供应商收料见「收料提醒」。
-                </Typography.Paragraph>
                 <div ref={needPurchaseTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.needPurchase && data.needPurchase.rows.length > 0 ? (
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={data.needPurchase.rows.slice(0, 8)}
+                      dataSource={data.needPurchase.rows}
                       columns={needPurchaseColumns}
                       pagination={false}
                       scroll={{ y: needPurchaseTableScroll.scrollY, x: 520 }}
@@ -723,19 +761,18 @@ export function DashboardHomePage() {
                     alignItems: "flex-start",
                     justifyContent: "space-between",
                     gap: 8,
-                    marginBottom: 8,
+                    marginBottom: 10,
                   }}
                 >
-                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
-                    收料提醒
-                  </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    基准日（北京时间）{baseDate}
-                  </Typography.Text>
+                  <Space size={6}>
+                    <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                      收料提醒
+                    </Typography.Title>
+                    <HelpTip
+                      text={`待收料采购单共 ${data.purchasePendingReceive.count} 张。按要求交期由近到远排列；请在采购单中点“确定收料”办理入库。`}
+                    />
+                  </Space>
                 </div>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  待收料采购单共 <strong>{data.purchasePendingReceive.count}</strong> 张。按「要求交期」由近到远排列；行底色同销售/采购四档+灰，请在采购单中点「确定收料」办理入库。
-                </Typography.Paragraph>
                 <div ref={receiveTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.purchasePendingReceive.rows.length === 0 ? (
                     <Typography.Text type="secondary">暂无待收料采购单。</Typography.Text>
@@ -743,7 +780,7 @@ export function DashboardHomePage() {
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={data.purchasePendingReceive.rows.slice(0, 8)}
+                      dataSource={data.purchasePendingReceive.rows}
                       columns={poColumns}
                       pagination={false}
                       scroll={{ y: receiveTableScroll.scrollY, x: 400 }}
@@ -761,17 +798,14 @@ export function DashboardHomePage() {
           {hasOut && data.needOutsourceRows && (
             <Col xs={24} sm={12} lg={8}>
               <div style={{ ...cardShell, minHeight: 400 }}>
-                <Typography.Title level={5} style={{ margin: 0, marginBottom: 8, fontSize: 16 }}>
-                  外发提醒
-                </Typography.Title>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  在<strong>商品成品库存</strong>（入库累计，与出货预检相同）下，对同一商品先满足
-                  <strong>待交数量较少</strong>的订单、同量则<strong>建单较早</strong>的优先；库存仍不能覆盖的
-                  <strong>外发/外发+自加工</strong>行需外发跟进。当前共 <strong>
-                    {data.needOutsourceRows.count}
-                  </strong>{" "}
-                  行有缺口。未回收的外发加工单见「回收外发提醒」。
-                </Typography.Paragraph>
+                <Space size={6} style={{ marginBottom: 10 }}>
+                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                    外发提醒
+                  </Typography.Title>
+                  <HelpTip
+                    text={`在商品成品库存规则下，当前共 ${data.needOutsourceRows.count} 行有外发缺口。未回收外发单请看“回收外发提醒”。`}
+                  />
+                </Space>
                 <div ref={outsourceTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.needOutsourceRows.sampleRows.length > 0 ? (
                     <Table
@@ -806,23 +840,18 @@ export function DashboardHomePage() {
                     alignItems: "flex-start",
                     justifyContent: "space-between",
                     gap: 8,
-                    marginBottom: 8,
+                    marginBottom: 10,
                   }}
                 >
-                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
-                    回收外发提醒
-                  </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    基准日（北京时间）{baseDate}
-                  </Typography.Text>
+                  <Space size={6}>
+                    <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                      回收外发提醒
+                    </Typography.Title>
+                    <HelpTip
+                      text={`状态为“未回收”的外发加工单共 ${data.outsourceUnrecovered.count} 单，请在外发单中做回收或关闭。`}
+                    />
+                  </Space>
                 </div>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  状态为「未回收」的外发加工单共{" "}
-                  <strong style={{ color: data.outsourceUnrecovered.count > 0 ? "#cf1322" : undefined }}>
-                    {data.outsourceUnrecovered.count}
-                  </strong>{" "}
-                  单，请在外发单中做回收/关闭。
-                </Typography.Paragraph>
                 <div ref={recoverOutTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.outsourceUnrecovered.rows.length === 0 ? (
                     <Typography.Text type="secondary">暂无未回收外发单。</Typography.Text>
@@ -830,7 +859,7 @@ export function DashboardHomePage() {
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={data.outsourceUnrecovered.rows.slice(0, 8)}
+                      dataSource={data.outsourceUnrecovered.rows}
                       columns={outColumns}
                       pagination={false}
                       scroll={{ y: recoverOutTableScroll.scrollY, x: 400 }}
@@ -853,23 +882,16 @@ export function DashboardHomePage() {
                     alignItems: "flex-start",
                     justifyContent: "space-between",
                     gap: 8,
-                    marginBottom: 8,
+                    marginBottom: 10,
                   }}
                 >
-                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
-                    样品提醒
-                  </Typography.Title>
-                  <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                    基准日（北京时间）{baseDate}
-                  </Typography.Text>
+                  <Space size={6}>
+                    <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                      样品提醒
+                    </Typography.Title>
+                    <HelpTip text={`未交样品共 ${data.sampleReminders.count} 条，按交样日期由近到远提醒。`} />
+                  </Space>
                 </div>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  未交样品共{" "}
-                  <strong style={{ color: data.sampleReminders.count > 0 ? "#cf1322" : undefined }}>
-                    {data.sampleReminders.count}
-                  </strong>{" "}
-                  条，按交样日期由近到远提醒。
-                </Typography.Paragraph>
                 <div ref={sampleTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.sampleReminders.rows.length === 0 ? (
                     <Typography.Text type="secondary">暂无未交样品。</Typography.Text>
@@ -877,7 +899,7 @@ export function DashboardHomePage() {
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={data.sampleReminders.rows.slice(0, 8)}
+                      dataSource={data.sampleReminders.rows}
                       columns={sampleColumns}
                       pagination={false}
                       scroll={{ y: sampleTableScroll.scrollY, x: 420 }}
@@ -895,16 +917,14 @@ export function DashboardHomePage() {
           {hasProductStockAlerts && data.productStockAlerts && (
             <Col xs={24} sm={12} lg={8}>
               <div style={cardShell}>
-                <Typography.Title level={5} style={{ margin: 0, marginBottom: 8, fontSize: 16 }}>
-                  商品库存预警
-                </Typography.Title>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  安全库存/最大库存中任一阈值触发即显示。未设置阈值（空值或 0）不预警。当前共{" "}
-                  <strong style={{ color: data.productStockAlerts.count > 0 ? "#cf1322" : undefined }}>
-                    {data.productStockAlerts.count}
-                  </strong>{" "}
-                  条。
-                </Typography.Paragraph>
+                <Space size={6} style={{ marginBottom: 10 }}>
+                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                    商品库存预警
+                  </Typography.Title>
+                  <HelpTip
+                    text={`安全库存/最大库存任一阈值触发即显示；空值或 0 不预警。当前共 ${data.productStockAlerts.count} 条。`}
+                  />
+                </Space>
                 <div ref={productStockAlertTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.productStockAlerts.rows.length === 0 ? (
                     <Typography.Text type="secondary">暂无商品库存预警。</Typography.Text>
@@ -912,7 +932,7 @@ export function DashboardHomePage() {
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={data.productStockAlerts.rows.slice(0, 8)}
+                      dataSource={data.productStockAlerts.rows}
                       columns={productStockAlertColumns}
                       pagination={false}
                       scroll={{ y: productStockAlertTableScroll.scrollY, x: 520 }}
@@ -929,16 +949,14 @@ export function DashboardHomePage() {
           {hasMaterialStockAlerts && data.materialStockAlerts && (
             <Col xs={24} sm={12} lg={8}>
               <div style={cardShell}>
-                <Typography.Title level={5} style={{ margin: 0, marginBottom: 8, fontSize: 16 }}>
-                  物料库存预警
-                </Typography.Title>
-                <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 8 }}>
-                  安全库存/最大库存中任一阈值触发即显示。未设置阈值（空值或 0）不预警。当前共{" "}
-                  <strong style={{ color: data.materialStockAlerts.count > 0 ? "#cf1322" : undefined }}>
-                    {data.materialStockAlerts.count}
-                  </strong>{" "}
-                  条。
-                </Typography.Paragraph>
+                <Space size={6} style={{ marginBottom: 10 }}>
+                  <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
+                    物料库存预警
+                  </Typography.Title>
+                  <HelpTip
+                    text={`安全库存/最大库存任一阈值触发即显示；空值或 0 不预警。当前共 ${data.materialStockAlerts.count} 条。`}
+                  />
+                </Space>
                 <div ref={materialStockAlertTableScroll.ref} style={dashboardTableWrapStyle}>
                   {data.materialStockAlerts.rows.length === 0 ? (
                     <Typography.Text type="secondary">暂无物料库存预警。</Typography.Text>
@@ -946,7 +964,7 @@ export function DashboardHomePage() {
                     <Table
                       size="small"
                       rowKey="id"
-                      dataSource={data.materialStockAlerts.rows.slice(0, 8)}
+                      dataSource={data.materialStockAlerts.rows}
                       columns={materialStockAlertColumns}
                       pagination={false}
                       scroll={{ y: materialStockAlertTableScroll.scrollY, x: 460 }}
@@ -960,8 +978,10 @@ export function DashboardHomePage() {
             </Col>
           )}
 
-        </Row>
-      </ConfigProvider>
+            </Row>
+          </ConfigProvider>
+        </>
+      )}
 
       <WorkbenchSettingsModal
         open={settingsOpen}

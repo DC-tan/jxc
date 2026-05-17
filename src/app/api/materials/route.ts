@@ -10,7 +10,9 @@ import { ensureCustomerSupplySupplier } from "@/lib/customer-supply";
 const createSchema = z.object({
   code: z.string().optional(),
   kindId: z.string().min(1, "请选择物料种类"),
-  presetNameId: z.string().min(1, "请选择物料名称"),
+  presetNameId: z.string().optional(),
+  customName: z.string().optional(),
+  customNamePrefix: z.string().optional(),
   partDescription: z.string().optional().nullable(),
   brand: z.string().optional().nullable(),
   unit: z.string().min(1, "请选择单位"),
@@ -204,12 +206,38 @@ export async function POST(req: Request) {
   if (!kind) {
     return NextResponse.json({ error: "物料种类不存在" }, { status: 400 });
   }
-
-  const presetName = await prisma.materialPresetName.findUnique({
-    where: { id: parsed.data.presetNameId },
-  });
-  if (!presetName) {
-    return NextResponse.json({ error: "物料名称预设不存在" }, { status: 400 });
+  const customName = parsed.data.customName?.trim() ?? "";
+  const customNamePrefix = (parsed.data.customNamePrefix ?? "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toUpperCase();
+  const presetNameId = parsed.data.presetNameId?.trim() ?? "";
+  let materialName = "";
+  let allocNamePrefix = "";
+  let sequencePadLength = 3;
+  if (kind.namingMode === "CUSTOM") {
+    if (!customName) {
+      return NextResponse.json({ error: "该种类需手动填写物料名称" }, { status: 400 });
+    }
+    if (!customNamePrefix) {
+      return NextResponse.json({ error: "该种类需填写名称前缀" }, { status: 400 });
+    }
+    materialName = customName;
+    allocNamePrefix = customNamePrefix;
+    sequencePadLength = 2;
+  } else {
+    if (!presetNameId) {
+      return NextResponse.json({ error: "请选择物料名称" }, { status: 400 });
+    }
+    const presetName = await prisma.materialPresetName.findUnique({
+      where: { id: presetNameId },
+    });
+    if (!presetName) {
+      return NextResponse.json({ error: "物料名称预设不存在" }, { status: 400 });
+    }
+    materialName = presetName.name;
+    allocNamePrefix = presetName.namePrefix.trim();
+    sequencePadLength = 3;
   }
 
   try {
@@ -224,8 +252,11 @@ export async function POST(req: Request) {
       } else {
         const alloc = await allocateMaterialCode(
           tx,
-          parsed.data.kindId,
-          parsed.data.presetNameId,
+          {
+            kindId: parsed.data.kindId,
+            namePrefix: allocNamePrefix,
+            sequencePadLength,
+          },
         );
         if (!alloc.ok) {
           throw new Error(alloc.error);
@@ -236,7 +267,7 @@ export async function POST(req: Request) {
       return tx.material.create({
         data: {
           code,
-          name: presetName.name,
+          name: materialName,
           partDescription: parsed.data.partDescription?.trim() || null,
           brand: parsed.data.brand?.trim() || null,
           unit: parsed.data.unit.trim(),

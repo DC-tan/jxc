@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusOutlined } from "@ant-design/icons";
+import { PlusOutlined, QuestionCircleOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
@@ -14,11 +14,21 @@ import {
   Space,
   Table,
   Tabs,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction, type SyntheticEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+  type SyntheticEvent,
+} from "react";
 import type { ResizeCallbackData } from "react-resizable";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
@@ -118,6 +128,14 @@ function attachResizeSampleList<T extends object>(
       }),
     };
   });
+}
+
+function HelpTip({ text }: { text: ReactNode }) {
+  return (
+    <Tooltip title={<span style={{ whiteSpace: "normal" }}>{text}</span>} placement="topLeft">
+      <QuestionCircleOutlined style={{ color: "#8c8c8c", cursor: "help" }} />
+    </Tooltip>
+  );
 }
 
 export function SamplesPage() {
@@ -570,9 +588,9 @@ export function SamplesPage() {
               forceRender: true,
               children: (
                 <Space direction="vertical" size="large" style={{ width: "100%" }}>
-                  <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    样品记录为独立台账；除客户名称外，型号、包含物料名称等字段均为手工记录，不关联商品信息或物料信息。
-                  </Typography.Paragraph>
+                  <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+                    <HelpTip text="样品记录为独立台账；除客户名称外，型号、包含物料名称等字段均为手工记录，不关联商品信息或物料信息。" />
+                  </div>
                   <div style={{ maxWidth: 720 }}>
                     {sampleForm(createForm)}
                     <Space>

@@ -1,5 +1,6 @@
 "use client";
 
+import { QuestionCircleOutlined } from "@ant-design/icons";
 import {
   App,
   AutoComplete,
@@ -17,11 +18,13 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
@@ -102,6 +105,14 @@ function formatSupplierSelectLabel(s: SupplierOpt): string {
   const code = s.code?.trim() || "";
   if (name) return code ? `${name}（${code}）` : name;
   return s.shortName?.trim() || code || "—";
+}
+
+function HelpTip({ text }: { text: ReactNode }) {
+  return (
+    <Tooltip title={<span style={{ whiteSpace: "normal" }}>{text}</span>} placement="topLeft">
+      <QuestionCircleOutlined style={{ color: "#8c8c8c", cursor: "help" }} />
+    </Tooltip>
+  );
 }
 
 type OutsourceOrderRow = {
@@ -1771,13 +1782,27 @@ export function OutsourcePage() {
             children: (
               <Form form={form} layout="vertical" initialValues={{ productQty: 1 }}>
                 <Space direction="vertical" size="large" style={{ width: "100%" }}>
-                  <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    仅展示在「商品信息」中标记为<strong>外发加工</strong>的商品。输入关键字自动匹配，填写加工套数后按
-                    BOM 用量推算外发物料数量（可逐行修改），保存生成外发单。选择<strong>加工方（供应商）</strong>
-                    后，外发单号按「外发单设置 → 外发物料单模版」中的规则生成（含供应商简称、日期与年度流水）；不选则沿用按日流水单号。
-                  </Typography.Paragraph>
                   <div>
-                    <Typography.Text strong>选择商品</Typography.Text>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <Typography.Text strong>选择商品</Typography.Text>
+                      <HelpTip
+                        text={
+                          <>
+                            仅展示在「商品信息」中标记为<strong>外发加工</strong>
+                            的商品。输入关键字自动匹配，填写加工套数后按 BOM 用量推算外发物料数量（可逐行修改），保存生成外发单。选择
+                            <strong>加工方（供应商）</strong>
+                            后，外发单号按「外发单设置 → 外发物料单模版」中的规则生成（含供应商简称、日期与年度流水）；不选则沿用按日流水单号。
+                          </>
+                        }
+                      />
+                    </div>
                     <div style={{ marginTop: 8 }}>
                       <AutoComplete
                         style={{ width: "100%", maxWidth: 720 }}
@@ -1929,9 +1954,6 @@ export function OutsourcePage() {
             label: "外发加工单查询",
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                <Typography.Text type="secondary">
-                  仅展示<strong>已回收</strong>的外发加工单；未回收请在「未回收外加工单」中处理。
-                </Typography.Text>
                 <Form form={queryForm} layout="inline" style={{ rowGap: 12 }}>
                   <Form.Item name="keyword" label="关键字">
                     <Input allowClear placeholder="单号 / 型号 / 物料编号 / 客户" style={{ width: 220 }} />
@@ -1944,6 +1966,15 @@ export function OutsourcePage() {
                       查询
                     </Button>
                   </Form.Item>
+                  <Form.Item style={{ marginInlineStart: "auto" }}>
+                    <HelpTip
+                      text={
+                        <>
+                          仅展示<strong>已回收</strong>的外发加工单；未回收请在「未回收外加工单」中处理。
+                        </>
+                      }
+                    />
+                  </Form.Item>
                 </Form>
                 <Table<OutsourceOrderRow>
                   rowKey="id"
@@ -1951,7 +1982,11 @@ export function OutsourcePage() {
                   dataSource={queryOrders}
                   columns={orderColumns}
                   scroll={{ x: "max-content" }}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                 />
                 <Button
                   type="default"
@@ -1969,9 +2004,6 @@ export function OutsourcePage() {
             label: "外发物料库存",
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                <Typography.Text type="secondary">
-                  统计口径：新建外发单计入在外库存；确认回收按消耗扣减。结单时可登记损耗与退回，损耗扣减在外库存，退回回写到物料库存。
-                </Typography.Text>
                 <Space wrap>
                   <Select
                     allowClear
@@ -2045,12 +2077,23 @@ export function OutsourcePage() {
                   >
                     重置
                   </Button>
+                  <HelpTip
+                    text={
+                      <>
+                        统计口径：新建外发单计入在外库存；确认回收按消耗扣减。结单时可登记损耗与退回，损耗扣减在外库存，退回回写到物料库存。
+                      </>
+                    }
+                  />
                 </Space>
                 <Table<OutsourceMaterialStockRow>
                   rowKey={stockRowKey}
                   loading={loadingStockTab}
                   dataSource={stockRows}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                   scroll={{ x: "max-content" }}
                   rowSelection={{
                     selectedRowKeys: stockSelectedRowKeys,
@@ -2102,7 +2145,19 @@ export function OutsourcePage() {
       )}
 
       <Modal
-        title="外发库存退料"
+        title={
+          <Space size={6}>
+            <span>外发库存退料</span>
+            <HelpTip
+              text={
+                <>
+                  默认按「已结单未退回」全退。修改退料数量时，剩余会自动填入报废数量；报废也可手工改，未分配部分显示在未退数量。确认后：退料数量写入「物料信息
+                  → 物料库存」入库流水，报废数量仅冲减外发库存。
+                </>
+              }
+            />
+          </Space>
+        }
         open={stockReturnOpen}
         onCancel={() => {
           if (stockReturning) return;
@@ -2115,10 +2170,6 @@ export function OutsourcePage() {
         width={1180}
         destroyOnHidden
       >
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-          默认按「已结单未退回」全退。修改退料数量时，剩余会自动填入报废数量；报废也可手工改，未分配部分显示在未退数量。
-          确认后：退料数量写入「物料信息 → 物料库存」入库流水，报废数量仅冲减外发库存。
-        </Typography.Paragraph>
         <Table<OutsourceStockReturnInput>
           rowKey="key"
           size="small"
@@ -2256,7 +2307,21 @@ export function OutsourcePage() {
       </Modal>
 
       <Modal
-        title={recycleOrderNo ? `确认回收 — ${recycleOrderNo}` : "确认回收"}
+        title={
+          <Space size={6}>
+            <span>{recycleOrderNo ? `确认回收 — ${recycleOrderNo}` : "确认回收"}</span>
+            <HelpTip
+              text={
+                <>
+                  默认<strong>本次回收</strong>为<strong>全部待收套数</strong>。可按实际分批修改套数；确认后系统按
+                  BOM 将套数换算为各物料回库数量并记账。<strong>已回收数量</strong>
+                  为该外发单已登记的<strong>成品入库累计套数</strong>；点击可查看
+                  <strong>收回明细</strong>（各次成品入库套数）。
+                </>
+              }
+            />
+          </Space>
+        }
         open={recycleOpen}
         onCancel={() => {
           setRecycleOpen(false);
@@ -2295,10 +2360,6 @@ export function OutsourcePage() {
                 </Typography.Text>
               </div>
             </Space>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              默认<strong>本次回收</strong>为<strong>全部待收套数</strong>。可按实际分批修改套数；确认后系统按 BOM
-              将套数换算为各物料回库数量并记账。<strong>已回收数量</strong>为该外发单已登记的<strong>成品入库累计套数</strong>；点击可查看<strong>收回明细</strong>（各次成品入库套数）。
-            </Typography.Paragraph>
             <Table<{ key: string }>
               size="small"
               rowKey="key"
@@ -2466,7 +2527,19 @@ export function OutsourcePage() {
       </Modal>
 
       <Modal
-        title={closeOrder ? `结单登记 — ${closeOrder.orderNo}` : "结单登记"}
+        title={
+          <Space size={6}>
+            <span>{closeOrder ? `结单登记 — ${closeOrder.orderNo}` : "结单登记"}</span>
+            <HelpTip
+              text={
+                <>
+                  结单时先填写<strong>损耗套数</strong>，系统会按 BOM 自动折算各物料损耗扣减；再逐行填写
+                  <strong>退回数量</strong>（默认 0）。未退回数量会继续留在外发物料库存。
+                </>
+              }
+            />
+          </Space>
+        }
         open={closeOpen}
         onCancel={() => {
           if (closeSubmitting) return;
@@ -2486,9 +2559,6 @@ export function OutsourcePage() {
           <Typography.Text type="secondary">加载明细…</Typography.Text>
         ) : (
           <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              结单时先填写<strong>损耗套数</strong>，系统会按 BOM 自动折算各物料损耗扣减；再逐行填写<strong>退回数量</strong>（默认 0）。未退回数量会继续留在外发物料库存。
-            </Typography.Paragraph>
             <Space>
               <Typography.Text strong>损耗套数</Typography.Text>
               <InputNumber

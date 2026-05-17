@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
+import { PlusOutlined, QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
@@ -17,13 +17,14 @@ import {
   Spin,
   Table,
   Tabs,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { ResizeCallbackData } from "react-resizable";
-import type { Dispatch, SetStateAction, SyntheticEvent } from "react";
+import type { Dispatch, ReactNode, SetStateAction, SyntheticEvent } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
@@ -342,6 +343,14 @@ function PurchaseListColumnSettingButton({
     >
       <Button type="text" icon={<SettingOutlined />} aria-label="列设置" />
     </Popover>
+  );
+}
+
+function HelpTip({ text }: { text: ReactNode }) {
+  return (
+    <Tooltip title={<span style={{ whiteSpace: "normal" }}>{text}</span>} placement="topLeft">
+      <QuestionCircleOutlined style={{ color: "#8c8c8c", cursor: "help" }} />
+    </Tooltip>
   );
 }
 
@@ -1470,9 +1479,6 @@ export function PurchasePage() {
                   <Button onClick={openCreate} disabled={loadingPresets}>
                     手动录入采购单
                   </Button>
-                  <Typography.Text type="secondary">
-                    「从销售订单新建」按 BOM 自动按供应商拆分多张采购单；手动录入为单供应商一单。下方为<strong>当天新建</strong>的采购单（待收料：修改/删除/确定收料，收料时可填本次实收数量以分批入库；已收料：修改/删除。点击行数可看明细）。
-                  </Typography.Text>
                 </Space>
                 <div
                   style={{
@@ -1486,11 +1492,22 @@ export function PurchasePage() {
                   <Typography.Title level={5} style={{ margin: 0 }}>
                     当日采购单
                   </Typography.Title>
-                  <PurchaseListColumnSettingButton
-                    value={todayPoListColKeys}
-                    onChange={setTodayPoListColKeys}
-                    options={PURCHASE_ORDER_COL_OPTIONS_UNDELIVERED}
-                  />
+                  <Space size={8}>
+                    <PurchaseListColumnSettingButton
+                      value={todayPoListColKeys}
+                      onChange={setTodayPoListColKeys}
+                      options={PURCHASE_ORDER_COL_OPTIONS_UNDELIVERED}
+                    />
+                    <HelpTip
+                      text={
+                        <>
+                          「从销售订单新建」按 BOM 自动按供应商拆分多张采购单；手动录入为单供应商一单。下方为
+                          <strong>当天新建</strong>
+                          的采购单（待收料：修改/删除/确定收料，收料时可填本次实收数量以分批入库；已收料：修改/删除。点击行数可看明细）。
+                        </>
+                      }
+                    />
+                  </Space>
                 </div>
                 <Table<PurchaseOrderRow>
                   rowKey="id"
@@ -1512,13 +1529,12 @@ export function PurchasePage() {
             label: "未交采购订单",
             children: (
               <Space direction="vertical" size="large" style={{ width: "100%" }}>
-                <Typography.Text type="secondary">
-                  展示近一年内<strong>待收料</strong>的采购单。确定收料时可按<strong>本次实收数量</strong>分批入库；全部收完后进入「采购订单查询」。可进行修改、删除或确定收料。
-                </Typography.Text>
                 <div
                   style={{
                     display: "flex",
+                    alignItems: "center",
                     justifyContent: "flex-end",
+                    gap: 8,
                     width: "100%",
                   }}
                 >
@@ -1526,6 +1542,15 @@ export function PurchasePage() {
                     value={pendingPoListColKeys}
                     onChange={setPendingPoListColKeys}
                     options={PURCHASE_ORDER_COL_OPTIONS_UNDELIVERED}
+                  />
+                  <HelpTip
+                    text={
+                      <>
+                        展示近一年内<strong>待收料</strong>的采购单。确定收料时可按
+                        <strong>本次实收数量</strong>
+                        分批入库；全部收完后进入「采购订单查询」。可进行修改、删除或确定收料。
+                      </>
+                    }
                   />
                 </div>
                 <Table<PurchaseOrderRow>
@@ -1548,10 +1573,6 @@ export function PurchasePage() {
             label: "采购订单查询",
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                <Typography.Text type="secondary">
-                  仅查询<strong>已收料确认</strong>或<strong>已取消</strong>的采购单；新建或待收料订单请在「新增采购订单 / 未交采购订单」中处理。
-                  未交列表仅显示<strong>要求交货时间</strong>；<strong>实际交货日期</strong>仅在收料后于此处显示。
-                </Typography.Text>
                 <Form
                   form={queryForm}
                   layout="inline"
@@ -1610,7 +1631,9 @@ export function PurchasePage() {
                 <div
                   style={{
                     display: "flex",
+                    alignItems: "center",
                     justifyContent: "flex-end",
+                    gap: 8,
                     width: "100%",
                   }}
                 >
@@ -1619,13 +1642,26 @@ export function PurchasePage() {
                     onChange={setQueryPoListColKeys}
                     options={PURCHASE_ORDER_COL_OPTIONS_QUERY}
                   />
+                  <HelpTip
+                    text={
+                      <>
+                        仅查询<strong>已收料确认</strong>或<strong>已取消</strong>
+                        的采购单；新建或待收料订单请在「新增采购订单 / 未交采购订单」中处理。未交列表仅显示
+                        <strong>要求交货时间</strong>；<strong>实际交货日期</strong>仅在收料后于此处显示。
+                      </>
+                    }
+                  />
                 </div>
                 <Table<PurchaseOrderRow>
                   rowKey="id"
                   loading={loadingQuery}
                   columns={queryListColumns}
                   dataSource={queryRows}
-                  pagination={{ pageSize: 10 }}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
                   components={{
@@ -1790,7 +1826,20 @@ export function PurchasePage() {
       />
 
       <Modal
-        title={receiptOrderNo ? `确认收料 — ${receiptOrderNo}` : "确认收料"}
+        title={
+          <Space size={6}>
+            <span>{receiptOrderNo ? `确认收料 — ${receiptOrderNo}` : "确认收料"}</span>
+            <HelpTip
+              text={
+                <>
+                  默认每行<strong>本次收料</strong>等于<strong>待收数量</strong>
+                  。供应商分批交货时请改为本次实收数量；实收部分进入物料库存，未收数量仍保留在本单，可再次点击「确定收料」。
+                  <strong>订单数量</strong>为该行原始采购数量；<strong>已收数量</strong>可点击展开各次收料日期与数量。
+                </>
+              }
+            />
+          </Space>
+        }
         open={receiptOpen}
         onCancel={() => {
           setReceiptOpen(false);
@@ -1809,10 +1858,6 @@ export function PurchasePage() {
           <Typography.Text type="secondary">加载明细…</Typography.Text>
         ) : receiptDetail ? (
           <Space direction="vertical" style={{ width: "100%" }} size="middle">
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              默认每行<strong>本次收料</strong>等于<strong>待收数量</strong>。供应商分批交货时请改为本次实收数量；实收部分进入物料库存，未收数量仍保留在本单，可再次点击「确定收料」。
-              <strong>订单数量</strong>为该行原始采购数量；<strong>已收数量</strong>可点击展开各次收料日期与数量。
-            </Typography.Paragraph>
             <Table<DetailLine>
               size="small"
               rowKey="id"

@@ -1,6 +1,6 @@
 "use client";
 
-import { PlusOutlined, SettingOutlined } from "@ant-design/icons";
+import { PlusOutlined, QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import {
   App,
   Button,
@@ -20,6 +20,7 @@ import {
   Spin,
   Table,
   Tabs,
+  Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -497,6 +498,14 @@ function SalesOrderListColumnSettingButton({
     >
       <Button type="text" icon={<SettingOutlined />} aria-label="列设置" />
     </Popover>
+  );
+}
+
+function HelpTip({ text }: { text: ReactNode }) {
+  return (
+    <Tooltip title={<span style={{ whiteSpace: "normal" }}>{text}</span>} placement="topLeft">
+      <QuestionCircleOutlined style={{ color: "#8c8c8c", cursor: "help" }} />
+    </Tooltip>
   );
 }
 
@@ -1623,9 +1632,6 @@ export function SalesPage() {
                   >
                     新增销售订单
                   </Button>
-                  <Typography.Text type="secondary">
-                    下方列表仅显示<strong>当天新建</strong>的销售订单；出货与查询请以<strong>客户订单编号</strong>为准。明细请在<strong>物料编号 / 商品型号 / 商品规格</strong>任一项中输入前缀，匹配选择该客户下的商品档案。
-                  </Typography.Text>
                 </Space>
                 <div
                   style={{
@@ -1639,10 +1645,22 @@ export function SalesPage() {
                   <Typography.Title level={5} style={{ margin: 0 }}>
                     当日销售单
                   </Typography.Title>
-                  <SalesOrderListColumnSettingButton
-                    value={todayListColKeys}
-                    onChange={setTodayListColKeys}
-                  />
+                  <Space size={8}>
+                    <SalesOrderListColumnSettingButton
+                      value={todayListColKeys}
+                      onChange={setTodayListColKeys}
+                    />
+                    <HelpTip
+                      text={
+                        <>
+                          下方列表仅显示<strong>当天新建</strong>的销售订单；出货与查询请以
+                          <strong>客户订单编号</strong>为准。明细请在
+                          <strong>物料编号 / 商品型号 / 商品规格</strong>
+                          任一项中输入前缀，匹配选择该客户下的商品档案。
+                        </>
+                      }
+                    />
+                  </Space>
                 </div>
                 <Table<SalesOrderRow>
                   rowKey="id"
@@ -1677,19 +1695,27 @@ export function SalesPage() {
                   style={{
                     display: "flex",
                     justifyContent: "space-between",
-                    alignItems: "flex-start",
+                    alignItems: "center",
                     flexWrap: "wrap",
                     gap: 8,
                   }}
                 >
-                  <Typography.Text type="secondary" style={{ flex: "1 1 280px" }}>
-                    新建保存后的订单会出现在此列表；仓库完成出货并记录<strong>实际交货时间</strong>后，可在「销售订单查询」中检索。
-                  </Typography.Text>
-                  <SalesOrderListColumnSettingButton
-                    value={pendingListColKeys}
-                    onChange={setPendingListColKeys}
-                    options={SALES_ORDER_LIST_COL_OPTIONS_PENDING}
-                  />
+                  <div style={{ flex: "1 1 280px" }} />
+                  <Space size={8}>
+                    <SalesOrderListColumnSettingButton
+                      value={pendingListColKeys}
+                      onChange={setPendingListColKeys}
+                      options={SALES_ORDER_LIST_COL_OPTIONS_PENDING}
+                    />
+                    <HelpTip
+                      text={
+                        <>
+                          新建保存后的订单会出现在此列表；仓库完成出货并记录
+                          <strong>实际交货时间</strong>后，可在「销售订单查询」中检索。
+                        </>
+                      }
+                    />
+                  </Space>
                 </div>
                 <Table<SalesOrderRow>
                   rowKey="id"
