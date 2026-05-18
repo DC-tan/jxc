@@ -1455,9 +1455,14 @@ export function ProductsPage() {
     );
   }, [visibleBomMaterialColumns, bomViewUsageTotal]);
 
-  const uploadProductImage = async (file: File) => {
+  const uploadProductImage = async (
+    file: File,
+    opts: { code: string; existingUrls: string[] },
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
+    fd.append("code", opts.code);
+    fd.append("existingUrls", JSON.stringify(opts.existingUrls ?? []));
     const data = await fetchJson<{ url: string }>("/api/upload/product-sample", {
       method: "POST",
       body: fd,
@@ -1470,7 +1475,7 @@ export function ProductsPage() {
     () => ({
       listType: "picture-card",
       accept: "image/jpeg,image/bmp",
-      maxCount: 5,
+      maxCount: 3,
       fileList: sampleUrls.map((url, i) => ({
         uid: `${url}-${i}`,
         name: `图${i + 1}`,
@@ -1478,7 +1483,7 @@ export function ProductsPage() {
         url,
       })),
       beforeUpload: (file) => {
-        if (sampleUrls.length >= 5) return Upload.LIST_IGNORE;
+        if (sampleUrls.length >= 3) return Upload.LIST_IGNORE;
         const t = file.type;
         if (t !== "image/jpeg" && t !== "image/bmp") {
           message.error("仅支持 JPEG、BMP");
@@ -1488,8 +1493,15 @@ export function ProductsPage() {
       },
       customRequest: async ({ file, onError, onSuccess }) => {
         try {
-          const url = await uploadProductImage(file as File);
-          setSampleUrls((prev) => [...prev, url].slice(0, 5));
+          const code = String(addForm.getFieldValue("customerMaterialCode") ?? "").trim();
+          if (!code) {
+            throw new Error("请先填写“物料编号”后再上传图片");
+          }
+          const url = await uploadProductImage(file as File, {
+            code,
+            existingUrls: sampleUrls,
+          });
+          setSampleUrls((prev) => [...prev, url].slice(0, 3));
           onSuccess?.(url);
         } catch (e) {
           message.error(e instanceof Error ? e.message : "上传失败");
@@ -1501,14 +1513,14 @@ export function ProductsPage() {
         if (u) setSampleUrls((prev) => prev.filter((x) => x !== u));
       },
     }),
-    [sampleUrls, message],
+    [sampleUrls, message, addForm],
   );
 
   const editUploadProps: UploadProps = useMemo(
     () => ({
       listType: "picture-card",
       accept: "image/jpeg,image/bmp",
-      maxCount: 5,
+      maxCount: 3,
       fileList: editSamples.map((url, i) => ({
         uid: `${url}-e-${i}`,
         name: `图${i + 1}`,
@@ -1516,7 +1528,7 @@ export function ProductsPage() {
         url,
       })),
       beforeUpload: (file) => {
-        if (editSamples.length >= 5) return Upload.LIST_IGNORE;
+        if (editSamples.length >= 3) return Upload.LIST_IGNORE;
         const t = file.type;
         if (t !== "image/jpeg" && t !== "image/bmp") {
           message.error("仅支持 JPEG、BMP");
@@ -1526,8 +1538,18 @@ export function ProductsPage() {
       },
       customRequest: async ({ file, onError, onSuccess }) => {
         try {
-          const url = await uploadProductImage(file as File);
-          setEditSamples((prev) => [...prev, url].slice(0, 5));
+          const code =
+            String(editForm.getFieldValue("customerMaterialCode") ?? "").trim() ||
+            editingProductInfo?.customerMaterialCode?.trim() ||
+            "";
+          if (!code) {
+            throw new Error("请先填写“物料编号”后再上传图片");
+          }
+          const url = await uploadProductImage(file as File, {
+            code,
+            existingUrls: editSamples,
+          });
+          setEditSamples((prev) => [...prev, url].slice(0, 3));
           onSuccess?.(url);
         } catch (e) {
           message.error(e instanceof Error ? e.message : "上传失败");
@@ -1539,7 +1561,7 @@ export function ProductsPage() {
         if (u) setEditSamples((prev) => prev.filter((x) => x !== u));
       },
     }),
-    [editSamples, message],
+    [editSamples, message, editForm, editingProductInfo],
   );
 
   const closeAddModal = () => {
@@ -2483,7 +2505,7 @@ export function ProductsPage() {
                   columns={invTableColumns}
                   dataSource={inventory}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
@@ -2566,7 +2588,7 @@ export function ProductsPage() {
                   ]}
                   dataSource={inventory}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
@@ -2642,7 +2664,7 @@ export function ProductsPage() {
                   ]}
                   dataSource={inventory}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
@@ -2876,9 +2898,9 @@ export function ProductsPage() {
               materialOptions={materialOptions}
             />
           )}
-          <Form.Item label="商品图片（JPEG / BMP，最多 5 张）">
+          <Form.Item label="商品图片（JPEG / BMP，最多 3 张）">
             <Upload {...addUploadProps}>
-              {sampleUrls.length >= 5 ? null : (
+              {sampleUrls.length >= 3 ? null : (
                 <div>
                   <UploadOutlined />
                   <div style={{ marginTop: 8 }}>上传</div>
@@ -3077,9 +3099,9 @@ export function ProductsPage() {
               materialOptions={materialOptions}
             />
           )}
-          <Form.Item label="商品图片（最多 5 张）">
+          <Form.Item label="商品图片（最多 3 张）">
             <Upload {...editUploadProps}>
-              {editSamples.length >= 5 ? null : (
+              {editSamples.length >= 3 ? null : (
                 <div>
                   <UploadOutlined />
                   <div style={{ marginTop: 8 }}>上传</div>

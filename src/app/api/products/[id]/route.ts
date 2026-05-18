@@ -29,7 +29,7 @@ const patchSchema = z.object({
   maxStock: z.union([z.number(), z.string()]).optional(),
   inspectionNotes: z.string().optional().nullable(),
   productRemark: z.string().optional().nullable(),
-  imageUrls: z.array(z.string()).max(5).optional(),
+  imageUrls: z.array(z.string()).max(3).optional(),
   materials: z.array(materialLineSchema).optional(),
 });
 

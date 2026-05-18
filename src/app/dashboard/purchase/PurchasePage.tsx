@@ -1658,7 +1658,7 @@ export function PurchasePage() {
                   columns={queryListColumns}
                   dataSource={queryRows}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}

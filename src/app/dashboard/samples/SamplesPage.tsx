@@ -502,7 +502,7 @@ export function SamplesPage() {
         dataSource={rows}
         columns={resizedCols}
         scroll={{ x: "max-content" }}
-        pagination={{ pageSize: 10, showSizeChanger: true }}
+        pagination={{ defaultPageSize: 10, showSizeChanger: true }}
         locale={{ emptyText }}
         tableLayout="fixed"
         components={{

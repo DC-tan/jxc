@@ -643,9 +643,14 @@ export function MaterialsPage() {
     }
   }, [tab, loadInventory, loadCustomerSupply, customerSupplyEntryForm, loadCustomers]);
 
-  const uploadSample = async (file: File) => {
+  const uploadSample = async (
+    file: File,
+    opts: { code: string; existingUrls: string[] },
+  ) => {
     const fd = new FormData();
     fd.append("file", file);
+    fd.append("code", opts.code);
+    fd.append("existingUrls", JSON.stringify(opts.existingUrls ?? []));
     const data = await fetchJson<{ url: string }>("/api/upload/material-sample", {
       method: "POST",
       body: fd,
@@ -676,7 +681,14 @@ export function MaterialsPage() {
       },
       customRequest: async ({ file, onError, onSuccess }) => {
         try {
-          const url = await uploadSample(file as File);
+          const addCode = String(addForm.getFieldValue("code") ?? "").trim();
+          if (!addCode) {
+            throw new Error("请先保存物料后，在“修改物料”中按物料编号上传图片");
+          }
+          const url = await uploadSample(file as File, {
+            code: addCode,
+            existingUrls: sampleUrls,
+          });
           setSampleUrls((prev) => [...prev, url].slice(0, 3));
           onSuccess?.(url);
         } catch (e) {
@@ -689,7 +701,7 @@ export function MaterialsPage() {
         if (u) setSampleUrls((prev) => prev.filter((x) => x !== u));
       },
     }),
-    [sampleUrls, message],
+    [sampleUrls, message, addForm],
   );
 
   const closeAddModal = () => {
@@ -895,7 +907,14 @@ export function MaterialsPage() {
       },
       customRequest: async ({ file, onError, onSuccess }) => {
         try {
-          const url = await uploadSample(file as File);
+          const editCode = editingMaterialInfo?.code?.trim() ?? "";
+          if (!editCode) {
+            throw new Error("缺少物料编号，无法上传");
+          }
+          const url = await uploadSample(file as File, {
+            code: editCode,
+            existingUrls: editSamples,
+          });
           setEditSamples((prev) => [...prev, url].slice(0, 3));
           onSuccess?.(url);
         } catch (e) {
@@ -908,7 +927,7 @@ export function MaterialsPage() {
         if (u) setEditSamples((prev) => prev.filter((x) => x !== u));
       },
     }),
-    [editSamples, message],
+    [editSamples, message, editingMaterialInfo],
   );
 
   const submitEdit = async () => {
@@ -1688,7 +1707,7 @@ export function MaterialsPage() {
                   columns={invTableColumns}
                   dataSource={inventory}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
@@ -1935,7 +1954,7 @@ export function MaterialsPage() {
                   ]}
                   dataSource={inventory}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
@@ -2010,7 +2029,7 @@ export function MaterialsPage() {
                   ]}
                   dataSource={inventory}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}

@@ -7,6 +7,7 @@ import {
   Col,
   DatePicker,
   Divider,
+  Input,
   Modal,
   Radio,
   Row,
@@ -82,6 +83,8 @@ type OverviewPayload = {
     totalRevenue: number;
     totalCost: number;
     totalProfit: number;
+    totalPureProfit: number;
+    operationCostRate: number;
     byCustomer: {
       customerId: string;
       code: string;
@@ -89,6 +92,7 @@ type OverviewPayload = {
       revenue: number;
       cost: number;
       profit: number;
+      pureProfit: number;
     }[];
   };
   trend: {
@@ -106,10 +110,41 @@ type OverviewPayload = {
   }[];
 };
 
+type OrderProfitRow = {
+  productId: string;
+  customerMaterialCode: string;
+  model: string;
+  quantity: number;
+  salesAmount: number;
+  materialCostPerUnit: number;
+  processingCostPerUnit: number;
+  baseCostAmount: number;
+  operationCostAmount: number;
+  profitAmount: number;
+  profitRate: number;
+  hasCostGap: boolean;
+};
+
+type OrderProfitPayload = {
+  orderNo: string;
+  operationCostRate: number;
+  orderCount: number;
+  customers: { id: string; code: string; name: string }[];
+  rows: OrderProfitRow[];
+  summary: {
+    quantity: number;
+    salesAmount: number;
+    baseCostAmount: number;
+    operationCostAmount: number;
+    profitAmount: number;
+    profitRate: number;
+  };
+};
+
 const money = (n: number) =>
   n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-type FinanceModalKind = "revenue" | "cost" | "profit" | null;
+type FinanceModalKind = "revenue" | "cost" | "profit" | "pureProfit" | null;
 
 function StatisticsTab() {
   const { message } = App.useApp();
@@ -123,6 +158,9 @@ function StatisticsTab() {
   const [mainDrillOpen, setMainDrillOpen] = useState(false);
   const [mainDrill, setMainDrill] = useState<DrillResponse | null>(null);
   const [mainDrillLoading, setMainDrillLoading] = useState(false);
+  const [profitOrderNo, setProfitOrderNo] = useState("");
+  const [profitLoading, setProfitLoading] = useState(false);
+  const [profitData, setProfitData] = useState<OrderProfitPayload | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,6 +250,7 @@ function StatisticsTab() {
     if (!data?.finance) return [];
     const rows = [...data.finance.byCustomer];
     if (financeModal === "cost") rows.sort((a, b) => b.cost - a.cost);
+    else if (financeModal === "pureProfit") rows.sort((a, b) => b.pureProfit - a.pureProfit);
     else if (financeModal === "profit") rows.sort((a, b) => b.profit - a.profit);
     else rows.sort((a, b) => b.revenue - a.revenue);
     return rows;
@@ -224,7 +263,13 @@ function StatisticsTab() {
     { title: "客户名称", dataIndex: "name", ellipsis: true },
     {
       title:
-        financeModal === "revenue" ? "销售额" : financeModal === "cost" ? "成本" : "利润",
+        financeModal === "revenue"
+          ? "销售额"
+          : financeModal === "cost"
+            ? "成本"
+            : financeModal === "pureProfit"
+              ? "纯利润"
+              : "利润",
       key: "val",
       align: "right",
       width: 160,
@@ -234,6 +279,8 @@ function StatisticsTab() {
             ? r.revenue
             : financeModal === "cost"
               ? r.cost
+              : financeModal === "pureProfit"
+                ? r.pureProfit
               : r.profit,
         ),
     },
@@ -244,12 +291,105 @@ function StatisticsTab() {
       ? "销售总金额 — 按客户明细"
       : financeModal === "cost"
         ? "总成本 — 按客户明细"
+        : financeModal === "pureProfit"
+          ? "纯利润 — 按客户明细"
         : "利润 — 按客户明细";
 
   const cardHover = {
     cursor: "pointer" as const,
     transition: "box-shadow 0.2s, border-color 0.2s",
   };
+
+  const queryOrderProfit = useCallback(async () => {
+    const orderNo = profitOrderNo.trim();
+    if (!orderNo) {
+      message.warning("请先输入销售订单号");
+      return;
+    }
+    setProfitLoading(true);
+    try {
+      const res = await fetchJson<OrderProfitPayload>(
+        `/api/stats/order-profit?orderNo=${encodeURIComponent(orderNo)}`,
+        { credentials: "include" },
+      );
+      setProfitData(res);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "查询订单利润失败");
+      setProfitData(null);
+    } finally {
+      setProfitLoading(false);
+    }
+  }, [message, profitOrderNo]);
+
+  const orderProfitColumns: ColumnsType<OrderProfitRow> = [
+    { title: "物料编号", dataIndex: "customerMaterialCode", width: 140, ellipsis: true },
+    { title: "商品型号", dataIndex: "model", width: 160, ellipsis: true },
+    {
+      title: "数量",
+      dataIndex: "quantity",
+      width: 90,
+      align: "right",
+      render: (v: number) => v.toLocaleString("zh-CN"),
+    },
+    {
+      title: "销售额",
+      dataIndex: "salesAmount",
+      width: 120,
+      align: "right",
+      render: (v: number) => money(v),
+    },
+    {
+      title: "BOM材料成本/件",
+      dataIndex: "materialCostPerUnit",
+      width: 140,
+      align: "right",
+      render: (v: number) => money(v),
+    },
+    {
+      title: "加工成本/件",
+      dataIndex: "processingCostPerUnit",
+      width: 120,
+      align: "right",
+      render: (v: number) => money(v),
+    },
+    {
+      title: "基础成本合计",
+      dataIndex: "baseCostAmount",
+      width: 130,
+      align: "right",
+      render: (v: number) => money(v),
+    },
+    {
+      title: "运营成本(8%)",
+      dataIndex: "operationCostAmount",
+      width: 130,
+      align: "right",
+      render: (v: number) => money(v),
+    },
+    {
+      title: "利润",
+      dataIndex: "profitAmount",
+      width: 120,
+      align: "right",
+      render: (v: number) => (
+        <Typography.Text type={v < 0 ? "danger" : undefined}>{money(v)}</Typography.Text>
+      ),
+    },
+    {
+      title: "利润率",
+      dataIndex: "profitRate",
+      width: 100,
+      align: "right",
+      render: (v: number) => `${money(v)}%`,
+    },
+    {
+      title: "备注",
+      dataIndex: "hasCostGap",
+      width: 120,
+      render: (v: boolean) =>
+        v ? <Typography.Text type="warning">成本信息缺失</Typography.Text> : "—",
+    },
+  ];
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -309,7 +449,7 @@ function StatisticsTab() {
               <Table<Record<string, unknown>>
                 size="small"
                 rowKey={(r, i) => String((r as { id?: string }).id ?? i)}
-                pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
+                pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
                 columns={mainDrillColumns}
                 dataSource={mainDrill.rows}
                 scroll={{ x: "max-content" }}
@@ -472,12 +612,13 @@ function StatisticsTab() {
             <strong>明细行</strong>
             汇总：销售总金额 = ∑（行单价×数量）；总成本 = 物料成本 + 加工成本。其中物料成本 = ∑（商品
             BOM 用量 × 对应物料单价）× 本行数量；加工成本 = 商品「加工成本」× 本行数量。利润 = 销售总金额 −
-            总成本。点击下方卡片可查看
+            总成本。纯利润 = 利润 − 销售总金额 × {Math.round((data.finance.operationCostRate ?? 0.08) * 100)}%。
+            点击下方卡片可查看
             <strong>各客户</strong>
             展开明细。
           </Typography.Paragraph>
           <Row gutter={[16, 16]}>
-            <Col xs={24} sm={8}>
+            <Col xs={24} sm={12} md={6}>
               <Card
                 size="small"
                 variant="borderless"
@@ -501,7 +642,7 @@ function StatisticsTab() {
                 </Typography.Text>
               </Card>
             </Col>
-            <Col xs={24} sm={8}>
+            <Col xs={24} sm={12} md={6}>
               <Card
                 size="small"
                 variant="borderless"
@@ -525,7 +666,7 @@ function StatisticsTab() {
                 </Typography.Text>
               </Card>
             </Col>
-            <Col xs={24} sm={8}>
+            <Col xs={24} sm={12} md={6}>
               <Card
                 size="small"
                 variant="borderless"
@@ -546,6 +687,30 @@ function StatisticsTab() {
                 />
                 <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: "block" }}>
                   按客户 · 点击展开
+                </Typography.Text>
+              </Card>
+            </Col>
+            <Col xs={24} sm={12} md={6}>
+              <Card
+                size="small"
+                variant="borderless"
+                style={{ background: "#fff0f6", border: "1px solid #ffadd2", ...cardHover }}
+                onClick={() => setFinanceModal("pureProfit")}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") setFinanceModal("pureProfit");
+                }}
+                styles={{ body: { padding: 16 } }}
+              >
+                <Statistic
+                  title="纯利润"
+                  value={data.finance.totalPureProfit}
+                  valueStyle={{ color: "#c41d7f", fontSize: 22 }}
+                  formatter={(v) => (v != null && v !== "" ? money(Number(v)) : "0.00")}
+                />
+                <Typography.Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: "block" }}>
+                  利润 - 运营成本（{Math.round((data.finance.operationCostRate ?? 0.08) * 100)}%）· 点击展开
                 </Typography.Text>
               </Card>
             </Col>
@@ -573,6 +738,8 @@ function StatisticsTab() {
                     ? data.finance.totalRevenue
                     : financeModal === "cost"
                       ? data.finance.totalCost
+                      : financeModal === "pureProfit"
+                        ? data.finance.totalPureProfit
                       : data.finance.totalProfit;
                 return (
                   <Table.Summary fixed>
@@ -618,6 +785,89 @@ function StatisticsTab() {
             dataSource={data.topCustomers}
             locale={{ emptyText: "本区间无销售单" }}
           />
+
+          <Typography.Title level={5} style={{ margin: "16px 0 0" }}>
+            五、订单利润查询
+          </Typography.Title>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            口径：基础成本 = BOM材料成本 × 用量 + 加工成本；运营成本 = 销售额 × 8%；利润 = 销售额 - 基础成本 -
+            运营成本。
+          </Typography.Paragraph>
+          <Space wrap style={{ marginBottom: 8 }}>
+            <Input
+              allowClear
+              placeholder="请输入销售订单号"
+              value={profitOrderNo}
+              onChange={(e) => setProfitOrderNo(e.target.value)}
+              onPressEnter={() => void queryOrderProfit()}
+              style={{ width: 280 }}
+            />
+            <Button type="primary" loading={profitLoading} onClick={() => void queryOrderProfit()}>
+              查询
+            </Button>
+          </Space>
+          {profitData ? (
+            <>
+              <Typography.Paragraph style={{ marginBottom: 8 }}>
+                订单号：<strong>{profitData.orderNo}</strong>
+                {profitData.customers.length > 0
+                  ? `（客户：${profitData.customers.map((c) => `${c.code} ${c.name}`).join("、")}）`
+                  : ""}
+                {profitData.orderCount > 1
+                  ? `（匹配到 ${profitData.orderCount} 张同号订单，已合并统计）`
+                  : ""}
+              </Typography.Paragraph>
+              <Table<OrderProfitRow>
+                size="small"
+                rowKey={(r) => r.productId}
+                columns={orderProfitColumns}
+                dataSource={profitData.rows}
+                pagination={{
+                  defaultPageSize: 10,
+                  showSizeChanger: true,
+                  pageSizeOptions: [10, 20, 50, 100],
+                }}
+                scroll={{ x: 1500 }}
+                summary={() => (
+                  <Table.Summary fixed>
+                    <Table.Summary.Row>
+                      <Table.Summary.Cell index={0} colSpan={2} align="right">
+                        <Typography.Text strong>合计</Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={2} align="right">
+                        <Typography.Text strong>
+                          {profitData.summary.quantity.toLocaleString("zh-CN")}
+                        </Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={3} align="right">
+                        <Typography.Text strong>{money(profitData.summary.salesAmount)}</Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={4} />
+                      <Table.Summary.Cell index={5} />
+                      <Table.Summary.Cell index={6} align="right">
+                        <Typography.Text strong>{money(profitData.summary.baseCostAmount)}</Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={7} align="right">
+                        <Typography.Text strong>
+                          {money(profitData.summary.operationCostAmount)}
+                        </Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={8} align="right">
+                        <Typography.Text strong type={profitData.summary.profitAmount < 0 ? "danger" : undefined}>
+                          {money(profitData.summary.profitAmount)}
+                        </Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={9} align="right">
+                        <Typography.Text strong>{money(profitData.summary.profitRate)}%</Typography.Text>
+                      </Table.Summary.Cell>
+                      <Table.Summary.Cell index={10} />
+                    </Table.Summary.Row>
+                  </Table.Summary>
+                )}
+                locale={{ emptyText: "该订单暂无商品行" }}
+              />
+            </>
+          ) : null}
         </>
       )}
     </Space>
@@ -1022,7 +1272,7 @@ function ReconcileTabContent({
             rowKey={purchaseReconcileRowKey}
             columns={purchaseColumns}
             dataSource={purchaseRows}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
+            pagination={{ defaultPageSize: 20, showSizeChanger: true }}
             scroll={{ x: 1100 }}
             locale={{ emptyText: "暂无对帐行" }}
             summary={() => (
@@ -1046,7 +1296,7 @@ function ReconcileTabContent({
             rowKey={warehouseReconcileRowKey}
             columns={warehouseColumns}
             dataSource={warehouseRows}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
+            pagination={{ defaultPageSize: 20, showSizeChanger: true }}
             scroll={{ x: 1300 }}
             locale={{ emptyText: "暂无对帐行" }}
             summary={() => (

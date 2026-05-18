@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { parseStatsRange, statsRangeQuerySchema } from "@/lib/stats-range";
 
+const OPERATION_COST_RATE = 0.08;
+
 /** 销售行物料成本：商品 BOM 各行 用量×物料单价，再×本行销售数量 */
 function materialCostForSalesLine(
   lineQty: number,
@@ -123,7 +125,15 @@ export async function GET(req: Request) {
     );
     const financeByCustomer = new Map<
       string,
-      { customerId: string; code: string; name: string; revenue: number; cost: number; profit: number }
+      {
+        customerId: string;
+        code: string;
+        name: string;
+        revenue: number;
+        cost: number;
+        profit: number;
+        pureProfit: number;
+      }
     >();
     for (const line of salesLinesForFinance) {
       const k = line.salesOrder.customerId;
@@ -134,11 +144,13 @@ export async function GET(req: Request) {
       const procCost = q * Number(line.product.processingCost);
       const cst = matCost + procCost;
       const prof = rev - cst;
+      const pureProf = prof - rev * OPERATION_COST_RATE;
       const prev = financeByCustomer.get(k);
       if (prev) {
         prev.revenue += rev;
         prev.cost += cst;
         prev.profit += prof;
+        prev.pureProfit += pureProf;
       } else {
         financeByCustomer.set(k, {
           customerId: k,
@@ -147,6 +159,7 @@ export async function GET(req: Request) {
           revenue: rev,
           cost: cst,
           profit: prof,
+          pureProfit: pureProf,
         });
       }
     }
@@ -156,6 +169,10 @@ export async function GET(req: Request) {
     const totalFinanceRevenue = financeByCustomerList.reduce((s, x) => s + x.revenue, 0);
     const totalFinanceCost = financeByCustomerList.reduce((s, x) => s + x.cost, 0);
     const totalFinanceProfit = financeByCustomerList.reduce((s, x) => s + x.profit, 0);
+    const totalFinancePureProfit = financeByCustomerList.reduce(
+      (s, x) => s + x.pureProfit,
+      0,
+    );
 
     const salesOrdersInRange = await prisma.salesOrder.findMany({
       where: salesWhere,
@@ -278,6 +295,8 @@ export async function GET(req: Request) {
         totalRevenue: totalFinanceRevenue,
         totalCost: totalFinanceCost,
         totalProfit: totalFinanceProfit,
+        totalPureProfit: totalFinancePureProfit,
+        operationCostRate: OPERATION_COST_RATE,
         byCustomer: financeByCustomerList,
       },
       trend: trendMonths,

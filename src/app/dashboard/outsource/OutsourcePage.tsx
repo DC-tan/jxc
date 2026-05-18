@@ -1983,7 +1983,7 @@ export function OutsourcePage() {
                   columns={orderColumns}
                   scroll={{ x: "max-content" }}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
@@ -2090,7 +2090,7 @@ export function OutsourcePage() {
                   loading={loadingStockTab}
                   dataSource={stockRows}
                   pagination={{
-                    pageSize: 10,
+                    defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
