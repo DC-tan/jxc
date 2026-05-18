@@ -69,7 +69,10 @@ export const PERMISSION_DEFINITIONS: {
     "material.view",
     "material.edit",
   ] },
-  { module: "物料信息", name: "物料设置", code: "tab.mat.settings", sortOrder: 44, expandTo: [
+  { module: "物料信息", name: "弃用旧料查询", code: "tab.mat.deprecated", sortOrder: 44, expandTo: [
+    "material.view",
+  ] },
+  { module: "物料信息", name: "物料设置", code: "tab.mat.settings", sortOrder: 45, expandTo: [
     "material.edit",
   ] },
   { module: "商品信息", name: "新增商品", code: "tab.prod.add", sortOrder: 50, expandTo: [
@@ -83,6 +86,9 @@ export const PERMISSION_DEFINITIONS: {
   { module: "商品信息", name: "手动调整", code: "tab.prod.adjust", sortOrder: 52, expandTo: [
     "product.view",
     "product.edit",
+  ] },
+  { module: "商品信息", name: "弃用商品查询", code: "tab.prod.deprecated", sortOrder: 53, expandTo: [
+    "product.view",
   ] },
   { module: "销售订单", name: "新增销售订单", code: "tab.sales.add", sortOrder: 60, expandTo: [
     "sales.view",
@@ -236,6 +242,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.prod.add",
     "tab.prod.inv",
     "tab.prod.adjust",
+    "tab.prod.deprecated",
     "tab.sales.add",
     "tab.sales.undelivered",
     "tab.sales.query",
@@ -279,9 +286,11 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.mat.inv",
     "tab.mat.customerSupply",
     "tab.mat.adjust",
+    "tab.mat.deprecated",
     "tab.prod.add",
     "tab.prod.inv",
     "tab.prod.adjust",
+    "tab.prod.deprecated",
     "tab.supplier",
     "tab.stats.overview",
     "tab.stats.reconcile",

@@ -21,6 +21,7 @@ export async function GET(req: Request) {
     const receivedTo = searchParams.get("receivedTo");
     const stockMin = searchParams.get("stockMin");
     const stockMax = searchParams.get("stockMax");
+    const deprecatedRaw = (searchParams.get("deprecated") ?? "0").trim();
 
     const fromDate = receivedFrom ? new Date(receivedFrom) : undefined;
     const toDate = receivedTo ? new Date(receivedTo) : undefined;
@@ -59,6 +60,11 @@ export async function GET(req: Request) {
     }
 
     const where: Prisma.ProductWhereInput = {
+      ...(deprecatedRaw === "1"
+        ? { isDeprecated: true }
+        : deprecatedRaw === "all"
+          ? {}
+          : { isDeprecated: false }),
       ...(customerId ? { customerId } : {}),
       ...(textOrParts.length === 1
         ? textOrParts[0]
@@ -99,6 +105,9 @@ export async function GET(req: Request) {
         const lastReceivedAt = lastPositive?.receivedAt ?? null;
         return {
           id: p.id,
+          isDeprecated: p.isDeprecated,
+          deprecatedAt: p.deprecatedAt?.toISOString() ?? null,
+          deprecatedReason: p.deprecatedReason,
           customer: p.customer,
           customerMaterialCode: p.customerMaterialCode,
           processingMode: p.processingMode,

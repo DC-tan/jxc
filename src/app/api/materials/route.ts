@@ -68,8 +68,16 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const createdFrom = searchParams.get("createdFrom");
     const createdTo = searchParams.get("createdTo");
+    const deprecatedRaw = (searchParams.get("deprecated") ?? "0").trim();
 
     const where: Prisma.MaterialWhereInput = {};
+    if (deprecatedRaw === "1") {
+      where.isDeprecated = true;
+    } else if (deprecatedRaw === "all") {
+      // no-op
+    } else {
+      where.isDeprecated = false;
+    }
     if (createdFrom && createdTo) {
       const a = new Date(createdFrom);
       const b = new Date(createdTo);
@@ -98,6 +106,9 @@ export async function GET(req: Request) {
         id: m.id,
         code: m.code,
         name: m.name,
+        isDeprecated: m.isDeprecated,
+        deprecatedAt: m.deprecatedAt?.toISOString() ?? null,
+        deprecatedReason: m.deprecatedReason,
         partDescription: m.partDescription,
         brand: m.brand,
         unit: m.unit,

@@ -20,6 +20,9 @@ export type MaterialInventoryListRow = {
   id: string;
   code: string;
   name: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   partDescription: string | null;
   brand: string | null;
   unit: string;
@@ -55,6 +58,7 @@ export async function queryMaterialInventoryList(
   const receivedTo = searchParams.get("receivedTo");
   const stockMin = searchParams.get("stockMin");
   const stockMax = searchParams.get("stockMax");
+  const deprecatedRaw = (searchParams.get("deprecated") ?? "0").trim();
 
   const fromDate = receivedFrom ? new Date(receivedFrom) : undefined;
   const toDate = receivedTo ? new Date(receivedTo) : undefined;
@@ -81,6 +85,11 @@ export async function queryMaterialInventoryList(
   }
 
   const where: Prisma.MaterialWhereInput = {
+    ...(deprecatedRaw === "1"
+      ? { isDeprecated: true }
+      : deprecatedRaw === "all"
+        ? {}
+        : { isDeprecated: false }),
     ...(code ? { code: { contains: code, mode: "insensitive" } } : {}),
     ...(name ? { name: { contains: name, mode: "insensitive" } } : {}),
     ...(kindId ? { kindId } : {}),
@@ -134,6 +143,9 @@ export async function queryMaterialInventoryList(
         id: m.id,
         code: m.code,
         name: m.name,
+        isDeprecated: m.isDeprecated,
+        deprecatedAt: m.deprecatedAt?.toISOString() ?? null,
+        deprecatedReason: m.deprecatedReason,
         partDescription: m.partDescription,
         brand: m.brand,
         unit: m.unit,

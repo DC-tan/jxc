@@ -289,6 +289,12 @@ model Material {
   id              String             @id @default(cuid())
   code            String             @unique
   name            String
+  /// 是否已弃用（弃用后从常规物料列表隐藏）
+  isDeprecated    Boolean            @default(false)
+  /// 弃用时间
+  deprecatedAt    DateTime?
+  /// 弃用原因（可选）
+  deprecatedReason String?           @db.Text
   partDescription String?            @db.Text /// 部件描述
   brand           String? /// 品牌（存预设名称文本）
   unit            String
@@ -319,6 +325,7 @@ model Material {
   outsourceOrderLines OutsourceOrderLine[]
 
   @@index([isCustomerSupplied])
+  @@index([isDeprecated])
   @@index([customerId])
 }
 
@@ -462,6 +469,12 @@ enum ProductProcessingMode {
 
 model Product {
   id              String   @id @default(cuid())
+  /// 是否已弃用（弃用后从常规商品列表隐藏）
+  isDeprecated    Boolean  @default(false)
+  /// 弃用时间
+  deprecatedAt    DateTime?
+  /// 弃用原因（可选）
+  deprecatedReason String? @db.Text
   customerId      String
   customer        Customer @relation(fields: [customerId], references: [id])
   /// 客户下单物料编号（客户侧编号，非系统物料档案编号，手工录入）
@@ -495,6 +508,7 @@ model Product {
   changeReminders CustomerChangeReminder[]
 
   @@index([customerId])
+  @@index([isDeprecated])
 }
 
 /// 客户提出但延后在下次订单执行的变更提醒

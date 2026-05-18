@@ -233,7 +233,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           top: 0,
           bottom: 0,
           height: "100vh",
-          zIndex: 1100,
+          zIndex: 900,
         }}
       >
         <div
@@ -318,7 +318,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             right: 0,
             height: HEADER_HEIGHT,
             lineHeight: `${HEADER_HEIGHT}px`,
-            zIndex: 1000,
+            zIndex: 900,
           }}
         >
           <div />

@@ -606,7 +606,7 @@ export function DashboardHomePage() {
         ) : null}
       </div>
       {activeMainTab === "todo" && canTodo ? (
-        <TodoBoard splitStorageKey={`dashboard.todo.split.${me?.id ?? "me"}`} />
+        <TodoBoard splitStorageKey={`dashboard.todo.split.${me?.loginName ?? "me"}`} />
       ) : (
         <>
           {!anyBlock ? (

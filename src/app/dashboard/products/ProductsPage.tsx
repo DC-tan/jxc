@@ -57,6 +57,7 @@ const PRODUCT_TAB_PERM: Record<string, string> = {
   add: "tab.prod.add",
   inventory: "tab.prod.inv",
   stockAdjust: "tab.prod.adjust",
+  deprecated: "tab.prod.deprecated",
 };
 
 const LS_PROD_COLS = "products.table.visibleCols.mat.v1";
@@ -280,6 +281,9 @@ type ProductPresetBundle = {
 
 type ProductRow = {
   id: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   customer: CustomerOpt;
   customerMaterialCode: string;
   processingMode: ProductProcessingMode;
@@ -301,6 +305,9 @@ type ProductRow = {
 
 type InventoryRow = {
   id: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   customer: CustomerOpt;
   customerMaterialCode: string;
   processingMode: ProductProcessingMode;
@@ -408,6 +415,9 @@ type ProductMaterialItem = {
 
 type DetailPayload = {
   id: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   customerId: string;
   customer: CustomerOpt;
   customerMaterialCode: string;
@@ -698,7 +708,7 @@ function ProductBomTable({
               value={row.materialId}
               options={opts.map((o) => ({
                 value: o.id,
-                label: `${o.code} ${o.name}${o.partDescription ? `（${o.partDescription}）` : ""}`,
+                label: o.name,
               }))}
               onChange={(mid) => applyMaterialToLine(row.key, mid)}
             />
@@ -738,7 +748,7 @@ function ProductBomTable({
               value={row.materialId}
               options={opts.map((o) => ({
                 value: o.id,
-                label: `${o.partDescription?.trim() || "—"}（${o.code} ${o.name}）`,
+                label: o.partDescription?.trim() || "—",
               }))}
               onChange={(mid) => applyMaterialToLine(row.key, mid)}
             />
@@ -1029,7 +1039,7 @@ function renderProductThumbs(urls: string[]) {
 }
 
 export function ProductsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1056,6 +1066,13 @@ export function ProductsPage() {
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingProductInfo, setEditingProductInfo] = useState<{
+    isDeprecated: boolean;
+    customerMaterialCode: string;
+    model: string;
+  } | null>(null);
+  const [deprecating, setDeprecating] = useState(false);
+  const [deletingFromEdit, setDeletingFromEdit] = useState(false);
   const [editForm] = Form.useForm();
   const editProcessingMode = Form.useWatch("processingMode", editForm) as
     | ProductProcessingMode
@@ -1138,8 +1155,12 @@ export function ProductsPage() {
     }
   }, [message]);
 
-  const buildInventoryQuery = (v: Record<string, unknown>) => {
+  const buildInventoryQuery = (
+    v: Record<string, unknown>,
+    deprecatedOnly: boolean,
+  ) => {
     const p = new URLSearchParams();
+    p.set("deprecated", deprecatedOnly ? "1" : "0");
     if (v.productModel) p.set("productModel", String(v.productModel));
     if (v.productDescription) {
       p.set("productDescription", String(v.productDescription));
@@ -1155,18 +1176,22 @@ export function ProductsPage() {
     const range = v.dateRange as [dayjs.Dayjs, dayjs.Dayjs] | undefined;
     if (range?.[0]) p.set("receivedFrom", range[0].startOf("day").toISOString());
     if (range?.[1]) p.set("receivedTo", range[1].endOf("day").toISOString());
-    return p.toString();
+    return p;
   };
 
   const loadInventory = useCallback(
-    async (override?: Record<string, unknown>) => {
+    async (
+      override?: Record<string, unknown>,
+      opts?: { deprecatedOnly?: boolean },
+    ) => {
       setLoadingInv(true);
       try {
         const v =
           override ?? (await filterForm.validateFields().catch(() => ({})));
-        const q = buildInventoryQuery(v as Record<string, unknown>);
+        const deprecatedOnly = opts?.deprecatedOnly ?? tab === "deprecated";
+        const q = buildInventoryQuery(v as Record<string, unknown>, deprecatedOnly);
         const data = await fetchJson<{ list: InventoryRow[] }>(
-          `/api/products/inventory${q ? `?${q}` : ""}`,
+          `/api/products/inventory?${q.toString()}`,
           { credentials: "include" },
         );
         setInventory(data.list ?? []);
@@ -1176,7 +1201,7 @@ export function ProductsPage() {
         setLoadingInv(false);
       }
     },
-    [filterForm, message],
+    [filterForm, message, tab],
   );
 
   useEffect(() => {
@@ -1188,8 +1213,8 @@ export function ProductsPage() {
   }, [loadProducts]);
 
   useEffect(() => {
-    if (tab === "inventory" || tab === "stockAdjust") {
-      void loadInventory({});
+    if (tab === "inventory" || tab === "stockAdjust" || tab === "deprecated") {
+      void loadInventory({}, { deprecatedOnly: tab === "deprecated" });
     }
   }, [tab, loadInventory]);
 
@@ -1681,10 +1706,16 @@ export function ProductsPage() {
         setEditBomOutsource([]);
         setEditBomInhouse([]);
       }
+      setEditingProductInfo({
+        isDeprecated: d.isDeprecated,
+        customerMaterialCode: d.customerMaterialCode,
+        model: d.model,
+      });
       setEditOpen(true);
     } catch (e) {
       editFormFieldsPendingRef.current = null;
       setEditingId(null);
+      setEditingProductInfo(null);
       message.error(e instanceof Error ? e.message : "加载失败");
     }
   };
@@ -1750,11 +1781,12 @@ export function ProductsPage() {
       message.success("已保存");
       setEditOpen(false);
       setEditingId(null);
+      setEditingProductInfo(null);
       setEditBomLines([]);
       setEditBomOutsource([]);
       setEditBomInhouse([]);
       await loadProducts();
-      await loadInventory({});
+      await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
       if (detail?.id === savedId) {
         void openDetail(savedId);
       }
@@ -1764,7 +1796,7 @@ export function ProductsPage() {
   };
 
   const onDelete = (r: ProductRow) => {
-    Modal.confirm({
+    modal.confirm({
       title: "确认删除该商品？将同时删除其入库记录及包含物料关联。",
       okType: "danger",
       onOk: async () => {
@@ -1779,7 +1811,73 @@ export function ProductsPage() {
         }
         message.success("已删除");
         await loadProducts();
-        await loadInventory({});
+        await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+      },
+    });
+  };
+
+  const deprecateFromEdit = () => {
+    if (!editingId || !editingProductInfo) return;
+    modal.confirm({
+      title: `确认弃用商品「${editingProductInfo.customerMaterialCode || "—"} ${editingProductInfo.model || ""}」？`,
+      content: "弃用后该商品将不再出现在常规商品列表，可在「弃用商品查询」中查看。",
+      okType: "danger",
+      okText: "确认弃用",
+      onOk: async () => {
+        setDeprecating(true);
+        try {
+          await fetchJson(`/api/products/${editingId}/deprecate`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          message.success("已弃用");
+          setEditOpen(false);
+          setEditingId(null);
+          setEditingProductInfo(null);
+          setEditBomLines([]);
+          setEditBomOutsource([]);
+          setEditBomInhouse([]);
+          await loadProducts();
+          await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : "弃用失败");
+        } finally {
+          setDeprecating(false);
+        }
+      },
+    });
+  };
+
+  const deleteFromEdit = () => {
+    if (!editingId || !editingProductInfo) return;
+    modal.confirm({
+      title: `确认删除商品「${editingProductInfo.customerMaterialCode || "—"} ${editingProductInfo.model || ""}」？`,
+      content: "删除会同时删除其库存流水及BOM关联；若已被业务数据引用，请改为弃用商品。",
+      okType: "danger",
+      okText: "确认删除",
+      onOk: async () => {
+        setDeletingFromEdit(true);
+        try {
+          await fetchJson(`/api/products/${editingId}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+          message.success("已删除");
+          setEditOpen(false);
+          setEditingId(null);
+          setEditingProductInfo(null);
+          setEditBomLines([]);
+          setEditBomOutsource([]);
+          setEditBomInhouse([]);
+          await loadProducts();
+          await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : "删除失败");
+        } finally {
+          setDeletingFromEdit(false);
+        }
       },
     });
   };
@@ -2157,7 +2255,8 @@ export function ProductsPage() {
     message.success("已导出");
   }, [detail, message]);
 
-  const showInventoryFilter = tab === "inventory" || tab === "stockAdjust";
+  const showInventoryFilter =
+    tab === "inventory" || tab === "stockAdjust" || tab === "deprecated";
 
   const openStockAdjust = (r: InventoryRow) => {
     setStockAdjustTarget(r);
@@ -2190,6 +2289,7 @@ export function ProductsPage() {
       setStockAdjustTarget(null);
       await loadInventory(
         (await filterForm.validateFields().catch(() => ({}))) as Record<string, unknown>,
+        { deprecatedOnly: tab === "deprecated" },
       );
       if (detail?.id === productId) {
         void openDetail(productId);
@@ -2205,7 +2305,7 @@ export function ProductsPage() {
 
   const visibleProductTabKeys = useMemo(
     () =>
-      (["add", "inventory", "stockAdjust"] as const).filter((k) =>
+      (["add", "inventory", "stockAdjust", "deprecated"] as const).filter((k) =>
         allowed([PRODUCT_TAB_PERM[k]]),
       ),
     [allowed],
@@ -2237,7 +2337,11 @@ export function ProductsPage() {
           form={filterForm}
           layout="inline"
           style={{ marginBottom: 16, rowGap: 12 }}
-          onFinish={(v) => void loadInventory(v as Record<string, unknown>)}
+          onFinish={(v) =>
+            void loadInventory(v as Record<string, unknown>, {
+              deprecatedOnly: tab === "deprecated",
+            })
+          }
         >
           <Form.Item name="dateRange" label="入库时间">
             <DatePicker.RangePicker />
@@ -2284,7 +2388,7 @@ export function ProductsPage() {
             <Button
               onClick={() => {
                 filterForm.resetFields();
-                void loadInventory({});
+                void loadInventory({}, { deprecatedOnly: tab === "deprecated" });
               }}
             >
               重置
@@ -2297,7 +2401,9 @@ export function ProductsPage() {
         destroyOnHidden
         onChange={(k) => {
           setTab(k);
-          if (k === "add" || k === "inventory" || k === "stockAdjust") void loadPresets();
+          if (k === "add" || k === "inventory" || k === "stockAdjust" || k === "deprecated") {
+            void loadPresets();
+          }
         }}
         items={[
           {
@@ -2465,6 +2571,82 @@ export function ProductsPage() {
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
                   scroll={{ x: 900 }}
+                />
+              </Space>
+            ),
+          },
+          {
+            key: "deprecated",
+            label: "弃用商品查询",
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+                  <HelpTip text="仅展示已弃用商品；用于查询历史旧商品及其库存。" />
+                </div>
+                <Table<InventoryRow>
+                  rowKey="id"
+                  loading={loadingInv}
+                  columns={[
+                    {
+                      title: "客户",
+                      key: "cust",
+                      ellipsis: true,
+                      render: (_, r) => r.customer.name,
+                    },
+                    {
+                      title: "客户物料编号",
+                      dataIndex: "customerMaterialCode",
+                      key: "customerMaterialCode",
+                      ellipsis: true,
+                      width: 120,
+                    },
+                    { title: "商品型号", dataIndex: "model", key: "model", ellipsis: true, width: 120 },
+                    {
+                      title: "商品规格",
+                      dataIndex: "spec",
+                      key: "spec",
+                      ellipsis: true,
+                      render: (v: string) => v || "—",
+                    },
+                    {
+                      title: "当前库存",
+                      dataIndex: "totalQty",
+                      key: "q",
+                      width: 88,
+                      align: "right" as const,
+                    },
+                    {
+                      title: "弃用时间",
+                      key: "deprecatedAt",
+                      width: 160,
+                      render: (_, r) =>
+                        r.deprecatedAt ? dayjs(r.deprecatedAt).format("YYYY-MM-DD HH:mm") : "—",
+                    },
+                    {
+                      title: "弃用原因",
+                      dataIndex: "deprecatedReason",
+                      key: "deprecatedReason",
+                      ellipsis: true,
+                      render: (v: string | null) => v ?? "—",
+                    },
+                    {
+                      title: "操作",
+                      key: "op",
+                      width: 88,
+                      render: (_, r) => (
+                        <Button type="link" size="small" onClick={() => void openDetail(r.id)}>
+                          详情
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  dataSource={inventory}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
+                  scroll={{ x: 980 }}
                 />
               </Space>
             ),
@@ -2713,11 +2895,46 @@ export function ProductsPage() {
         onCancel={() => {
           setEditOpen(false);
           setEditingId(null);
+          setEditingProductInfo(null);
           setEditBomLines([]);
           setEditBomOutsource([]);
           setEditBomInhouse([]);
         }}
         onOk={() => void submitEdit()}
+        okText="保存"
+        footer={(_, { OkBtn, CancelBtn }) => (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              width: "100%",
+            }}
+          >
+            <Space>
+              <Button
+                danger
+                loading={deletingFromEdit}
+                onClick={() => deleteFromEdit()}
+                disabled={!editingId}
+              >
+                删除
+              </Button>
+              <Button
+                danger
+                loading={deprecating}
+                onClick={() => deprecateFromEdit()}
+                disabled={!editingId || Boolean(editingProductInfo?.isDeprecated)}
+              >
+                弃用商品
+              </Button>
+            </Space>
+            <Space>
+              <CancelBtn />
+              <OkBtn />
+            </Space>
+          </div>
+        )}
         width={editProcessingMode === "OUTSOURCE_INHOUSE" ? 1100 : 800}
         destroyOnHidden
         afterOpenChange={(open) => {

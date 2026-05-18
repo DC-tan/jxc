@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
@@ -103,6 +104,9 @@ export async function GET(
       id: m.id,
       code: m.code,
       name: m.name,
+      isDeprecated: m.isDeprecated,
+      deprecatedAt: m.deprecatedAt?.toISOString() ?? null,
+      deprecatedReason: m.deprecatedReason,
       partDescription: m.partDescription,
       brand: m.brand,
       unit: m.unit,
@@ -283,7 +287,7 @@ export async function DELETE(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requirePermission("material.delete");
+  const auth = await requirePermission("material.edit");
   if (!auth.ok) {
     return NextResponse.json({ error: auth.message }, { status: auth.status });
   }
@@ -291,8 +295,18 @@ export async function DELETE(
   const { id } = await ctx.params;
   try {
     await prisma.material.delete({ where: { id } });
-  } catch {
-    return NextResponse.json({ error: "物料不存在" }, { status: 404 });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
+      return NextResponse.json({ error: "物料不存在" }, { status: 404 });
+    }
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003") {
+      return NextResponse.json(
+        { error: "该物料已被业务单据或BOM引用，不能直接删除，请改为弃用物料" },
+        { status: 400 },
+      );
+    }
+    console.error("[DELETE /api/materials/[id]]", e);
+    return NextResponse.json({ error: "删除失败" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

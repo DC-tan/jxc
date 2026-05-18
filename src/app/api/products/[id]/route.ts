@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { parseProductImageUrls } from "@/lib/productImageUrls";
@@ -115,6 +115,9 @@ export async function GET(
 
     return NextResponse.json({
       id: p.id,
+      isDeprecated: p.isDeprecated,
+      deprecatedAt: p.deprecatedAt?.toISOString() ?? null,
+      deprecatedReason: p.deprecatedReason,
       customerId: p.customerId,
       customer: p.customer,
       customerMaterialCode: p.customerMaterialCode,
@@ -359,7 +362,7 @@ export async function DELETE(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requirePermission("product.delete");
+  const auth = await requirePermission("product.edit");
   if (!auth.ok) {
     return NextResponse.json({ error: auth.message }, { status: auth.status });
   }
@@ -368,7 +371,17 @@ export async function DELETE(
   try {
     await prisma.product.delete({ where: { id } });
     return NextResponse.json({ ok: true });
-  } catch {
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
+      return NextResponse.json({ error: "记录不存在" }, { status: 404 });
+    }
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2003") {
+      return NextResponse.json(
+        { error: "该商品已被业务单据引用，不能直接删除，请改为弃用商品" },
+        { status: 400 },
+      );
+    }
+    console.error("[DELETE /api/products/[id]]", e);
     return NextResponse.json({ error: "删除失败" }, { status: 500 });
   }
 }

@@ -50,6 +50,7 @@ const MATERIAL_TAB_PERM: Record<string, string> = {
   inventory: "tab.mat.inv",
   customerSupply: "tab.mat.customerSupply",
   stockAdjust: "tab.mat.adjust",
+  deprecated: "tab.mat.deprecated",
   settings: "tab.mat.settings",
 };
 
@@ -60,6 +61,9 @@ type MaterialRow = {
   id: string;
   code: string;
   name: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   partDescription: string | null;
   brand: string | null;
   unit: string;
@@ -81,6 +85,9 @@ type InventoryRow = {
   id: string;
   code: string;
   name: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   partDescription: string | null;
   brand: string | null;
   unit: string;
@@ -128,6 +135,9 @@ type DetailPayload = {
   id: string;
   code: string;
   name: string;
+  isDeprecated: boolean;
+  deprecatedAt: string | null;
+  deprecatedReason: string | null;
   partDescription: string | null;
   brand: string | null;
   unit: string;
@@ -338,7 +348,7 @@ function HelpTip({ text }: { text: string }) {
 }
 
 export function MaterialsPage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -366,6 +376,13 @@ export function MaterialsPage() {
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingMaterialInfo, setEditingMaterialInfo] = useState<{
+    isDeprecated: boolean;
+    code: string;
+    name: string;
+  } | null>(null);
+  const [deprecating, setDeprecating] = useState(false);
+  const [deletingFromEdit, setDeletingFromEdit] = useState(false);
   const [editForm] = Form.useForm();
   const editIsCustomerSupplied = Form.useWatch("isCustomerSupplied", editForm);
   const editKindId = Form.useWatch("kindId", editForm) as string | undefined;
@@ -517,8 +534,12 @@ export function MaterialsPage() {
     }
   }, [message]);
 
-  const buildInventoryQuery = (v: Record<string, unknown>) => {
+  const buildInventoryQuery = (
+    v: Record<string, unknown>,
+    deprecatedOnly: boolean,
+  ) => {
     const p = new URLSearchParams();
+    p.set("deprecated", deprecatedOnly ? "1" : "0");
     if (v.code) p.set("code", String(v.code));
     if (v.name) p.set("name", String(v.name));
     if (v.kindId) p.set("kindId", String(v.kindId));
@@ -534,7 +555,7 @@ export function MaterialsPage() {
     const range = v.dateRange as [dayjs.Dayjs, dayjs.Dayjs] | undefined;
     if (range?.[0]) p.set("receivedFrom", range[0].startOf("day").toISOString());
     if (range?.[1]) p.set("receivedTo", range[1].endOf("day").toISOString());
-    return p.toString();
+    return p;
   };
 
   const loadCustomerSupply = useCallback(
@@ -573,13 +594,17 @@ export function MaterialsPage() {
   );
 
   const loadInventory = useCallback(
-    async (override?: Record<string, unknown>) => {
+    async (
+      override?: Record<string, unknown>,
+      opts?: { deprecatedOnly?: boolean },
+    ) => {
       setLoadingInv(true);
       try {
         const v = override ?? (await filterForm.validateFields().catch(() => ({})));
-        const q = buildInventoryQuery(v as Record<string, unknown>);
+        const deprecatedOnly = opts?.deprecatedOnly ?? tab === "deprecated";
+        const q = buildInventoryQuery(v as Record<string, unknown>, deprecatedOnly);
         const data = await fetchJson<{ list: InventoryRow[] }>(
-          `/api/materials/inventory${q ? `?${q}` : ""}`,
+          `/api/materials/inventory?${q.toString()}`,
           { credentials: "include" },
         );
         setInventory(data.list ?? []);
@@ -589,7 +614,7 @@ export function MaterialsPage() {
         setLoadingInv(false);
       }
     },
-    [filterForm, message],
+    [filterForm, message, tab],
   );
 
   useEffect(() => {
@@ -605,8 +630,8 @@ export function MaterialsPage() {
   }, [loadMaterials]);
 
   useEffect(() => {
-    if (tab === "inventory" || tab === "stockAdjust") {
-      void loadInventory({});
+    if (tab === "inventory" || tab === "stockAdjust" || tab === "deprecated") {
+      void loadInventory({}, { deprecatedOnly: tab === "deprecated" });
     }
     if (tab === "customerSupply") {
       void loadCustomers();
@@ -772,7 +797,7 @@ export function MaterialsPage() {
       }
       closeImportModal();
       await loadMaterials();
-      await loadInventory({});
+      await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
       await loadPresets();
     } catch (e) {
       message.error(e instanceof Error ? e.message : "导入失败");
@@ -834,10 +859,16 @@ export function MaterialsPage() {
         inspectionNotes: d.inspectionNotes,
       };
       setEditSamples(d.sampleImageUrls);
+      setEditingMaterialInfo({
+        isDeprecated: d.isDeprecated,
+        code: d.code,
+        name: d.name,
+      });
       setEditOpen(true);
     } catch (e) {
       editFormFieldsPendingRef.current = null;
       setEditingId(null);
+      setEditingMaterialInfo(null);
       message.error(e instanceof Error ? e.message : "加载失败");
     }
   };
@@ -920,8 +951,9 @@ export function MaterialsPage() {
       message.success("已保存");
       setEditOpen(false);
       setEditingId(null);
+      setEditingMaterialInfo(null);
       await loadMaterials();
-      await loadInventory({});
+      await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
       if (detail?.id === savedId) {
         void openDetail(savedId);
       }
@@ -931,7 +963,7 @@ export function MaterialsPage() {
   };
 
   const onDelete = (r: MaterialRow) => {
-    Modal.confirm({
+    modal.confirm({
       title: "确认删除该物料？将同时删除其入库记录。",
       okType: "danger",
       onOk: async () => {
@@ -946,7 +978,68 @@ export function MaterialsPage() {
         }
         message.success("已删除");
         await loadMaterials();
-        await loadInventory({});
+        await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+      },
+    });
+  };
+
+  const deprecateFromEdit = () => {
+    if (!editingId || !editingMaterialInfo) return;
+    modal.confirm({
+      title: `确认弃用物料「${editingMaterialInfo.code} ${editingMaterialInfo.name}」？`,
+      content:
+        "弃用后该物料将不再出现在常规物料列表，可在「弃用旧料查询」中查看。",
+      okType: "danger",
+      okText: "确认弃用",
+      onOk: async () => {
+        setDeprecating(true);
+        try {
+          await fetchJson(`/api/materials/${editingId}/deprecate`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          message.success("已弃用");
+          setEditOpen(false);
+          setEditingId(null);
+          setEditingMaterialInfo(null);
+          await loadMaterials();
+          await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : "弃用失败");
+        } finally {
+          setDeprecating(false);
+        }
+      },
+    });
+  };
+
+  const deleteFromEdit = () => {
+    if (!editingId || !editingMaterialInfo) return;
+    modal.confirm({
+      title: `确认删除物料「${editingMaterialInfo.code} ${editingMaterialInfo.name}」？`,
+      content: "删除会同时删除其入库记录；若已被业务数据引用，请改为弃用。",
+      okType: "danger",
+      okText: "确认删除",
+      onOk: async () => {
+        setDeletingFromEdit(true);
+        try {
+          await fetchJson(`/api/materials/${editingId}`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+          message.success("已删除");
+          setEditOpen(false);
+          setEditingId(null);
+          setEditingMaterialInfo(null);
+          await loadMaterials();
+          await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+        } catch (e) {
+          message.error(e instanceof Error ? e.message : "删除失败");
+        } finally {
+          setDeletingFromEdit(false);
+        }
       },
     });
   };
@@ -1275,7 +1368,8 @@ export function MaterialsPage() {
     [customerSupplyEntryCustomerId, customerSupplyMaterials],
   );
 
-  const showInventoryFilter = tab === "inventory" || tab === "stockAdjust";
+  const showInventoryFilter =
+    tab === "inventory" || tab === "stockAdjust" || tab === "deprecated";
 
   const openStockAdjust = (r: InventoryRow) => {
     setStockAdjustTarget(r);
@@ -1308,6 +1402,7 @@ export function MaterialsPage() {
       setStockAdjustTarget(null);
       await loadInventory(
         (await filterForm.validateFields().catch(() => ({}))) as Record<string, unknown>,
+        { deprecatedOnly: tab === "deprecated" },
       );
       if (detail?.id === matId) {
         void openDetail(matId);
@@ -1353,9 +1448,10 @@ export function MaterialsPage() {
         receivedAt: dayjs(),
       });
       await loadCustomerSupply();
-      if (tab === "inventory" || tab === "stockAdjust") {
+      if (tab === "inventory" || tab === "stockAdjust" || tab === "deprecated") {
         await loadInventory(
           filterForm.getFieldsValue() as Record<string, unknown>,
+          { deprecatedOnly: tab === "deprecated" },
         );
       }
     } catch (e) {
@@ -1369,7 +1465,7 @@ export function MaterialsPage() {
 
   const visibleMaterialTabKeys = useMemo(
     () =>
-      (["add", "inventory", "customerSupply", "stockAdjust", "settings"] as const).filter((k) =>
+      (["add", "inventory", "customerSupply", "stockAdjust", "deprecated", "settings"] as const).filter((k) =>
         allowed([MATERIAL_TAB_PERM[k]]),
       ),
     [allowed],
@@ -1401,7 +1497,11 @@ export function MaterialsPage() {
           form={filterForm}
           layout="inline"
           style={{ marginBottom: 16, rowGap: 12 }}
-          onFinish={(v) => void loadInventory(v as Record<string, unknown>)}
+          onFinish={(v) =>
+            void loadInventory(v as Record<string, unknown>, {
+              deprecatedOnly: tab === "deprecated",
+            })
+          }
         >
           <Form.Item name="dateRange" label="入库时间">
             <DatePicker.RangePicker />
@@ -1483,7 +1583,7 @@ export function MaterialsPage() {
             <Button
               onClick={() => {
                 filterForm.resetFields();
-                void loadInventory({});
+                  void loadInventory({}, { deprecatedOnly: tab === "deprecated" });
               }}
             >
               重置
@@ -1845,6 +1945,81 @@ export function MaterialsPage() {
             ),
           },
           {
+            key: "deprecated",
+            label: "弃用旧料查询",
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
+                  <HelpTip text="仅展示已弃用物料；用于查询历史旧料及其当前库存。弃用后常规列表不再展示。" />
+                </div>
+                <Table<InventoryRow>
+                  rowKey="id"
+                  loading={loadingInv}
+                  columns={[
+                    { title: "物料编号", dataIndex: "code", key: "code", ellipsis: true, width: 120 },
+                    { title: "物料名称", dataIndex: "name", key: "name", ellipsis: true },
+                    { title: "种类", dataIndex: "kindName", key: "kind", width: 96, ellipsis: true },
+                    {
+                      title: "部件描述",
+                      dataIndex: "partDescription",
+                      key: "partDescription",
+                      ellipsis: true,
+                      render: (v: string | null) => v ?? "—",
+                    },
+                    {
+                      title: "供应商",
+                      key: "supplier",
+                      width: 140,
+                      ellipsis: true,
+                      render: (_, r) =>
+                        r.isCustomerSupplied
+                          ? `客供：${r.customer?.name ?? "—"}`
+                          : (r.supplier?.name ?? "—"),
+                    },
+                    {
+                      title: "当前库存",
+                      dataIndex: "totalQty",
+                      key: "q",
+                      width: 96,
+                      align: "right" as const,
+                    },
+                    {
+                      title: "弃用时间",
+                      key: "deprecatedAt",
+                      width: 160,
+                      render: (_, r) =>
+                        r.deprecatedAt ? dayjs(r.deprecatedAt).format("YYYY-MM-DD HH:mm") : "—",
+                    },
+                    {
+                      title: "弃用原因",
+                      dataIndex: "deprecatedReason",
+                      key: "deprecatedReason",
+                      ellipsis: true,
+                      render: (v: string | null) => v ?? "—",
+                    },
+                    {
+                      title: "操作",
+                      key: "op",
+                      width: 88,
+                      render: (_, r) => (
+                        <Button type="link" size="small" onClick={() => void openDetail(r.id)}>
+                          详情
+                        </Button>
+                      ),
+                    },
+                  ]}
+                  dataSource={inventory}
+                  pagination={{
+                    pageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
+                  scroll={{ x: 980 }}
+                />
+              </Space>
+            ),
+          },
+          {
             key: "settings",
             label: "物料设置",
             children: <MaterialSettingsTab />,
@@ -2194,8 +2369,43 @@ export function MaterialsPage() {
         onCancel={() => {
           setEditOpen(false);
           setEditingId(null);
+          setEditingMaterialInfo(null);
         }}
         onOk={() => void submitEdit()}
+        okText="保存"
+        footer={(_, { OkBtn, CancelBtn }) => (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              width: "100%",
+            }}
+          >
+            <Space>
+              <Button
+                danger
+                loading={deletingFromEdit}
+                onClick={() => deleteFromEdit()}
+                disabled={!editingId}
+              >
+                删除
+              </Button>
+              <Button
+                danger
+                loading={deprecating}
+                onClick={() => deprecateFromEdit()}
+                disabled={!editingId || Boolean(editingMaterialInfo?.isDeprecated)}
+              >
+                弃用物料
+              </Button>
+            </Space>
+            <Space>
+              <CancelBtn />
+              <OkBtn />
+            </Space>
+          </div>
+        )}
         width={720}
         destroyOnHidden
         afterOpenChange={(open) => {
