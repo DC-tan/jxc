@@ -42,6 +42,10 @@ function clampSplit(v: number) {
   return Math.max(SPLIT_MIN, Math.min(SPLIT_MAX, v));
 }
 
+function formatTodoDate(iso: string) {
+  return dayjs(iso).format("YYYY-MM-DD");
+}
+
 export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
   const { message } = App.useApp();
   const [rows, setRows] = useState<TodoRow[]>([]);
@@ -76,11 +80,21 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
   const [deferredListAreaHeight, setDeferredListAreaHeight] = useState(0);
   const [todoRowHeight, setTodoRowHeight] = useState(DEFAULT_ITEM_ROW_HEIGHT);
   const [deferredRowHeight, setDeferredRowHeight] = useState(DEFAULT_ITEM_ROW_HEIGHT);
+  const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     localStorage.setItem(splitStorageKey, String(split));
   }, [split, splitStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -386,6 +400,12 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
     () => doneFilteredRows.slice(8),
     [doneFilteredRows],
   );
+  const todoPrimaryRows = isMobile ? todoRows : todoLeftRows;
+  const todoSecondaryRows = isMobile ? [] : todoRightRows;
+  const deferredPrimaryRows = isMobile ? deferredRows : deferredLeftRows;
+  const deferredSecondaryRows = isMobile ? [] : deferredRightRows;
+  const donePrimaryRows = isMobile ? doneFilteredRows : doneLeftRows;
+  const doneSecondaryRows = isMobile ? [] : doneRightRows;
   const doneKeywordOptions = useMemo(() => {
     const uniq = Array.from(new Set(doneRows.map((r) => r.content.trim()).filter(Boolean)));
     const kw = doneKeyword.trim().toLowerCase();
@@ -447,7 +467,7 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
 
   const renderItemTitle = (
     item: TodoRow,
-    timeLabel: string,
+    _timeLabel: string,
     timeValue: string,
     seq: number,
     selection?: {
@@ -477,16 +497,13 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
         </Typography.Text>
       </Space>
       <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
-        {timeLabel} {dayjs(timeValue).format("YYYY-MM-DD HH:mm")}
+        {formatTodoDate(timeValue)}
       </Typography.Text>
     </div>
   );
 
   return (
     <div>
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 10 }}>
-        待办 TAB 中上半区是近期待办、下半区是延期事项（分界线可拖动）；已完成 TAB 可搜索与按完成时间段批量清理。
-      </Typography.Paragraph>
       <Tabs
         activeKey={activeTab}
         onChange={(k) => setActiveTab(k as "todo" | "done")}
@@ -584,10 +601,10 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                       </div>
                     ) : (
                       <div ref={todoListAreaRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-                      <Row gutter={20}>
-                        <Col span={12}>
+                      <Row gutter={isMobile ? 0 : 20}>
+                        <Col span={isMobile ? 24 : 12}>
                           <List
-                            dataSource={todoLeftRows}
+                            dataSource={todoPrimaryRows}
                             renderItem={(item) => (
                               <List.Item data-todo-item="todo">
                                 <List.Item.Meta
@@ -608,29 +625,31 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                             )}
                           />
                         </Col>
-                        <Col span={12} style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 14 }}>
-                          <List
-                            dataSource={todoRightRows}
-                            renderItem={(item) => (
-                              <List.Item data-todo-item="todo">
-                                <List.Item.Meta
-                                  title={renderItemTitle(
-                                    item,
-                                    "创建于",
-                                    item.createdAt,
-                                    todoSeqById.get(item.id) ?? 0,
-                                    {
-                                      selecting: selectingTodo,
-                                      selected: selectedTodoIds.includes(item.id),
-                                      onToggle: (checked) =>
-                                        toggleSelectId(item.id, checked, setSelectedTodoIds),
-                                    },
-                                  )}
-                                />
-                              </List.Item>
-                            )}
-                          />
-                        </Col>
+                        {todoSecondaryRows.length > 0 ? (
+                          <Col span={12} style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 14 }}>
+                            <List
+                              dataSource={todoSecondaryRows}
+                              renderItem={(item) => (
+                                <List.Item data-todo-item="todo">
+                                  <List.Item.Meta
+                                    title={renderItemTitle(
+                                      item,
+                                      "创建于",
+                                      item.createdAt,
+                                      todoSeqById.get(item.id) ?? 0,
+                                      {
+                                        selecting: selectingTodo,
+                                        selected: selectedTodoIds.includes(item.id),
+                                        onToggle: (checked) =>
+                                          toggleSelectId(item.id, checked, setSelectedTodoIds),
+                                      },
+                                    )}
+                                  />
+                                </List.Item>
+                              )}
+                            />
+                          </Col>
+                        ) : null}
                       </Row>
                       </div>
                     )}
@@ -709,10 +728,10 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                       </div>
                     ) : (
                       <div ref={deferredListAreaRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-                      <Row gutter={20}>
-                        <Col span={12}>
+                      <Row gutter={isMobile ? 0 : 20}>
+                        <Col span={isMobile ? 24 : 12}>
                           <List
-                            dataSource={deferredLeftRows}
+                            dataSource={deferredPrimaryRows}
                             renderItem={(item) => (
                               <List.Item data-todo-item="deferred">
                                 <List.Item.Meta
@@ -733,29 +752,31 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                             )}
                           />
                         </Col>
-                        <Col span={12} style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 14 }}>
-                          <List
-                            dataSource={deferredRightRows}
-                            renderItem={(item) => (
-                              <List.Item data-todo-item="deferred">
-                                <List.Item.Meta
-                                  title={renderItemTitle(
-                                    item,
-                                    "更新于",
-                                    item.updatedAt,
-                                    deferredSeqById.get(item.id) ?? 0,
-                                    {
-                                      selecting: selectingDeferred,
-                                      selected: selectedDeferredIds.includes(item.id),
-                                      onToggle: (checked) =>
-                                        toggleSelectId(item.id, checked, setSelectedDeferredIds),
-                                    },
-                                  )}
-                                />
-                              </List.Item>
-                            )}
-                          />
-                        </Col>
+                        {deferredSecondaryRows.length > 0 ? (
+                          <Col span={12} style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 14 }}>
+                            <List
+                              dataSource={deferredSecondaryRows}
+                              renderItem={(item) => (
+                                <List.Item data-todo-item="deferred">
+                                  <List.Item.Meta
+                                    title={renderItemTitle(
+                                      item,
+                                      "更新于",
+                                      item.updatedAt,
+                                      deferredSeqById.get(item.id) ?? 0,
+                                      {
+                                        selecting: selectingDeferred,
+                                        selected: selectedDeferredIds.includes(item.id),
+                                        onToggle: (checked) =>
+                                          toggleSelectId(item.id, checked, setSelectedDeferredIds),
+                                      },
+                                    )}
+                                  />
+                                </List.Item>
+                              )}
+                            />
+                          </Col>
+                        ) : null}
                       </Row>
                       </div>
                     )}
@@ -806,10 +827,10 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                 {doneFilteredRows.length === 0 ? (
                   <Empty description="暂无已完成事项" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 ) : (
-                  <Row gutter={20}>
-                    <Col span={12}>
+                  <Row gutter={isMobile ? 0 : 20}>
+                    <Col span={isMobile ? 24 : 12}>
                       <List
-                        dataSource={doneLeftRows}
+                        dataSource={donePrimaryRows}
                         renderItem={(item) => (
                           <List.Item
                             actions={[
@@ -839,38 +860,40 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                         )}
                       />
                     </Col>
-                    <Col span={12} style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 14 }}>
-                      <List
-                        dataSource={doneRightRows}
-                        renderItem={(item) => (
-                          <List.Item
-                            actions={[
-                              <Button key="resume" type="link" size="small" onClick={() => void updateStatus(item.id, "TODO")}>
-                                恢复待办
-                              </Button>,
-                              <Popconfirm
-                                key="del"
-                                title="确认删除这条已完成事项？"
-                                onConfirm={() => void removeTodo(item.id)}
-                              >
-                                <Button type="link" danger size="small">
-                                  删除
-                                </Button>
-                              </Popconfirm>,
-                            ]}
-                          >
-                            <List.Item.Meta
-                              title={renderItemTitle(
-                                item,
-                                "完成于",
-                                item.updatedAt,
-                                doneSeqById.get(item.id) ?? 0,
-                              )}
-                            />
-                          </List.Item>
-                        )}
-                      />
-                    </Col>
+                    {doneSecondaryRows.length > 0 ? (
+                      <Col span={12} style={{ borderLeft: "1px solid #f0f0f0", paddingLeft: 14 }}>
+                        <List
+                          dataSource={doneSecondaryRows}
+                          renderItem={(item) => (
+                            <List.Item
+                              actions={[
+                                <Button key="resume" type="link" size="small" onClick={() => void updateStatus(item.id, "TODO")}>
+                                  恢复待办
+                                </Button>,
+                                <Popconfirm
+                                  key="del"
+                                  title="确认删除这条已完成事项？"
+                                  onConfirm={() => void removeTodo(item.id)}
+                                >
+                                  <Button type="link" danger size="small">
+                                    删除
+                                  </Button>
+                                </Popconfirm>,
+                              ]}
+                            >
+                              <List.Item.Meta
+                                title={renderItemTitle(
+                                  item,
+                                  "完成于",
+                                  item.updatedAt,
+                                  doneSeqById.get(item.id) ?? 0,
+                                )}
+                              />
+                            </List.Item>
+                          )}
+                        />
+                      </Col>
+                    ) : null}
                   </Row>
                 )}
               </div>

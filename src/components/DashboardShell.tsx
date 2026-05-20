@@ -150,6 +150,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => new Date());
+  const [isBroken, setIsBroken] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -225,6 +226,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         breakpoint="lg"
         collapsedWidth={0}
         width={SIDER_WIDTH}
+        onBreakpoint={(broken) => setIsBroken(broken)}
         style={{
           display: "flex",
           flexDirection: "column",
@@ -302,7 +304,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <div>系统时间：{formatSystemTime(now)}</div>
         </div>
       </Sider>
-      <Layout style={{ marginLeft: SIDER_WIDTH, minHeight: "100vh" }}>
+      <Layout style={{ marginLeft: isBroken ? 0 : SIDER_WIDTH, minHeight: "100vh" }}>
         <Header
           style={{
             background: "#fff",
@@ -314,7 +316,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             borderBottom: "1px solid #f0f0f0",
             position: "fixed",
             top: 0,
-            left: SIDER_WIDTH,
+            left: isBroken ? 0 : SIDER_WIDTH,
             right: 0,
             height: HEADER_HEIGHT,
             lineHeight: `${HEADER_HEIGHT}px`,

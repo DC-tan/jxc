@@ -90,6 +90,8 @@ type SoLine = {
   quantity: number;
   unitPrice: number;
   remark: string;
+  /** 编辑订单时保留已弃用商品展示，不可新选 */
+  productSnapshot?: ProductOpt;
 };
 
 type DetailLine = {
@@ -310,6 +312,47 @@ function productFieldDisplay(
     return (p.model ?? "").trim() || "—";
   }
   return (p.spec ?? "").trim() || "—";
+}
+
+function soLineProduct(row: SoLine, pool: ProductOpt[]): ProductOpt | undefined {
+  if (!row.productId) return undefined;
+  const fromPool = pool.find((p) => p.id === row.productId);
+  if (fromPool) return fromPool;
+  if (row.productSnapshot?.id === row.productId) return row.productSnapshot;
+  return undefined;
+}
+
+function soSelectProductOptions(
+  pool: ProductOpt[],
+  lines: SoLine[],
+  row: SoLine,
+  field: ProductMatchField,
+): { value: string; label: string }[] {
+  const taken = new Set(
+    lines
+      .filter((l) => l.key !== row.key && l.productId)
+      .map((l) => l.productId as string),
+  );
+  const opts = pool.filter((p) => !taken.has(p.id) || p.id === row.productId);
+  const options = opts.map((p) => ({
+    value: p.id,
+    label: productFieldDisplay(p, field),
+  }));
+  const snap = row.productSnapshot;
+  if (
+    row.productId &&
+    snap?.id === row.productId &&
+    !options.some((o) => o.value === row.productId)
+  ) {
+    return [
+      {
+        value: snap.id,
+        label: `${productFieldDisplay(snap, field)}（已弃用）`,
+      },
+      ...options,
+    ];
+  }
+  return options;
 }
 
 /** 历时天数 = 结束日 − 创建日（日历日差） */
@@ -746,10 +789,7 @@ function SoLinesEditor({
   }, [soLineColKeys]);
 
   const lineProduct = useCallback(
-    (row: SoLine) =>
-      row.productId
-        ? pool.find((p) => p.id === row.productId)
-        : undefined,
+    (row: SoLine) => soLineProduct(row, pool),
     [pool],
   );
 
@@ -760,14 +800,6 @@ function SoLinesEditor({
           <Typography.Text type="secondary">请先选择客户</Typography.Text>
         );
       }
-      const taken = new Set(
-        lines
-          .filter((l) => l.key !== row.key && l.productId)
-          .map((l) => l.productId as string),
-      );
-      const opts = pool.filter(
-        (p) => !taken.has(p.id) || p.id === row.productId,
-      );
       const placeholders: Record<ProductMatchField, string> = {
         material: "输入物料编号前缀匹配",
         model: "输入型号前缀匹配",
@@ -780,24 +812,29 @@ function SoLinesEditor({
           style={{ width: "100%" }}
           placeholder={placeholders[field]}
           value={row.productId}
-          options={opts.map((p) => ({
-            value: p.id,
-            label: productFieldDisplay(p, field),
-          }))}
+          options={soSelectProductOptions(pool, lines, row, field)}
           filterOption={(input, option) => {
-            const p = pool.find((x) => x.id === option?.value);
+            const p = soLineProduct(
+              { ...row, productId: String(option?.value ?? "") },
+              pool,
+            );
             if (!p) return false;
             return productMatchesFieldPrefix(p, field, input);
           }}
           onChange={(pid) => {
             if (!pid) {
-              updateLine(row.key, { productId: undefined, unitPrice: 0 });
+              updateLine(row.key, {
+                productId: undefined,
+                unitPrice: 0,
+                productSnapshot: undefined,
+              });
               return;
             }
             const pr = pool.find((x) => x.id === pid);
             updateLine(row.key, {
               productId: pid,
               unitPrice: pr ? Number(pr.price) : 0,
+              productSnapshot: undefined,
             });
           }}
         />
@@ -1346,7 +1383,12 @@ export function SalesPage() {
   }, [createCustomerId, createOpen]);
 
   const submitCreate = async () => {
-    const v = await createForm.validateFields();
+    let v: Awaited<ReturnType<typeof createForm.validateFields>>;
+    try {
+      v = await createForm.validateFields();
+    } catch {
+      return;
+    }
     const filled = soLines.filter((l) => l.productId);
     if (filled.length === 0) {
       message.error("请至少添加一行并选定商品（物料编号/型号/规格中匹配）");
@@ -1476,6 +1518,20 @@ export function SalesPage() {
             quantity: Math.trunc(Number(l.quantity)),
             unitPrice: Number(l.unitPrice),
             remark: l.remark ?? "",
+            productSnapshot: {
+              id: l.product.id,
+              customerId: data.customer.id,
+              customerMaterialCode: l.product.customerMaterialCode,
+              machineModel: data.customerModel,
+              model: l.product.model,
+              spec: l.product.spec,
+              unit: l.product.unit,
+              price: l.product.price,
+              inspectionNotes: l.product.inspectionNotes,
+              productRemark: null,
+              imageUrls: l.product.imageUrls,
+              customer: data.customer,
+            },
           })),
         );
         setCreateOpen(true);

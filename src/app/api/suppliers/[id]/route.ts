@@ -28,6 +28,7 @@ const patchSchema = z.object({
     }),
   attrProduction: z.boolean().optional(),
   attrProcessing: z.boolean().optional(),
+  priceIncludesTax: z.boolean().optional(),
 });
 
 export async function PATCH(
@@ -78,6 +79,8 @@ export async function PATCH(
     data.deliveryLeadDays = raw.deliveryLeadDays;
   if (raw.attrProduction !== undefined) data.attrProduction = raw.attrProduction;
   if (raw.attrProcessing !== undefined) data.attrProcessing = raw.attrProcessing;
+  if (raw.priceIncludesTax !== undefined)
+    data.priceIncludesTax = raw.priceIncludesTax;
 
   if (Object.keys(data).length === 0) {
     return NextResponse.json(

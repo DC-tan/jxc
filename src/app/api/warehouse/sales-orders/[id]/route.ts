@@ -6,6 +6,9 @@ import {
   remainingToShip,
   storedQuantityShipped,
 } from "@/lib/sales-order-shipping";
+import { getMaterialInboundTotalsByIds } from "@/lib/materialStock";
+import { getOutsourceRecoveryQtyByProductId } from "@/lib/outsource-recovery-stock";
+import { productBomForInhouseProduction } from "@/lib/product-bom-scope";
 
 function parseImageUrls(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -44,6 +47,23 @@ export async function GET(
                 inspectionNotes: true,
                 productRemark: true,
                 imageUrls: true,
+                processingMode: true,
+                productMaterials: {
+                  orderBy: { sortOrder: "asc" },
+                  select: {
+                    materialId: true,
+                    scope: true,
+                    usageQty: true,
+                    material: {
+                      select: {
+                        code: true,
+                        name: true,
+                        unit: true,
+                        partDescription: true,
+                      },
+                    },
+                  },
+                },
               },
             },
           },
@@ -69,6 +89,36 @@ export async function GET(
         g.productId,
         Math.trunc(Number(g._sum.quantity ?? 0)),
       ]),
+    );
+
+    const inhouseMaterialIds = row.lines.flatMap((l) => {
+      const mode = l.product.processingMode;
+      if (mode !== "INHOUSE" && mode !== "OUTSOURCE_INHOUSE") return [];
+      return productBomForInhouseProduction(
+        mode,
+        l.product.productMaterials ?? [],
+      ).map((pm) => pm.materialId);
+    });
+    const materialStockById = await getMaterialInboundTotalsByIds(
+      prisma,
+      inhouseMaterialIds,
+    );
+
+    const hybridProductIds = [
+      ...new Set(
+        row.lines
+          .filter((l) => l.product.processingMode === "OUTSOURCE_INHOUSE")
+          .map((l) => l.productId),
+      ),
+    ];
+    const recoveryByProduct = new Map<string, number>();
+    await Promise.all(
+      hybridProductIds.map(async (productId) => {
+        recoveryByProduct.set(
+          productId,
+          await getOutsourceRecoveryQtyByProductId(prisma, productId),
+        );
+      }),
     );
 
     return NextResponse.json({
@@ -128,8 +178,27 @@ export async function GET(
             inspectionNotes: l.product.inspectionNotes,
             productRemark: l.product.productRemark,
             imageUrls: parseImageUrls(l.product.imageUrls),
+            processingMode: l.product.processingMode,
+            inhouseBom:
+              l.product.processingMode === "INHOUSE" ||
+              l.product.processingMode === "OUTSOURCE_INHOUSE"
+                ? productBomForInhouseProduction(
+                    l.product.processingMode,
+                    l.product.productMaterials ?? [],
+                  ).map((pm) => ({
+                    materialId: pm.materialId,
+                    usageQty: Number(pm.usageQty),
+                    materialStock:
+                      materialStockById.get(pm.materialId) ?? 0,
+                    material: pm.material,
+                  }))
+                : [],
             /** 成品入库累计（与出货预检、扣库逻辑一致） */
             stockQuantity: stockByProduct.get(l.productId) ?? 0,
+            recoveryStockQuantity:
+              l.product.processingMode === "OUTSOURCE_INHOUSE"
+                ? recoveryByProduct.get(l.productId) ?? 0
+                : undefined,
           },
         };
       }),

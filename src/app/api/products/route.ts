@@ -224,10 +224,16 @@ export async function POST(req: Request) {
   const matIds = [...new Set(d.materials.map((m) => m.materialId))];
   const mats = await prisma.material.findMany({
     where: { id: { in: matIds } },
-    select: { id: true },
+    select: { id: true, isDeprecated: true },
   });
   if (mats.length !== matIds.length) {
     return NextResponse.json({ error: "存在无效的物料" }, { status: 400 });
+  }
+  if (mats.some((m) => m.isDeprecated)) {
+    return NextResponse.json(
+      { error: "不能向 BOM 添加已弃用的物料" },
+      { status: 400 },
+    );
   }
 
   try {

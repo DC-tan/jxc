@@ -8,6 +8,7 @@ import {
   Form,
   Input,
   Modal,
+  Radio,
   Row,
   Select,
   Space,
@@ -33,6 +34,7 @@ type Row = {
   address: string | null;
   mainProduct: string | null;
   quality: CustomerQuality;
+  priceIncludesTax: boolean;
 };
 
 const qualityOptions = (Object.keys(CUSTOMER_QUALITY_LABEL) as CustomerQuality[]).map(
@@ -125,7 +127,7 @@ export function CustomersPage() {
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ quality: "MEDIUM" });
+    form.setFieldsValue({ quality: "MEDIUM", priceIncludesTax: false });
     setOpen(true);
   };
 
@@ -140,6 +142,7 @@ export function CustomersPage() {
       address: r.address,
       mainProduct: r.mainProduct,
       quality: r.quality,
+      priceIncludesTax: r.priceIncludesTax,
     });
     setOpen(true);
   };
@@ -272,7 +275,18 @@ export function CustomersPage() {
                 <Input.TextArea rows={2} allowClear placeholder="可选" />
               </Form.Item>
             </Col>
-            <Col xs={24} sm={12} />
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="priceIncludesTax"
+                label="标价"
+                tooltip="勾选「含税」时，销售单价按含税价录入；统计利润时按 ÷1.13 折成未税再算收入。"
+              >
+                <Radio.Group>
+                  <Radio value={false}>未税</Radio>
+                  <Radio value={true}>含税</Radio>
+                </Radio.Group>
+              </Form.Item>
+            </Col>
           </Row>
           <Row gutter={16}>
             <Col xs={24} sm={12}>

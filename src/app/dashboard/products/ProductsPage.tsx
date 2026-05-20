@@ -47,7 +47,7 @@ import type {
   SetStateAction,
   SyntheticEvent,
 } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MaterialInventoryListRow } from "@/lib/materialInventoryQuery";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
@@ -171,6 +171,20 @@ const DEFAULT_INV_COL_WIDTH: Record<string, number> = {
   productRemark: 140,
   totalQty: 96,
   lastReceivedAt: 168,
+};
+
+const PROD_ADJ_OP_WIDTH = 168;
+const PROD_ADJ_TABLE_WIDTH = 960;
+const PROD_ADJ_UNIFORM_COL = Math.floor(
+  (PROD_ADJ_TABLE_WIDTH - PROD_ADJ_OP_WIDTH) / 5,
+);
+
+const DEFAULT_PROD_ADJ_COL_WIDTH: Record<string, number> = {
+  cust: PROD_ADJ_UNIFORM_COL,
+  customerMaterialCode: PROD_ADJ_UNIFORM_COL,
+  model: PROD_ADJ_UNIFORM_COL,
+  spec: PROD_ADJ_UNIFORM_COL,
+  q: PROD_ADJ_UNIFORM_COL,
 };
 
 const DEFAULT_BOM_EDITOR_COL_WIDTH: Record<string, number> = {
@@ -344,6 +358,13 @@ function productInboundTypeLabel(r: ProductInboundRow): string {
   if (r.entryType === "MANUAL_STOCK_ADJUST") {
     return qty >= 0 ? "盘点入库" : "盘点出库";
   }
+  const desc = r.partDescription ?? "";
+  if (desc.includes("外发回收库结转")) {
+    return "外发结转入库";
+  }
+  if (desc.includes("销售出货（外发+自加工）")) {
+    return "销售出货";
+  }
   return qty >= 0 ? "入库" : "出库";
 }
 
@@ -445,6 +466,34 @@ function newBomLineKey() {
   return typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()
     : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** BOM 下拉选项：排除已选重复项；已绑定但已弃用的物料仅保留当前行展示 */
+function bomSelectMaterialOptions(
+  materialOptions: MaterialOption[],
+  lines: BomLine[],
+  row: BomLine,
+): { value: string; label: string }[] {
+  const taken = new Set(
+    lines
+      .filter((l) => l.key !== row.key && l.materialId)
+      .map((l) => l.materialId as string),
+  );
+  const opts = materialOptions.filter(
+    (o) => !taken.has(o.id) || o.id === row.materialId,
+  );
+  const options = opts.map((o) => ({ value: o.id, label: o.name }));
+  if (
+    row.materialId &&
+    row.name &&
+    !options.some((o) => o.value === row.materialId)
+  ) {
+    return [
+      { value: row.materialId, label: `${row.name}（已弃用）` },
+      ...options,
+    ];
+  }
+  return options;
 }
 
 function ProductBomTable({
@@ -579,6 +628,7 @@ function ProductBomTable({
     const range = v.dateRange as [dayjs.Dayjs, dayjs.Dayjs] | undefined;
     if (range?.[0]) p.set("receivedFrom", range[0].startOf("day").toISOString());
     if (range?.[1]) p.set("receivedTo", range[1].endOf("day").toISOString());
+    p.set("deprecated", "0");
     return p.toString();
   };
 
@@ -689,31 +739,18 @@ function ProductBomTable({
             setBomEditorColWidths((prev) => ({ ...prev, materialName: data.size.width }));
           },
         }),
-        render: (_, row) => {
-          const taken = new Set(
-            lines
-              .filter((l) => l.key !== row.key && l.materialId)
-              .map((l) => l.materialId as string),
-          );
-          const opts = materialOptions.filter(
-            (o) => !taken.has(o.id) || o.id === row.materialId,
-          );
-          return (
-            <Select
-              placeholder="选择系统物料"
-              allowClear
-              showSearch
-              style={{ width: "100%" }}
-              optionFilterProp="label"
-              value={row.materialId}
-              options={opts.map((o) => ({
-                value: o.id,
-                label: o.name,
-              }))}
-              onChange={(mid) => applyMaterialToLine(row.key, mid)}
-            />
-          );
-        },
+        render: (_, row) => (
+          <Select
+            placeholder="选择系统物料"
+            allowClear
+            showSearch
+            style={{ width: "100%" }}
+            optionFilterProp="label"
+            value={row.materialId}
+            options={bomSelectMaterialOptions(materialOptions, lines, row)}
+            onChange={(mid) => applyMaterialToLine(row.key, mid)}
+          />
+        ),
       },
       {
         key: "partDescription",
@@ -729,31 +766,32 @@ function ProductBomTable({
           },
         }),
         ellipsis: true,
-        render: (_, row) => {
-          const taken = new Set(
-            lines
-              .filter((l) => l.key !== row.key && l.materialId)
-              .map((l) => l.materialId as string),
-          );
-          const opts = materialOptions.filter(
-            (o) => !taken.has(o.id) || o.id === row.materialId,
-          );
-          return (
-            <Select
-              placeholder="输入部件描述自动筛选"
-              allowClear
-              showSearch
-              style={{ width: "100%" }}
-              optionFilterProp="label"
-              value={row.materialId}
-              options={opts.map((o) => ({
-                value: o.id,
-                label: o.partDescription?.trim() || "—",
-              }))}
-              onChange={(mid) => applyMaterialToLine(row.key, mid)}
-            />
-          );
-        },
+        render: (_, row) => (
+          <Select
+            placeholder="输入部件描述自动筛选"
+            allowClear
+            showSearch
+            style={{ width: "100%" }}
+            optionFilterProp="label"
+            value={row.materialId}
+            options={bomSelectMaterialOptions(materialOptions, lines, row).map(
+              (o) => {
+                if (o.label.endsWith("（已弃用）")) {
+                  return {
+                    value: o.value,
+                    label: row.partDescription?.trim() || "—",
+                  };
+                }
+                const m = materialOptions.find((x) => x.id === o.value);
+                return {
+                  value: o.value,
+                  label: m?.partDescription?.trim() || "—",
+                };
+              },
+            )}
+            onChange={(mid) => applyMaterialToLine(row.key, mid)}
+          />
+        ),
       },
       {
         key: "unit",
@@ -1018,11 +1056,15 @@ function ProductBomTable({
   );
 }
 
-function renderProductThumbs(urls: string[]) {
-  if (!urls?.length) return "—";
+const ProductImageThumbs = memo(function ProductImageThumbs({
+  urls,
+}: {
+  urls: string[];
+}) {
+  if (!urls.length) return <>—</>;
   return (
     <Image.PreviewGroup>
-      <Space size={4} wrap>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
         {urls.map((u) => (
           <Image
             key={u}
@@ -1033,16 +1075,58 @@ function renderProductThumbs(urls: string[]) {
             style={{ objectFit: "cover", borderRadius: 4, cursor: "pointer" }}
           />
         ))}
-      </Space>
+      </div>
     </Image.PreviewGroup>
   );
-}
+});
+
+const ProductTableOpActions = memo(function ProductTableOpActions({
+  productId,
+  onEdit,
+  onDelete,
+}: {
+  productId: string;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+      <Button type="link" size="small" onClick={() => void onEdit(productId)}>
+        编辑
+      </Button>
+      <Button type="link" size="small" danger onClick={() => onDelete(productId)}>
+        删除
+      </Button>
+    </div>
+  );
+});
+
+const ProductInvDetailButton = memo(function ProductInvDetailButton({
+  productId,
+  onOpen,
+}: {
+  productId: string;
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <Button type="link" size="small" onClick={() => void onOpen(productId)}>
+      详情
+    </Button>
+  );
+});
 
 export function ProductsPage() {
   const { message, modal } = App.useApp();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const [tab, setTab] = useState("add");
 
   const [presets, setPresets] = useState<ProductPresetBundle | null>(null);
@@ -1100,6 +1184,7 @@ export function ProductsPage() {
   );
   const [prodColWidths, setProdColWidths] = useState<Record<string, number>>({});
   const [invColWidths, setInvColWidths] = useState<Record<string, number>>({});
+  const [prodAdjColWidths, setProdAdjColWidths] = useState<Record<string, number>>({});
   const skipProdColPersist = useRef(true);
   const skipInvColPersist = useRef(true);
   const skipBomMatColPersist = useRef(true);
@@ -1660,12 +1745,13 @@ export function ProductsPage() {
     }
   };
 
-  const openEdit = async (id: string) => {
+  const openEdit = useCallback(async (id: string) => {
     setEditingId(id);
     try {
       const d = await fetchJson<DetailPayload>(`/api/products/${id}`, {
         credentials: "include",
       });
+      if (!mountedRef.current) return;
       editFormFieldsPendingRef.current = {
         customerId: d.customerId,
         customerMaterialCode: d.customerMaterialCode,
@@ -1740,7 +1826,7 @@ export function ProductsPage() {
       setEditingProductInfo(null);
       message.error(e instanceof Error ? e.message : "加载失败");
     }
-  };
+  }, [message]);
 
   const submitEdit = async () => {
     const v = await editForm.validateFields();
@@ -1817,26 +1903,29 @@ export function ProductsPage() {
     }
   };
 
-  const onDelete = (r: ProductRow) => {
-    modal.confirm({
-      title: "确认删除该商品？将同时删除其入库记录及包含物料关联。",
-      okType: "danger",
-      onOk: async () => {
-        try {
-          await fetchJson(`/api/products/${r.id}`, {
-            method: "DELETE",
-            credentials: "include",
-          });
-        } catch (e) {
-          message.error(e instanceof Error ? e.message : "删除失败");
-          return;
-        }
-        message.success("已删除");
-        await loadProducts();
-        await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
-      },
-    });
-  };
+  const onDeleteProduct = useCallback(
+    (productId: string) => {
+      modal.confirm({
+        title: "确认删除该商品？将同时删除其入库记录及包含物料关联。",
+        okType: "danger",
+        onOk: async () => {
+          try {
+            await fetchJson(`/api/products/${productId}`, {
+              method: "DELETE",
+              credentials: "include",
+            });
+          } catch (e) {
+            message.error(e instanceof Error ? e.message : "删除失败");
+            return;
+          }
+          message.success("已删除");
+          await loadProducts();
+          await loadInventory({}, { deprecatedOnly: tab === "deprecated" });
+        },
+      });
+    },
+    [modal, message, loadProducts, loadInventory, tab],
+  );
 
   const deprecateFromEdit = () => {
     if (!editingId || !editingProductInfo) return;
@@ -1904,36 +1993,36 @@ export function ProductsPage() {
     });
   };
 
-  const openDetail = async (id: string) => {
-    setDetailOpen(true);
-    setDetail(null);
-    setLoadingDetail(true);
-    try {
-      const data = await fetchJson<DetailPayload>(`/api/products/${id}`, {
-        credentials: "include",
-      });
-      setDetail(data);
-    } catch (e) {
-      message.error(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoadingDetail(false);
-    }
-  };
+  const openDetail = useCallback(
+    async (id: string) => {
+      setDetailOpen(true);
+      setDetail(null);
+      setLoadingDetail(true);
+      try {
+        const data = await fetchJson<DetailPayload>(`/api/products/${id}`, {
+          credentials: "include",
+        });
+        if (!mountedRef.current) return;
+        setDetail(data);
+      } catch (e) {
+        if (!mountedRef.current) return;
+        message.error(e instanceof Error ? e.message : "加载失败");
+      } finally {
+        if (mountedRef.current) setLoadingDetail(false);
+      }
+    },
+    [message],
+  );
 
   const detailProductIdQ = searchParams.get("detailProductId");
   useEffect(() => {
     if (!detailProductIdQ) return;
-    let cancelled = false;
-    void (async () => {
-      await openDetail(detailProductIdQ);
-      if (!cancelled) router.replace(pathname, { scroll: false });
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [detailProductIdQ, pathname, router]);
+    void openDetail(detailProductIdQ).then(() => {
+      if (mountedRef.current) router.replace(pathname, { scroll: false });
+    });
+  }, [detailProductIdQ, pathname, router, openDetail]);
 
-  const prodColumns: ColumnsType<ProductRow> = [
+  const prodColumns: ColumnsType<ProductRow> = useMemo(() => [
     {
       key: "customer",
       title: "客户名称",
@@ -1978,7 +2067,7 @@ export function ProductsPage() {
       key: "productImages",
       title: "商品图片",
       dataIndex: "imageUrls",
-      render: (urls: string[]) => renderProductThumbs(urls ?? []),
+      render: (urls: string[]) => <ProductImageThumbs urls={urls ?? []} />,
     },
     { key: "unit", title: "单位", dataIndex: "unit", width: 72 },
     { key: "price", title: "价格", dataIndex: "price", width: 100 },
@@ -2016,19 +2105,16 @@ export function ProductsPage() {
       key: "op",
       width: 140,
       render: (_, r) => (
-        <Space wrap>
-          <Button type="link" size="small" onClick={() => void openEdit(r.id)}>
-            编辑
-          </Button>
-          <Button type="link" size="small" danger onClick={() => onDelete(r)}>
-            删除
-          </Button>
-        </Space>
+        <ProductTableOpActions
+          productId={r.id}
+          onEdit={openEdit}
+          onDelete={onDeleteProduct}
+        />
       ),
     },
-  ];
+  ], [openEdit, onDeleteProduct]);
 
-  const invColumns: ColumnsType<InventoryRow> = [
+  const invColumns: ColumnsType<InventoryRow> = useMemo(() => [
     {
       key: "customer",
       title: "客户名称",
@@ -2073,7 +2159,7 @@ export function ProductsPage() {
       key: "productImages",
       title: "商品图片",
       dataIndex: "imageUrls",
-      render: (urls: string[]) => renderProductThumbs(urls ?? []),
+      render: (urls: string[]) => <ProductImageThumbs urls={urls ?? []} />,
     },
     { key: "unit", title: "单位", dataIndex: "unit", width: 72 },
     { key: "price", title: "价格", dataIndex: "price", width: 100 },
@@ -2136,37 +2222,51 @@ export function ProductsPage() {
       key: "d",
       width: 80,
       render: (_, r) => (
-        <Button type="link" size="small" onClick={() => void openDetail(r.id)}>
-          详情
-        </Button>
+        <ProductInvDetailButton productId={r.id} onOpen={openDetail} />
       ),
     },
-  ];
+  ], [openDetail]);
 
-  const visibleProdColumns = prodColumns.filter(
-    (col) =>
-      col.key === "op" ||
-      (typeof col.key === "string" && prodColKeys.includes(col.key)),
+  const visibleProdColumns = useMemo(
+    () =>
+      prodColumns.filter(
+        (col) =>
+          col.key === "op" ||
+          (typeof col.key === "string" && prodColKeys.includes(col.key)),
+      ),
+    [prodColumns, prodColKeys],
   );
 
-  const visibleInvColumns = invColumns.filter(
-    (col) =>
-      col.key === "d" ||
-      (typeof col.key === "string" && invColKeys.includes(col.key)),
+  const visibleInvColumns = useMemo(
+    () =>
+      invColumns.filter(
+        (col) =>
+          col.key === "d" ||
+          (typeof col.key === "string" && invColKeys.includes(col.key)),
+      ),
+    [invColumns, invColKeys],
   );
 
-  const prodTableColumns = attachResize(
-    visibleProdColumns,
-    prodColWidths,
-    setProdColWidths,
-    DEFAULT_PROD_COL_WIDTH,
+  const prodTableColumns = useMemo(
+    () =>
+      attachResize(
+        visibleProdColumns,
+        prodColWidths,
+        setProdColWidths,
+        DEFAULT_PROD_COL_WIDTH,
+      ),
+    [visibleProdColumns, prodColWidths],
   );
 
-  const invTableColumns = attachResize(
-    visibleInvColumns,
-    invColWidths,
-    setInvColWidths,
-    DEFAULT_INV_COL_WIDTH,
+  const invTableColumns = useMemo(
+    () =>
+      attachResize(
+        visibleInvColumns,
+        invColWidths,
+        setInvColWidths,
+        DEFAULT_INV_COL_WIDTH,
+      ),
+    [visibleInvColumns, invColWidths],
   );
 
   const exportProductInventoryExcel = useCallback(async () => {
@@ -2285,6 +2385,52 @@ export function ProductsPage() {
     stockAdjustForm.resetFields();
     setStockAdjustOpen(true);
   };
+
+  const stockAdjustTableColumns = useMemo(() => {
+    const base: ColumnsType<InventoryRow> = [
+      {
+        title: "客户",
+        key: "cust",
+        ellipsis: true,
+        render: (_, r) => r.customer.name,
+      },
+      {
+        title: "客户物料编号",
+        dataIndex: "customerMaterialCode",
+        key: "customerMaterialCode",
+        ellipsis: true,
+      },
+      { title: "商品型号", dataIndex: "model", key: "model", ellipsis: true },
+      {
+        title: "商品规格",
+        dataIndex: "spec",
+        key: "spec",
+        ellipsis: true,
+        render: (v: string) => v || "—",
+      },
+      { title: "当前库存", dataIndex: "totalQty", key: "q", align: "right" as const },
+      {
+        title: "操作",
+        key: "op",
+        render: (_, r) => (
+          <Space size={0} wrap>
+            <Button type="link" size="small" onClick={() => openStockAdjust(r)}>
+              调整
+            </Button>
+            <Button type="link" size="small" onClick={() => void openEdit(r.id)}>
+              修改商品
+            </Button>
+          </Space>
+        ),
+      },
+    ];
+    return attachResize(
+      base,
+      prodAdjColWidths,
+      setProdAdjColWidths,
+      DEFAULT_PROD_ADJ_COL_WIDTH,
+    );
+  }, [prodAdjColWidths, openEdit]);
 
   const submitStockAdjust = async () => {
     if (!stockAdjustTarget) return;
@@ -2537,62 +2683,18 @@ export function ProductsPage() {
                 <Table<InventoryRow>
                   rowKey="id"
                   loading={loadingInv}
-                  columns={[
-                    {
-                      title: "客户",
-                      key: "cust",
-                      ellipsis: true,
-                      render: (_, r) => r.customer.name,
-                    },
-                    {
-                      title: "客户物料编号",
-                      dataIndex: "customerMaterialCode",
-                      key: "customerMaterialCode",
-                      ellipsis: true,
-                      width: 120,
-                    },
-                    { title: "商品型号", dataIndex: "model", key: "model", ellipsis: true, width: 120 },
-                    {
-                      title: "商品规格",
-                      dataIndex: "spec",
-                      key: "spec",
-                      ellipsis: true,
-                      render: (v: string) => v || "—",
-                    },
-                    {
-                      title: "当前库存",
-                      dataIndex: "totalQty",
-                      key: "q",
-                      width: 88,
-                      align: "right" as const,
-                    },
-                    {
-                      title: "操作",
-                      key: "op",
-                      width: 160,
-                      render: (_, r) => (
-                        <Space size={0} wrap>
-                          <Button type="link" size="small" onClick={() => openStockAdjust(r)}>
-                            调整
-                          </Button>
-                          <Button
-                            type="link"
-                            size="small"
-                            onClick={() => void openEdit(r.id)}
-                          >
-                            修改商品
-                          </Button>
-                        </Space>
-                      ),
-                    },
-                  ]}
+                  columns={stockAdjustTableColumns}
                   dataSource={inventory}
                   pagination={{
                     defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
-                  scroll={{ x: 900 }}
+                  scroll={{ x: "max-content" }}
+                  tableLayout="fixed"
+                  components={{
+                    header: { cell: ResizableTableTitle },
+                  }}
                 />
               </Space>
             ),

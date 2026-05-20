@@ -28,6 +28,7 @@ import type { Dispatch, ReactNode, SetStateAction, SyntheticEvent } from "react"
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
+import { moneyColumnLabels } from "@/lib/price-tax";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import { PurchaseFromSalesWizard } from "./PurchaseFromSalesWizard";
 
@@ -40,7 +41,7 @@ const PURCHASE_TAB_PERM: Record<string, string> = {
 import { PurchaseOrderContractPreviewModal } from "./PurchaseOrderContractPreviewModal";
 import { PurchaseTemplateVisualEditor } from "./PurchaseTemplateVisualEditor";
 
-type SupplierOpt = { id: string; code: string; name: string };
+type SupplierOpt = { id: string; code: string; name: string; priceIncludesTax: boolean };
 type MaterialOpt = {
   id: string;
   code: string;
@@ -390,11 +391,17 @@ function PoLinesEditor({
   lines,
   setLines,
   materials,
+  priceIncludesTax,
 }: {
   lines: PoLine[];
   setLines: Dispatch<SetStateAction<PoLine[]>>;
   materials: MaterialOpt[];
+  priceIncludesTax: boolean;
 }) {
+  const priceLabels = useMemo(
+    () => moneyColumnLabels(priceIncludesTax),
+    [priceIncludesTax],
+  );
   const [poLineColKeys, setPoLineColKeys] = useState<string[]>(() =>
     loadPurchaseVisibleColKeys(LS_PO_LINE_COLS, PO_LINE_ALL_KEYS, PO_LINE_ALL_KEYS),
   );
@@ -504,7 +511,7 @@ function PoLinesEditor({
     },
     {
       key: "unitPrice",
-      title: "单价",
+      title: priceLabels.unitPrice,
       width: 120,
       render: (_, row) => (
         <InputNumber
@@ -547,7 +554,7 @@ function PoLinesEditor({
       ),
     },
     ],
-    [lines, materials, updateLine, removeLine],
+    [lines, materials, updateLine, removeLine, priceLabels],
   );
 
   const poLineColumns = useMemo(() => {
@@ -661,6 +668,14 @@ export function PurchasePage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingPoId, setEditingPoId] = useState<string | null>(null);
   const [createForm] = Form.useForm();
+  const createSupplierId = Form.useWatch("supplierId", createForm);
+  const createSupplierPriceIncludesTax = useMemo(() => {
+    if (!createSupplierId || !presets) return false;
+    return (
+      presets.suppliers.find((s) => s.id === createSupplierId)?.priceIncludesTax ??
+      false
+    );
+  }, [createSupplierId, presets]);
   const [poLines, setPoLines] = useState<PoLine[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
@@ -912,7 +927,12 @@ export function PurchasePage() {
   }, [loadTodayOrders, loadPendingPurchase, loadQueryOrders, queryForm, tab]);
 
   const submitCreate = async () => {
-    const v = await createForm.validateFields();
+    let v: Awaited<ReturnType<typeof createForm.validateFields>>;
+    try {
+      v = await createForm.validateFields();
+    } catch {
+      return;
+    }
     const filled = poLines.filter((l) => l.materialId);
     if (filled.length === 0) {
       message.error("请至少添加一行并选择物料");
@@ -1355,6 +1375,11 @@ export function PurchasePage() {
     pendingPoListColWidths,
   ]);
 
+  const detailPriceLabels = useMemo(
+    () => moneyColumnLabels(detail?.supplier?.priceIncludesTax ?? false),
+    [detail?.supplier?.priceIncludesTax],
+  );
+
   const detailLineAllColumns = useMemo(
     () =>
       [
@@ -1387,12 +1412,12 @@ export function PurchasePage() {
         },
         {
           key: "unitPrice",
-          title: "单价",
+          title: detailPriceLabels.unitPrice,
           render: (_: unknown, r: DetailLine) => r.unitPrice,
         },
         {
           key: "amount",
-          title: "金额",
+          title: detailPriceLabels.amount,
           render: (_: unknown, r: DetailLine) =>
             (Number(r.quantity) * Number(r.unitPrice)).toFixed(4),
         },
@@ -1403,7 +1428,7 @@ export function PurchasePage() {
           render: (_: unknown, r: DetailLine) => r.remark ?? "—",
         },
       ] as ColumnsType<DetailLine>,
-    [],
+    [detailPriceLabels],
   );
 
   const detailLineColumns = useMemo(() => {
@@ -1728,6 +1753,7 @@ export function PurchasePage() {
           lines={poLines}
           setLines={setPoLines}
           materials={presets?.materials ?? []}
+          priceIncludesTax={createSupplierPriceIncludesTax}
         />
       </Modal>
 
@@ -1739,9 +1765,23 @@ export function PurchasePage() {
           setDetail(null);
         }}
         footer={
-          <Button type="primary" onClick={() => setDetailOpen(false)}>
-            关闭
-          </Button>
+          <Space wrap>
+            <Button onClick={() => setDetailOpen(false)}>关闭</Button>
+            {detail ? (
+              <>
+                <Button
+                  onClick={() =>
+                    openPoContractPreview({
+                      id: detail.id,
+                      orderNo: detail.orderNo,
+                    } as PurchaseOrderRow)
+                  }
+                >
+                  订单预览 / 合同打印
+                </Button>
+              </>
+            ) : null}
+          </Space>
         }
         width={960}
         destroyOnHidden

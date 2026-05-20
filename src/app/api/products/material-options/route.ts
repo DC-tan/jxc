@@ -11,6 +11,7 @@ export async function GET() {
 
   try {
     const list = await prisma.material.findMany({
+      where: { isDeprecated: false },
       orderBy: [{ code: "asc" }],
       select: {
         id: true,

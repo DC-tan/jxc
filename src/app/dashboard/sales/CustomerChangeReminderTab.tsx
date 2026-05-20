@@ -149,7 +149,12 @@ export function CustomerChangeReminderTab() {
   };
 
   const submit = async () => {
-    const v = await form.validateFields();
+    let v: Awaited<ReturnType<typeof form.validateFields>>;
+    try {
+      v = await form.validateFields();
+    } catch {
+      return;
+    }
     setSubmitting(true);
     try {
       const payload = {

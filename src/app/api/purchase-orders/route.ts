@@ -5,6 +5,10 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
 import { allocatePurchaseOrderNo } from "@/lib/purchase-order-number";
+import {
+  parseExtraFeesPayload,
+  syncPurchaseOrderExtraFees,
+} from "@/lib/purchase-extra-fees";
 
 const lineSchema = z.object({
   materialId: z.string().min(1),
@@ -17,6 +21,7 @@ const createSchema = z.object({
   supplierId: z.string().min(1, "请选择供应商"),
   remark: z.string().optional().nullable(),
   lines: z.array(lineSchema).min(1, "请至少添加一行物料"),
+  extraFees: z.array(z.unknown()).optional(),
 });
 
 function toDecimal(v: unknown, fallback = "0"): string {
@@ -180,6 +185,11 @@ export async function POST(req: Request) {
   }
 
   const d = parsed.data;
+  const extraParsed = parseExtraFeesPayload(d.extraFees);
+  if (!extraParsed.ok) {
+    return NextResponse.json({ error: extraParsed.error }, { status: 400 });
+  }
+
   const sup = await prisma.supplier.findUnique({
     where: { id: d.supplierId },
     select: { id: true, deliveryLeadDays: true },
@@ -209,7 +219,7 @@ export async function POST(req: Request) {
         createdAt,
         sup.deliveryLeadDays,
       );
-      return tx.purchaseOrder.create({
+      const created = await tx.purchaseOrder.create({
         data: {
           orderNo,
           supplierId: d.supplierId,
@@ -232,6 +242,8 @@ export async function POST(req: Request) {
           _count: { select: { lines: true } },
         },
       });
+      await syncPurchaseOrderExtraFees(tx, created.id, extraParsed.fees);
+      return created;
     });
 
     return NextResponse.json({

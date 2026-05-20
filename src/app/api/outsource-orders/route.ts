@@ -111,7 +111,7 @@ export async function GET(req: Request) {
     const orderNos = rows
       .map((r) => r.orderNo?.trim())
       .filter((x): x is string => Boolean(x));
-    const [materialReceived, productInbounded] = await Promise.all([
+    const [materialReceived, productInbounded, recoveryInbounded] = await Promise.all([
       prisma.materialInbound.groupBy({
         by: ["purchaseOrderNo"],
         where: {
@@ -128,6 +128,14 @@ export async function GET(req: Request) {
         },
         _count: { _all: true },
       }),
+      prisma.outsourceRecoveryInbound.groupBy({
+        by: ["outsourceOrderNo"],
+        where: {
+          outsourceOrderNo: { in: orderNos },
+          quantity: { gt: 0 },
+        },
+        _count: { _all: true },
+      }),
     ]);
     const hasPositiveInboundByOrderNo = new Set<string>();
     for (const g of materialReceived) {
@@ -135,6 +143,9 @@ export async function GET(req: Request) {
     }
     for (const g of productInbounded) {
       if (g.purchaseOrderNo) hasPositiveInboundByOrderNo.add(g.purchaseOrderNo);
+    }
+    for (const g of recoveryInbounded) {
+      if (g.outsourceOrderNo) hasPositiveInboundByOrderNo.add(g.outsourceOrderNo);
     }
 
     return NextResponse.json({

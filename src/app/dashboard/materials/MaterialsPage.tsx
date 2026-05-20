@@ -162,6 +162,7 @@ type CustomerSupplyMaterialOption = {
   code: string;
   name: string;
   customerId: string | null;
+  partDescription: string | null;
   customer: CustomerOpt | null;
 };
 
@@ -169,6 +170,7 @@ type CustomerSupplyInboundRow = {
   id: string;
   quantity: number;
   receivedAt: string;
+  partDescription: string | null;
   remark: string | null;
   customer: CustomerOpt | null;
   material: { id: string; code: string; name: string; unit: string };
@@ -256,6 +258,20 @@ const DEFAULT_INV_COL_WIDTH: Record<string, number> = {
   supplier: 140,
   totalQty: 96,
   lastReceivedAt: 168,
+};
+
+const MAT_ADJ_OP_WIDTH = 168;
+const MAT_ADJ_TABLE_WIDTH = 960;
+const MAT_ADJ_UNIFORM_COL = Math.floor(
+  (MAT_ADJ_TABLE_WIDTH - MAT_ADJ_OP_WIDTH) / 5,
+);
+
+const DEFAULT_MAT_ADJ_COL_WIDTH: Record<string, number> = {
+  code: MAT_ADJ_UNIFORM_COL,
+  name: MAT_ADJ_UNIFORM_COL,
+  kind: MAT_ADJ_UNIFORM_COL,
+  partDescription: MAT_ADJ_UNIFORM_COL,
+  q: MAT_ADJ_UNIFORM_COL,
 };
 
 function attachResize<T extends object>(
@@ -409,6 +425,7 @@ export function MaterialsPage() {
   const [invColKeys, setInvColKeys] = useState<string[]>(INV_DEFAULT_KEYS);
   const [matColWidths, setMatColWidths] = useState<Record<string, number>>({});
   const [invColWidths, setInvColWidths] = useState<Record<string, number>>({});
+  const [matAdjColWidths, setMatAdjColWidths] = useState<Record<string, number>>({});
   const skipMatColPersist = useRef(true);
   const skipInvColPersist = useRef(true);
 
@@ -422,6 +439,7 @@ export function MaterialsPage() {
     materialId: string;
     quantity: number;
     receivedAt: dayjs.Dayjs;
+    partDescription?: string;
     remark?: string;
   }>();
   const [customerSupplyMaterials, setCustomerSupplyMaterials] = useState<
@@ -431,6 +449,8 @@ export function MaterialsPage() {
     "customerId",
     customerSupplyEntryForm,
   );
+  const [customerSupplyPartDescSuggestions, setCustomerSupplyPartDescSuggestions] =
+    useState<string[]>([]);
   const [customerSupplyRows, setCustomerSupplyRows] = useState<
     CustomerSupplyInboundRow[]
   >([]);
@@ -576,12 +596,14 @@ export function MaterialsPage() {
         const data = await fetchJson<{
           customers: CustomerOpt[];
           materials: CustomerSupplyMaterialOption[];
+          partDescriptionSuggestions?: string[];
           list: CustomerSupplyInboundRow[];
         }>(`/api/materials/customer-supply?${q.toString()}`, {
           credentials: "include",
         });
         setCustomers((prev) => (prev.length > 0 ? prev : (data.customers ?? [])));
         setCustomerSupplyMaterials(data.materials ?? []);
+        setCustomerSupplyPartDescSuggestions(data.partDescriptionSuggestions ?? []);
         setCustomerSupplyRows(data.list ?? []);
       } catch (e) {
         message.error(e instanceof Error ? e.message : "加载客供记录失败");
@@ -1387,6 +1409,111 @@ export function MaterialsPage() {
     [customerSupplyEntryCustomerId, customerSupplyMaterials],
   );
 
+  const resolveCustomerSupplyByPartDesc = useCallback(
+    (partDesc: string) => {
+      const key = partDesc.trim().toLowerCase();
+      if (!key) return [];
+      const out: CustomerSupplyMaterialOption[] = [];
+      const seen = new Set<string>();
+      for (const m of customerSupplyMaterials) {
+        if ((m.partDescription?.trim().toLowerCase() ?? "") !== key) continue;
+        if (seen.has(m.id)) continue;
+        seen.add(m.id);
+        out.push(m);
+      }
+      for (const r of customerSupplyRows) {
+        if ((r.partDescription?.trim().toLowerCase() ?? "") !== key) continue;
+        const m = customerSupplyMaterials.find((x) => x.id === r.material.id);
+        if (!m || seen.has(m.id)) continue;
+        seen.add(m.id);
+        out.push(m);
+      }
+      return out;
+    },
+    [customerSupplyMaterials, customerSupplyRows],
+  );
+
+  const applyPartDescriptionLookup = useCallback(
+    (partDesc: string) => {
+      const trimmed = partDesc.trim();
+      if (!trimmed) return;
+      const matches = resolveCustomerSupplyByPartDesc(trimmed);
+      if (matches.length === 0) return;
+
+      let target = matches[0]!;
+      if (matches.length > 1) {
+        const recent = customerSupplyRows.find(
+          (r) =>
+            (r.partDescription?.trim().toLowerCase() ?? "") ===
+            trimmed.toLowerCase(),
+        );
+        if (recent) {
+          const fromRecent = matches.find((m) => m.id === recent.material.id);
+          if (fromRecent) target = fromRecent;
+        }
+        message.info(
+          `该部件描述对应 ${matches.length} 个客供料，已带出：${target.code} ${target.name}`,
+        );
+      }
+
+      if (!target.customerId) {
+        message.warning("该客供料未绑定客供客户，请手动选择客户");
+        customerSupplyEntryForm.setFieldsValue({
+          materialId: target.id,
+          partDescription: trimmed,
+        });
+        return;
+      }
+
+      customerSupplyEntryForm.setFieldsValue({
+        customerId: target.customerId,
+        materialId: target.id,
+        partDescription: trimmed,
+      });
+    },
+    [
+      resolveCustomerSupplyByPartDesc,
+      customerSupplyRows,
+      customerSupplyEntryForm,
+      message,
+    ],
+  );
+
+  const customerSupplyPartDescAutoOptions = useMemo(() => {
+    const set = new Set(customerSupplyPartDescSuggestions);
+    for (const m of customerSupplyMaterials) {
+      if (m.partDescription?.trim()) set.add(m.partDescription.trim());
+    }
+    for (const r of customerSupplyRows) {
+      if (r.partDescription?.trim()) set.add(r.partDescription.trim());
+    }
+    return Array.from(set)
+      .sort((a, b) => a.localeCompare(b, "zh-CN"))
+      .map((value) => {
+        const matches = customerSupplyMaterials.filter(
+          (m) =>
+            (m.partDescription?.trim().toLowerCase() ?? "") ===
+            value.toLowerCase(),
+        );
+        let label = value;
+        if (matches.length === 1) {
+          const m = matches[0]!;
+          const cust =
+            m.customer?.name ??
+            customers.find((c) => c.id === m.customerId)?.name;
+          label = `${value} — ${m.code} ${m.name}${cust ? ` / ${cust}` : ""}`;
+        } else if (matches.length > 1) {
+          label = `${value}（${matches.length} 个客供料）`;
+        }
+        return { value, label };
+      });
+  }, [
+    customerSupplyPartDescSuggestions,
+    customerSupplyMaterials,
+    customerSupplyRows,
+    customers,
+  ]);
+
   const showInventoryFilter =
     tab === "inventory" || tab === "stockAdjust" || tab === "deprecated";
 
@@ -1395,6 +1522,42 @@ export function MaterialsPage() {
     stockAdjustForm.resetFields();
     setStockAdjustOpen(true);
   };
+
+  const stockAdjustTableColumns = useMemo(() => {
+    const base: ColumnsType<InventoryRow> = [
+      { title: "物料编号", dataIndex: "code", key: "code", ellipsis: true },
+      { title: "物料名称", dataIndex: "name", key: "name", ellipsis: true },
+      { title: "种类", dataIndex: "kindName", key: "kind", ellipsis: true },
+      {
+        title: "部件描述",
+        dataIndex: "partDescription",
+        key: "partDescription",
+        ellipsis: true,
+        render: (v: string | null) => v ?? "—",
+      },
+      { title: "当前库存", dataIndex: "totalQty", key: "q", align: "right" as const },
+      {
+        title: "操作",
+        key: "op",
+        render: (_, r) => (
+          <Space size={0} wrap>
+            <Button type="link" size="small" onClick={() => openStockAdjust(r)}>
+              调整
+            </Button>
+            <Button type="link" size="small" onClick={() => void openEdit(r.id)}>
+              修改物料
+            </Button>
+          </Space>
+        ),
+      },
+    ];
+    return attachResize(
+      base,
+      matAdjColWidths,
+      setMatAdjColWidths,
+      DEFAULT_MAT_ADJ_COL_WIDTH,
+    );
+  }, [matAdjColWidths, openEdit]);
 
   const submitStockAdjust = async () => {
     if (!stockAdjustTarget) return;
@@ -1439,6 +1602,7 @@ export function MaterialsPage() {
       materialId: string;
       quantity: number;
       receivedAt: dayjs.Dayjs;
+      partDescription?: string;
       remark?: string;
     };
     try {
@@ -1457,12 +1621,14 @@ export function MaterialsPage() {
           materialId: v.materialId,
           quantity: v.quantity,
           receivedAt: v.receivedAt?.toISOString(),
+          partDescription: v.partDescription?.trim() || null,
           remark: v.remark?.trim() || null,
         }),
       });
       message.success("客供料已入库");
       customerSupplyEntryForm.setFieldsValue({
         quantity: 1,
+        partDescription: undefined,
         remark: "",
         receivedAt: dayjs(),
       });
@@ -1743,6 +1909,34 @@ export function MaterialsPage() {
                     style={{ rowGap: 12 }}
                     onFinish={() => void submitCustomerSupplyInbound()}
                   >
+                    <Form.Item name="partDescription" label="部件描述">
+                      <AutoComplete
+                        allowClear
+                        style={{ width: 280 }}
+                        options={customerSupplyPartDescAutoOptions}
+                        filterOption={(inputValue, option) =>
+                          String(option?.value ?? "")
+                            .toLowerCase()
+                            .includes(String(inputValue ?? "").trim().toLowerCase()) ||
+                          String(option?.label ?? "")
+                            .toLowerCase()
+                            .includes(String(inputValue ?? "").trim().toLowerCase())
+                        }
+                        onSelect={(value) => {
+                          applyPartDescriptionLookup(String(value));
+                        }}
+                      >
+                        <Input
+                          placeholder="输入或选择，可带出客供客户与客供料"
+                          autoComplete="off"
+                          spellCheck={false}
+                          onBlur={(e) => {
+                            const v = e.target.value.trim();
+                            if (v) applyPartDescriptionLookup(v);
+                          }}
+                        />
+                      </AutoComplete>
+                    </Form.Item>
                     <Form.Item
                       name="customerId"
                       label="客供客户"
@@ -1758,7 +1952,9 @@ export function MaterialsPage() {
                           label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
                         }))}
                         onChange={() => {
-                          customerSupplyEntryForm.setFieldsValue({ materialId: undefined });
+                          customerSupplyEntryForm.setFieldsValue({
+                            materialId: undefined,
+                          });
                         }}
                       />
                     </Form.Item>
@@ -1773,6 +1969,28 @@ export function MaterialsPage() {
                         optionFilterProp="label"
                         style={{ width: 260 }}
                         options={customerSupplyMaterialOptions}
+                        onChange={(materialId) => {
+                          const mat = customerSupplyMaterials.find(
+                            (m) => m.id === materialId,
+                          );
+                          const archive = mat?.partDescription?.trim();
+                          const cur = customerSupplyEntryForm.getFieldValue(
+                            "partDescription",
+                          );
+                          if (
+                            archive &&
+                            (!cur || !String(cur).trim())
+                          ) {
+                            customerSupplyEntryForm.setFieldsValue({
+                              partDescription: archive,
+                            });
+                          }
+                          if (mat?.customerId) {
+                            customerSupplyEntryForm.setFieldsValue({
+                              customerId: mat.customerId,
+                            });
+                          }
+                        }}
                       />
                     </Form.Item>
                     <Form.Item
@@ -1887,6 +2105,14 @@ export function MaterialsPage() {
                       },
                       { title: "数量", dataIndex: "quantity", width: 100, align: "right" as const },
                       {
+                        title: "部件描述",
+                        dataIndex: "partDescription",
+                        key: "partDescription",
+                        width: 140,
+                        ellipsis: true,
+                        render: (v: string | null) => v?.trim() || "—",
+                      },
+                      {
                         title: "操作员",
                         key: "operator",
                         width: 150,
@@ -1920,45 +2146,18 @@ export function MaterialsPage() {
                 <Table<InventoryRow>
                   rowKey="id"
                   loading={loadingInv}
-                  columns={[
-                    { title: "物料编号", dataIndex: "code", key: "code", ellipsis: true, width: 120 },
-                    { title: "物料名称", dataIndex: "name", key: "name", ellipsis: true },
-                    { title: "种类", dataIndex: "kindName", key: "kind", width: 96, ellipsis: true },
-                    {
-                      title: "部件描述",
-                      dataIndex: "partDescription",
-                      key: "partDescription",
-                      ellipsis: true,
-                      render: (v: string | null) => v ?? "—",
-                    },
-                    { title: "当前库存", dataIndex: "totalQty", key: "q", width: 96, align: "right" as const },
-                    {
-                      title: "操作",
-                      key: "op",
-                      width: 168,
-                      render: (_, r) => (
-                        <Space size={0} wrap>
-                          <Button type="link" size="small" onClick={() => openStockAdjust(r)}>
-                            调整
-                          </Button>
-                          <Button
-                            type="link"
-                            size="small"
-                            onClick={() => void openEdit(r.id)}
-                          >
-                            修改物料
-                          </Button>
-                        </Space>
-                      ),
-                    },
-                  ]}
+                  columns={stockAdjustTableColumns}
                   dataSource={inventory}
                   pagination={{
                     defaultPageSize: 10,
                     showSizeChanger: true,
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
-                  scroll={{ x: 780 }}
+                  scroll={{ x: "max-content" }}
+                  tableLayout="fixed"
+                  components={{
+                    header: { cell: ResizableTableTitle },
+                  }}
                 />
               </Space>
             ),
@@ -2191,11 +2390,15 @@ export function MaterialsPage() {
               >
                 <Select
                   placeholder="选择种类"
-                  onChange={() => {
+                  onChange={(kindId) => {
+                    const nextKind = (presets?.kinds ?? []).find((k) => k.id === kindId);
                     addForm.setFieldsValue({
                       presetNameId: undefined,
                       customName: undefined,
                       customNamePrefix: undefined,
+                      ...(nextKind?.namingMode !== "CUSTOM" && !addIsCustomerSupplied
+                        ? { customerId: undefined }
+                        : {}),
                     });
                   }}
                   options={(presets?.kinds ?? []).map((k) => ({
@@ -2226,6 +2429,26 @@ export function MaterialsPage() {
                     <Input allowClear placeholder="如 C62" />
                   </Form.Item>
                 </Col>
+                {!addIsCustomerSupplied ? (
+                  <Col xs={24} sm={12}>
+                    <Form.Item
+                      name="customerId"
+                      label="关联客户"
+                      extra="选填，便于后续采购对账等按客户筛选"
+                    >
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="选择关联客户（可选）"
+                        options={customers.map((c) => ({
+                          value: c.id,
+                          label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                        }))}
+                      />
+                    </Form.Item>
+                  </Col>
+                ) : null}
               </>
             ) : (
               <Col xs={24} sm={12}>
@@ -2293,7 +2516,7 @@ export function MaterialsPage() {
                         supplierId: undefined,
                         unitPrice: 0,
                       });
-                    } else {
+                    } else if (addSelectedKind?.namingMode !== "CUSTOM") {
                       addForm.setFieldsValue({ customerId: undefined });
                     }
                   }}
@@ -2447,11 +2670,15 @@ export function MaterialsPage() {
               >
                 <Select
                   placeholder="选择种类"
-                  onChange={() => {
+                  onChange={(kindId) => {
+                    const nextKind = (presets?.kinds ?? []).find((k) => k.id === kindId);
                     editForm.setFieldsValue({
                       presetNameId: undefined,
                       customName: undefined,
                       customNamePrefix: undefined,
+                      ...(nextKind?.namingMode !== "CUSTOM" && !editIsCustomerSupplied
+                        ? { customerId: undefined }
+                        : {}),
                     });
                   }}
                   options={(presets?.kinds ?? []).map((k) => ({
@@ -2481,6 +2708,26 @@ export function MaterialsPage() {
                     <Input allowClear />
                   </Form.Item>
                 </Col>
+                {!editIsCustomerSupplied ? (
+                  <Col xs={24} sm={12}>
+                    <Form.Item
+                      name="customerId"
+                      label="关联客户"
+                      extra="选填，便于后续采购对账等按客户筛选"
+                    >
+                      <Select
+                        allowClear
+                        showSearch
+                        optionFilterProp="label"
+                        placeholder="选择关联客户（可选）"
+                        options={customers.map((c) => ({
+                          value: c.id,
+                          label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                        }))}
+                      />
+                    </Form.Item>
+                  </Col>
+                ) : null}
               </>
             ) : (
               <Col xs={24} sm={12}>
@@ -2551,7 +2798,7 @@ export function MaterialsPage() {
                         supplierId: undefined,
                         unitPrice: 0,
                       });
-                    } else {
+                    } else if (editSelectedKind?.namingMode !== "CUSTOM") {
                       editForm.setFieldsValue({ customerId: undefined });
                     }
                   }}

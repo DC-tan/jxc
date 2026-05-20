@@ -21,6 +21,7 @@ export async function GET() {
         select: { id: true, code: true, name: true },
       }),
       prisma.product.findMany({
+        where: { isDeprecated: false },
         orderBy: { updatedAt: "desc" },
         select: {
           id: true,

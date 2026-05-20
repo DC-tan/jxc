@@ -6,7 +6,6 @@ import {
   Button,
   Card,
   DatePicker,
-  Form,
   Input,
   InputNumber,
   Modal,
@@ -24,7 +23,13 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
+import { inhouseMaterialRowsForProductSets } from "@/lib/inhouse-bom-display";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
+import {
+  defaultInhouseProduceQty,
+  inhouseProduceTooLowToShipMessage,
+  shipmentNeedsInhouseStep,
+} from "@/lib/warehouse-delivery-inhouse-step";
 import { WAREHOUSE_DELIVERY_DRAFT_KEY } from "@/lib/warehouse-delivery-draft";
 
 const WAREHOUSE_TAB_PERM: Record<string, string> = {
@@ -69,8 +74,22 @@ type DetailLine = {
     price: string;
     inspectionNotes: string | null;
     imageUrls: string[];
+    processingMode?: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE";
+    inhouseBom?: {
+      materialId: string;
+      usageQty: number;
+      materialStock?: number;
+      material: {
+        code: string;
+        name: string;
+        unit: string;
+        partDescription?: string | null;
+      };
+    }[];
     /** 商品当前库存（成品入库累计） */
     stockQuantity?: number;
+    /** 外发回收库库存（仅外发+自加工） */
+    recoveryStockQuantity?: number;
   };
 };
 
@@ -155,12 +174,15 @@ export function WarehousePage() {
   const [deliverShipByLine, setDeliverShipByLine] = useState<Record<string, number>>(
     {},
   );
-  const [deliverForm] = Form.useForm<{ at: dayjs.Dayjs }>();
+  const [deliverAt, setDeliverAt] = useState<dayjs.Dayjs | null>(null);
+  /** 自加工 / 外发+自加工行：本批自加工完工数（≥ 本批出货） */
+  const [deliverInhouseProduceByLine, setDeliverInhouseProduceByLine] =
+    useState<Record<string, number>>({});
 
-  const [queryForm] = Form.useForm<{
-    keyword?: string;
-    deliveredRange?: [dayjs.Dayjs, dayjs.Dayjs];
-  }>();
+  const [queryKeyword, setQueryKeyword] = useState<string | undefined>();
+  const [queryDeliveredRange, setQueryDeliveredRange] = useState<
+    [dayjs.Dayjs, dayjs.Dayjs]
+  >(() => [dayjs().subtract(30, "day"), dayjs()]);
 
   const loadPending = useCallback(async () => {
     setLoadingPending(true);
@@ -182,15 +204,11 @@ export function WarehousePage() {
   }, [message]);
 
   const runDeliveredQuery = useCallback(async () => {
-    const v = (await queryForm.validateFields().catch(() => ({}))) as {
-      keyword?: string;
-      deliveredRange?: [dayjs.Dayjs, dayjs.Dayjs];
-    };
     setLoadingDelivered(true);
     try {
       const qs = buildQuery("delivered", {
-        keyword: v.keyword,
-        deliveredRange: v.deliveredRange,
+        keyword: queryKeyword,
+        deliveredRange: queryDeliveredRange,
         includePartialInquiry: true,
       });
       const data = await fetchJson<{ list: WarehouseSalesRow[] }>(
@@ -206,7 +224,7 @@ export function WarehousePage() {
     } finally {
       setLoadingDelivered(false);
     }
-  }, [message, queryForm]);
+  }, [message, queryKeyword, queryDeliveredRange]);
 
   useEffect(() => {
     if (tab === "ship") void loadPending();
@@ -222,9 +240,10 @@ export function WarehousePage() {
       setDeliverOrderLabel(`${r.customer.name} · ${r.customerOrderNo || "—"}`);
       setDeliverDetail(null);
       setDeliverShipByLine({});
+      setDeliverInhouseProduceByLine({});
+      setDeliverAt(dayjs());
       setDeliverOpen(true);
       setDeliverFetchLoading(true);
-      deliverForm.setFieldsValue({ at: dayjs() });
       try {
         const d = await fetchJson<DetailPayload>(
           `/api/warehouse/sales-orders/${r.id}`,
@@ -236,6 +255,16 @@ export function WarehousePage() {
           init[ln.id] = ln.remaining;
         }
         setDeliverShipByLine(init);
+        const inhouseProduceInit: Record<string, number> = {};
+        for (const ln of d.lines) {
+          const mode = ln.product.processingMode;
+          const shipQty = init[ln.id] ?? ln.remaining;
+          if (mode === "INHOUSE" || mode === "OUTSOURCE_INHOUSE") {
+            const stock = ln.product.stockQuantity ?? 0;
+            inhouseProduceInit[ln.id] = defaultInhouseProduceQty(shipQty, stock);
+          }
+        }
+        setDeliverInhouseProduceByLine(inhouseProduceInit);
       } catch (e) {
         message.error(e instanceof Error ? e.message : "加载订单失败");
         setDeliverOpen(false);
@@ -244,17 +273,16 @@ export function WarehousePage() {
         setDeliverFetchLoading(false);
       }
     },
-    [deliverForm, message],
+    [message],
   );
 
   const submitDeliver = useCallback(async () => {
     if (!deliverOrderId || !deliverDetail) return;
-    let at: dayjs.Dayjs;
-    try {
-      at = (await deliverForm.validateFields()).at;
-    } catch {
+    if (!deliverAt) {
+      message.warning("请选择本批交货时间");
       return;
     }
+    const at = deliverAt;
     const lines = deliverDetail.lines
       .map((l) => ({
         lineId: l.id,
@@ -265,6 +293,28 @@ export function WarehousePage() {
       message.warning("请至少一行填写大于 0 的本次发货数量");
       return;
     }
+    const inhouseProduceByLineId: Record<string, number> = {};
+    for (const l of deliverDetail.lines) {
+      const mode = l.product.processingMode;
+      if (mode !== "INHOUSE" && mode !== "OUTSOURCE_INHOUSE") continue;
+      const shipQty = deliverShipByLine[l.id] ?? 0;
+      if (shipQty <= 0) continue;
+      const stock =
+        typeof l.product.stockQuantity === "number" ? l.product.stockQuantity : 0;
+      const defaultProduce = defaultInhouseProduceQty(shipQty, stock);
+      const produce = deliverInhouseProduceByLine[l.id] ?? defaultProduce;
+      if (produce < defaultProduce) {
+        message.warning(
+          inhouseProduceTooLowToShipMessage(
+            l.product.model?.trim() ||
+              l.product.customerMaterialCode?.trim() ||
+              "—",
+          ),
+        );
+        return;
+      }
+      inhouseProduceByLineId[l.id] = produce;
+    }
     try {
       const pre = await fetchJson<{ needsInhouseStep: boolean }>(
         `/api/warehouse/sales-orders/${deliverOrderId}/deliver-preview`,
@@ -272,20 +322,43 @@ export function WarehousePage() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lines }),
+          body: JSON.stringify({
+            lines,
+            inhouseProduceByLineId,
+            hybridInhouseProduceByLineId: inhouseProduceByLineId,
+          }),
         },
       );
+      const stepLines = deliverDetail.lines
+        .filter((l) => (deliverShipByLine[l.id] ?? 0) > 0)
+        .map((l) => ({
+          lineId: l.id,
+          processingMode: l.product.processingMode,
+          productStock: l.product.stockQuantity,
+        }));
+      const needsInhouseStep =
+        pre.needsInhouseStep &&
+        shipmentNeedsInhouseStep(
+          stepLines,
+          deliverShipByLine,
+          deliverInhouseProduceByLine,
+        );
       const draft: WarehouseDeliveryDraft = {
         orderId: deliverOrderId,
         actualDeliveredAt: at.toISOString(),
         lines,
+        inhouseProduceByLineId,
+        hybridInhouseProduceByLineId: inhouseProduceByLineId,
+        needsInhouseStep,
       };
       sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(draft));
       setDeliverOpen(false);
       setDeliverOrderId(null);
       setDeliverDetail(null);
       setDeliverShipByLine({});
-      if (pre.needsInhouseStep) {
+      setDeliverInhouseProduceByLine({});
+      setDeliverAt(null);
+      if (needsInhouseStep) {
         router.push("/dashboard/warehouse/delivery-inhouse");
       } else {
         router.push("/dashboard/warehouse/delivery-note");
@@ -293,7 +366,62 @@ export function WarehousePage() {
     } catch (e) {
       message.error(e instanceof Error ? e.message : "出货预检失败");
     }
-  }, [deliverOrderId, deliverDetail, deliverShipByLine, deliverForm, message, router]);
+  }, [
+    deliverOrderId,
+    deliverDetail,
+    deliverShipByLine,
+    deliverInhouseProduceByLine,
+    deliverAt,
+    message,
+    router,
+  ]);
+
+  const deliverHasInhouseBom = useMemo(
+    () =>
+      deliverDetail?.lines.some((l) => {
+        const mode = l.product.processingMode;
+        return (
+          (mode === "INHOUSE" || mode === "OUTSOURCE_INHOUSE") &&
+          (l.product.inhouseBom?.length ?? 0) > 0
+        );
+      }) ?? false,
+    [deliverDetail],
+  );
+
+  const deliverInhouseHints = useMemo(() => {
+    if (!deliverDetail) return [];
+    const hints: {
+      lineId: string;
+      productLabel: string;
+      shipQty: number;
+      isHybrid: boolean;
+      rows: ReturnType<typeof inhouseMaterialRowsForProductSets>;
+    }[] = [];
+    for (const ln of deliverDetail.lines) {
+      const mode = ln.product.processingMode;
+      if (mode !== "INHOUSE" && mode !== "OUTSOURCE_INHOUSE") continue;
+      const bom = ln.product.inhouseBom;
+      if (!bom?.length) continue;
+      const shipQty = deliverShipByLine[ln.id] ?? 0;
+      if (shipQty <= 0) continue;
+      const stock = ln.product.stockQuantity ?? 0;
+      const defaultProduce = defaultInhouseProduceQty(shipQty, stock);
+      const matSets = deliverInhouseProduceByLine[ln.id] ?? defaultProduce;
+      const rows = inhouseMaterialRowsForProductSets(bom, matSets);
+      if (rows.length === 0) continue;
+      hints.push({
+        lineId: ln.id,
+        productLabel:
+          ln.product.model?.trim() ||
+          ln.product.customerMaterialCode?.trim() ||
+          "—",
+        shipQty,
+        isHybrid: mode === "OUTSOURCE_INHOUSE",
+        rows,
+      });
+    }
+    return hints;
+  }, [deliverDetail, deliverShipByLine, deliverInhouseProduceByLine]);
 
   const baseColumns: ColumnsType<WarehouseSalesRow> = useMemo(
     () => [
@@ -640,8 +768,9 @@ export function WarehousePage() {
                       <>
                         以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
                         <strong>本批实际出货</strong>
-                        （可超过待交/订单行数量）。自加工且成品不足时先
-                        <strong>补产入库存</strong>，再进<strong>送货单打印</strong>
+                        （可超过待交/订单行数量）。自加工/外发+自加工须在弹窗填写
+                        <strong>本批自加工完工</strong>（默认=出货−商品库存）；若大于默认数，另经
+                        <strong>补产入库存</strong>后再进<strong>送货单打印</strong>
                         。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>
                         后登记库存；全部交清后写入<strong>实际交货时间</strong>。
                       </>
@@ -672,60 +801,58 @@ export function WarehousePage() {
           {
             key: "query",
             label: "出货查询",
-            forceRender: true,
             children: (
               <Space direction="vertical" style={{ width: "100%" }} size="middle">
-                <Form
-                  form={queryForm}
-                  layout="inline"
-                  style={{ rowGap: 12 }}
-                  initialValues={{
-                    deliveredRange: [dayjs().subtract(30, "day"), dayjs()],
-                  }}
-                >
-                  <Form.Item name="keyword" label="关键字">
+                <Space wrap align="end" size="middle" style={{ rowGap: 12 }}>
+                  <Space direction="vertical" size={4}>
+                    <Typography.Text>关键字</Typography.Text>
                     <Input
                       allowClear
                       placeholder="订单号 / 机型 / 客户名称或编号"
                       style={{ width: 240 }}
+                      value={queryKeyword}
+                      onChange={(e) =>
+                        setQueryKeyword(e.target.value || undefined)
+                      }
                     />
-                  </Form.Item>
-                  <Form.Item
-                    name="deliveredRange"
-                    label="交货日期"
-                    tooltip="含整单已交清订单的「实际交货时间」；及仅分批出货订单中落在区间内的任一批次时间。"
-                  >
-                    <DatePicker.RangePicker />
-                  </Form.Item>
-                  <Form.Item>
-                    <Button type="primary" onClick={() => void runDeliveredQuery()}>
-                      查询
-                    </Button>
-                  </Form.Item>
-                  <Form.Item>
-                    <Button
-                      onClick={() => {
-                        setDeliveredSelectMode((v) => !v);
-                        setSelectedDeliveredIds([]);
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Space size={4}>
+                      <Typography.Text>交货日期</Typography.Text>
+                      <HelpTip text="含整单已交清订单的「实际交货时间」；及仅分批出货订单中落在区间内的任一批次时间。" />
+                    </Space>
+                    <DatePicker.RangePicker
+                      value={queryDeliveredRange}
+                      onChange={(range) => {
+                        if (range?.[0] && range[1]) {
+                          setQueryDeliveredRange([range[0], range[1]]);
+                        }
                       }}
-                    >
-                      {deliveredSelectMode ? "取消选择" : "选择"}
-                    </Button>
-                  </Form.Item>
+                    />
+                  </Space>
+                  <Button type="primary" onClick={() => void runDeliveredQuery()}>
+                    查询
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setDeliveredSelectMode((v) => !v);
+                      setSelectedDeliveredIds([]);
+                    }}
+                  >
+                    {deliveredSelectMode ? "取消选择" : "选择"}
+                  </Button>
                   {deliveredSelectMode ? (
-                    <Form.Item>
-                      <Button
-                        danger
-                        type="primary"
-                        onClick={() => void voidSelectedDelivered()}
-                        disabled={selectedDeliveredIds.length === 0}
-                        loading={voidingDelivered}
-                      >
-                        作废
-                      </Button>
-                    </Form.Item>
+                    <Button
+                      danger
+                      type="primary"
+                      onClick={() => void voidSelectedDelivered()}
+                      disabled={selectedDeliveredIds.length === 0}
+                      loading={voidingDelivered}
+                    >
+                      作废
+                    </Button>
                   ) : null}
-                  <Form.Item style={{ marginInlineStart: "auto" }}>
+                  <div style={{ marginInlineStart: "auto" }}>
                     <HelpTip
                       text={
                         <>
@@ -735,8 +862,8 @@ export function WarehousePage() {
                         </>
                       }
                     />
-                  </Form.Item>
-                </Form>
+                  </div>
+                </Space>
                 <Table<WarehouseSalesRow>
                   rowKey="id"
                   loading={loadingDelivered}
@@ -816,8 +943,9 @@ export function WarehousePage() {
               text={
                 <>
                   请在此填写每行<strong>本批实际要出货</strong>
-                  数量（默认等于待交，可少填分批，也可<strong>大于待交/订单行数量</strong>以多发）。若自加工行成品不足，下一步将进入
-                  <strong>补产入库存</strong>。打印送货单上仅展示本处数量，不再改数；备品/附加备注在送货单页添加。点送货单
+                  数量（默认等于待交，可少填分批，也可<strong>大于待交/订单行数量</strong>以多发）。自加工 /
+                  自加工 / 外发+自加工：<strong>本批自加工完工</strong>默认=本批出货−<strong>商品库存</strong>（库存≥出货时为
+                  0）；手动大于默认数时进入<strong>补产入库存</strong>页（外发+自加工另须外发回收库≥本批自加工完工数）。打印送货单上仅展示本处出货数量；备品/附加备注在送货单页添加。点送货单
                   <strong>完成</strong>后登记库存。
                 </>
               }
@@ -830,12 +958,13 @@ export function WarehousePage() {
           setDeliverOrderId(null);
           setDeliverDetail(null);
           setDeliverShipByLine({});
+          setDeliverInhouseProduceByLine({});
+          setDeliverAt(null);
         }}
         okText="下一步"
         onOk={() => void submitDeliver()}
-        width={960}
-        destroyOnHidden
-        forceRender
+        width={1200}
+        styles={{ body: { maxHeight: "min(72vh, 720px)", overflowY: "auto" } }}
       >
         {deliverFetchLoading ? (
           <Spin />
@@ -846,7 +975,6 @@ export function WarehousePage() {
             pagination={false}
             style={{ marginBottom: 16 }}
             dataSource={deliverDetail.lines}
-            scroll={{ x: "max-content" }}
             columns={[
               {
                 title: "物料编号",
@@ -862,12 +990,23 @@ export function WarehousePage() {
               },
               { title: "单位", width: 56, render: (_, l) => l.product.unit },
               {
-                title: "商品库存数量",
+                title: "商品库存",
                 key: "stockQuantity",
-                width: 108,
+                width: 88,
                 align: "right",
                 render: (_, l) => {
                   const q = l.product.stockQuantity;
+                  return typeof q === "number" && Number.isFinite(q) ? q : "—";
+                },
+              },
+              {
+                title: "外发回收库",
+                key: "recoveryStock",
+                width: 96,
+                align: "right",
+                render: (_, l) => {
+                  if (l.product.processingMode !== "OUTSOURCE_INHOUSE") return "—";
+                  const q = l.product.recoveryStockQuantity;
                   return typeof q === "number" && Number.isFinite(q) ? q : "—";
                 },
               },
@@ -910,7 +1049,7 @@ export function WarehousePage() {
               {
                 title: "本批实际出货",
                 key: "ship",
-                width: 140,
+                width: 120,
                 render: (_, l) => (
                   <InputNumber
                     min={0}
@@ -927,23 +1066,166 @@ export function WarehousePage() {
                         Math.min(10_000_000, Number.isFinite(raw) ? raw : 0),
                       );
                       setDeliverShipByLine((prev) => ({ ...prev, [l.id]: n }));
+                      if (
+                        l.product.processingMode === "INHOUSE" ||
+                        l.product.processingMode === "OUTSOURCE_INHOUSE"
+                      ) {
+                        const stock = l.product.stockQuantity ?? 0;
+                        setDeliverInhouseProduceByLine((prev) => ({
+                          ...prev,
+                          [l.id]: defaultInhouseProduceQty(n, stock),
+                        }));
+                      }
                     }}
                   />
                 ),
               },
+              {
+                title: "本批自加工完工",
+                key: "hybridInhouse",
+                width: 130,
+                render: (_, l) => {
+                  if (
+                    l.product.processingMode !== "INHOUSE" &&
+                    l.product.processingMode !== "OUTSOURCE_INHOUSE"
+                  ) {
+                    return <Typography.Text type="secondary">—</Typography.Text>;
+                  }
+                  const shipQty = deliverShipByLine[l.id] ?? 0;
+                  const stock = l.product.stockQuantity ?? 0;
+                  const defaultProduce = defaultInhouseProduceQty(shipQty, stock);
+                  return (
+                    <InputNumber
+                      min={0}
+                      max={10_000_000}
+                      precision={0}
+                      value={deliverInhouseProduceByLine[l.id] ?? defaultProduce}
+                      disabled={shipQty <= 0}
+                      onChange={(v) => {
+                        if (v === null || v === undefined) return;
+                        const raw = Math.trunc(Number(v));
+                        if (!Number.isFinite(raw)) return;
+                        const n = Math.max(0, Math.min(10_000_000, raw));
+                        setDeliverInhouseProduceByLine((prev) => ({
+                          ...prev,
+                          [l.id]: n,
+                        }));
+                      }}
+                      onBlur={() => {
+                        const sq = deliverShipByLine[l.id] ?? 0;
+                        if (sq <= 0) return;
+                        const st = l.product.stockQuantity ?? 0;
+                        const def = defaultInhouseProduceQty(sq, st);
+                        const cur = deliverInhouseProduceByLine[l.id] ?? def;
+                        if (cur < def) {
+                          message.warning(
+                            inhouseProduceTooLowToShipMessage(
+                              l.product.model?.trim() ||
+                                l.product.customerMaterialCode?.trim() ||
+                                "—",
+                            ),
+                          );
+                        }
+                      }}
+                    />
+                  );
+                },
+              },
             ]}
           />
         ) : null}
-        <Form form={deliverForm} layout="vertical">
-          <Form.Item
-            name="at"
-            label="本批交货时间"
-            rules={[{ required: true, message: "请选择时间" }]}
-            tooltip="整单全部交清时，该时间写入订单「实际交货时间」；分批时亦作为本批记录时间。"
-          >
-            <DatePicker showTime style={{ width: "100%" }} format="YYYY-MM-DD HH:mm" />
-          </Form.Item>
-        </Form>
+        {deliverHasInhouseBom ? (
+          <div style={{ marginBottom: 16 }}>
+            {deliverInhouseHints.length === 0 ? (
+              <Typography.Text type="secondary" style={{ display: "block" }}>
+                请填写「自加工」或「外发+自加工」商品行的本批实际出货数量后，将显示需扣减的物料明细。
+              </Typography.Text>
+            ) : (
+              deliverInhouseHints.map((h) => (
+                <div key={h.lineId} style={{ marginTop: 8 }}>
+                  <Space size={6} align="center" style={{ marginBottom: 4 }}>
+                    <Typography.Text strong>
+                      {h.productLabel}（出货 {h.shipQty} 件，自加工完工{" "}
+                      {deliverInhouseProduceByLine[h.lineId] ??
+                        defaultInhouseProduceQty(
+                          h.shipQty,
+                          deliverDetail?.lines.find((x) => x.id === h.lineId)
+                            ?.product.stockQuantity ?? 0,
+                        )}{" "}
+                      件）
+                    </Typography.Text>
+                    <HelpTip
+                      text={
+                        h.isHybrid ? (
+                          <>
+                            送货单点击<strong>完成</strong>
+                            时扣减自加工物料（按本批自加工完工数）。默认完工数=出货−商品库存；外发回收库按本批自加工完工数扣减，且须≥完工数。手动完工数大于默认数时进入补产页，超出默认部分进商品库存。
+                          </>
+                        ) : (
+                          <>
+                            送货单点击<strong>完成</strong>
+                            登记出货时，将按<strong>本批自加工完工</strong>
+                            数量在「物料库存」扣减物料。默认完工数=本批出货−商品库存（库存≥出货时为
+                            0）；手动大于默认数时进入<strong>补产入库存</strong>页确认。
+                          </>
+                        )
+                      }
+                    />
+                  </Space>
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: 20,
+                      lineHeight: 1.6,
+                      listStyle: "disc",
+                    }}
+                  >
+                    {h.rows.map((r) => (
+                      <li
+                        key={`${h.lineId}-${r.label}`}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "baseline",
+                          gap: 16,
+                        }}
+                      >
+                        <span style={{ color: "#cf1322" }}>
+                          扣除物料库存：{r.label}：{r.quantity} {r.unit}
+                        </span>
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            color: "#595959",
+                            textAlign: "right",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          现库存 {r.stockQuantity} {r.unit}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))
+            )}
+          </div>
+        ) : null}
+        <div style={{ marginTop: 8 }}>
+          <Space size={4} style={{ marginBottom: 4 }}>
+            <Typography.Text>
+              <Typography.Text type="danger">*</Typography.Text> 本批交货时间
+            </Typography.Text>
+            <HelpTip text="整单全部交清时，该时间写入订单「实际交货时间」；分批时亦作为本批记录时间。" />
+          </Space>
+          <DatePicker
+            showTime
+            style={{ width: "100%" }}
+            format="YYYY-MM-DD HH:mm"
+            value={deliverAt}
+            onChange={(v) => setDeliverAt(v)}
+          />
+        </div>
       </Modal>
     </Card>
   );

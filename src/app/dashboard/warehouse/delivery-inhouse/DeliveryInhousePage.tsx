@@ -8,6 +8,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { bomNeedForShort } from "@/lib/bom-need";
 import { fetchJson } from "@/lib/fetch-json";
 import {
+  defaultInhouseProduceQty,
+  inhouseProduceTooLowToShipMessage,
+  shipmentNeedsInhouseStep,
+} from "@/lib/warehouse-delivery-inhouse-step";
+import {
   WAREHOUSE_DELIVERY_DRAFT_KEY,
   type WarehouseDeliveryDraft,
 } from "@/lib/warehouse-delivery-draft";
@@ -29,6 +34,8 @@ type PreviewLine = {
   shipQty: number;
   productStock: number;
   short: number;
+  defaultProduceQty?: number;
+  inhouseProduceQty?: number;
   bom: BomRow[] | null;
 };
 
@@ -64,24 +71,56 @@ export function DeliveryInhousePage() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lines: d.lines.filter((x) => x.shipQty > 0) }),
+          body: JSON.stringify({
+            lines: d.lines.filter((x) => x.shipQty > 0),
+            inhouseProduceByLineId: d.inhouseProduceByLineId,
+            hybridInhouseProduceByLineId: d.hybridInhouseProduceByLineId,
+          }),
         },
       );
       setPreview(res);
-      if (!res.needsInhouseStep) {
-        sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(d));
+      const shipByLine = Object.fromEntries(
+        d.lines.map((row) => [row.lineId, row.shipQty]),
+      );
+      const produceByLine = {
+        ...d.inhouseProduceByLineId,
+        ...d.hybridInhouseProduceByLineId,
+      };
+      const stepLines = res.lines.map((ln) => ({
+        lineId: ln.lineId,
+        processingMode: ln.processingMode,
+        productStock: ln.productStock,
+      }));
+      const needsStep =
+        d.needsInhouseStep === true ||
+        (d.needsInhouseStep !== false &&
+          res.needsInhouseStep &&
+          shipmentNeedsInhouseStep(stepLines, shipByLine, produceByLine));
+      if (!needsStep) {
+        sessionStorage.setItem(
+          WAREHOUSE_DELIVERY_DRAFT_KEY,
+          JSON.stringify({ ...d, needsInhouseStep: false }),
+        );
         router.replace("/dashboard/warehouse/delivery-note");
         return;
       }
-      const next: Record<string, number> = { ...d.inhouseProduceByLineId };
+      const next: Record<string, number> = { ...produceByLine };
       for (const ln of res.lines) {
-        if (ln.short > 0) {
-          const cur = next[ln.lineId];
-          next[ln.lineId] =
-            typeof cur === "number" && cur >= ln.short
+        if (ln.short <= 0) continue;
+        const minProduce =
+          ln.defaultProduceQty ??
+          defaultInhouseProduceQty(ln.shipQty, ln.productStock);
+        const total = ln.inhouseProduceQty ?? minProduce + ln.short;
+        const fromDraft =
+          d.hybridInhouseProduceByLineId?.[ln.lineId] ??
+          d.inhouseProduceByLineId?.[ln.lineId];
+        const cur = next[ln.lineId];
+        next[ln.lineId] =
+          typeof fromDraft === "number" && fromDraft >= minProduce
+            ? fromDraft
+            : typeof cur === "number" && cur >= minProduce
               ? cur
-              : ln.short;
-        }
+              : total;
       }
       setProduceByLine(next);
     } catch (e) {
@@ -110,33 +149,45 @@ export function DeliveryInhousePage() {
   const handleNext = useCallback(() => {
     if (!draft || !preview) return;
     for (const ln of inhouseShortLines) {
-      const p = produceByLine[ln.lineId] ?? 0;
-      if (p < ln.short) {
-        msg.error(
-          `「${ln.productLabel}」现入库不能少于本批不足数（至少 ${ln.short}）`,
-        );
+      const minProduce =
+        ln.defaultProduceQty ??
+        defaultInhouseProduceQty(ln.shipQty, ln.productStock);
+      const p = produceByLine[ln.lineId] ?? minProduce + ln.short;
+      if (p < minProduce) {
+        msg.error(inhouseProduceTooLowToShipMessage(ln.productLabel));
         return;
       }
       for (const b of ln.bom ?? []) {
         const need = bomNeedForShort(b.usageQty, p);
         if (need > 0 && b.materialStock < need) {
           msg.error(
-            `按现入库 ${p} 件测算：物料 ${b.materialCode} 需 ${need}，库存 ${b.materialStock} 不足。请调低入库或先补料。`,
+            `按现入库 ${p} 件测算：物料「${(b as { materialPart?: string }).materialPart ?? b.materialName ?? b.materialCode}」需 ${need}，库存 ${b.materialStock} 不足。请调低入库或先补料。`,
           );
           return;
         }
       }
     }
-    const inhouseProduceByLineId: Record<string, number> = {};
+    const inhouseProduceByLineId: Record<string, number> = {
+      ...draft.inhouseProduceByLineId,
+    };
+    const hybridInhouseProduceByLineId: Record<string, number> = {
+      ...draft.hybridInhouseProduceByLineId,
+    };
     for (const ln of inhouseShortLines) {
-      inhouseProduceByLineId[ln.lineId] = produceByLine[ln.lineId] ?? ln.short;
+      const minProduce =
+        ln.defaultProduceQty ??
+        defaultInhouseProduceQty(ln.shipQty, ln.productStock);
+      const p = produceByLine[ln.lineId] ?? minProduce + ln.short;
+      inhouseProduceByLineId[ln.lineId] = p;
+      if (ln.processingMode === "OUTSOURCE_INHOUSE") {
+        hybridInhouseProduceByLineId[ln.lineId] = p;
+      }
     }
     const nextDraft: WarehouseDeliveryDraft = {
       ...draft,
-      inhouseProduceByLineId: {
-        ...draft.inhouseProduceByLineId,
-        ...inhouseProduceByLineId,
-      },
+      inhouseProduceByLineId,
+      hybridInhouseProduceByLineId,
+      needsInhouseStep: true,
     };
     sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(nextDraft));
     router.push("/dashboard/warehouse/delivery-note");
@@ -158,43 +209,53 @@ export function DeliveryInhousePage() {
         align: "right",
       },
       {
-        title: "现商品库存",
-        dataIndex: "productStock",
+        title: "现库存",
+        key: "stock",
         width: 108,
         align: "right",
+        render: (_, r) => r.productStock,
       },
       {
-        title: "不足",
+        title: "不足/超出",
         key: "short",
-        width: 88,
+        width: 96,
         align: "right",
-        render: (_, r) =>
-          r.short > 0 ? <Typography.Text type="danger">{r.short}</Typography.Text> : "0",
+        render: (_, r) => {
+          if (r.short <= 0) return "0";
+          return (
+            <Typography.Text type="danger">+{r.short} 补产</Typography.Text>
+          );
+        },
       },
       {
-        title: "现入库（补产）",
+        title: "本批自加工完工",
         key: "in",
         width: 200,
         render: (_, r) => {
           if (r.short <= 0) {
             return <Typography.Text type="secondary">—</Typography.Text>;
           }
+          const minVal =
+            r.defaultProduceQty ??
+            defaultInhouseProduceQty(r.shipQty, r.productStock);
           return (
             <InputNumber
-              min={r.short}
+              min={0}
               max={1_000_000}
-              value={produceByLine[r.lineId] ?? r.short}
+              precision={0}
+              value={produceByLine[r.lineId] ?? minVal + r.short}
               onChange={(v) => {
-                const n =
-                  v === null || v === undefined
-                    ? r.short
-                    : Math.max(
-                        r.short,
-                        Math.trunc(
-                          Number.isFinite(Number(v)) ? Number(v) : r.short,
-                        ),
-                      );
+                if (v === null || v === undefined) return;
+                const raw = Math.trunc(Number(v));
+                if (!Number.isFinite(raw)) return;
+                const n = Math.max(0, Math.min(1_000_000, raw));
                 setProduceByLine((prev) => ({ ...prev, [r.lineId]: n }));
+              }}
+              onBlur={() => {
+                const p = produceByLine[r.lineId] ?? minVal + r.short;
+                if (p < minVal) {
+                  msg.warning(inhouseProduceTooLowToShipMessage(r.productLabel));
+                }
               }}
             />
           );
@@ -228,9 +289,9 @@ export function DeliveryInhousePage() {
     >
       <div style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          对<strong>商品库存不足</strong>的本批自加工行，请填写<strong>现入库（补产）</strong>件数，须
-          <strong>不少于「不足」</strong>；超出入库部分会留在成品库存。下方根据入库数显示对应 BOM
-          物料需扣量与当前物料库存。点击「下一步」后进入送货单；仅在送货单点击<strong>完成</strong>后才扣料、登记成品入出库与本次出货。点「取消」不保存、不记库存。
+          当确认出货时填写的<strong>本批自加工完工数</strong>大于系统默认数（默认 = 本批出货 − 商品库存，库存≥出货时为
+          0）时进入本页。请确认或调整<strong>本批自加工完工</strong>
+          件数，下方为 BOM 物料扣量。外发+自加工另须外发回收库≥本批自加工完工数。送货单点<strong>完成</strong>后扣料、登记库存与出货。
         </Typography.Paragraph>
       </div>
       {loading || !preview ? (
@@ -241,15 +302,22 @@ export function DeliveryInhousePage() {
           size="small"
           pagination={false}
           columns={columns}
-          dataSource={preview.lines}
+          dataSource={inhouseShortLines}
           scroll={{ x: "max-content" }}
           defaultExpandedRowKeys={inhouseShortLines.map((r) => r.lineId)}
           expandable={{
             expandedRowRender: (r) => {
               if (r.short <= 0) {
-                return <Typography.Text type="secondary">本行库存充足，无需补产</Typography.Text>;
+                return (
+                  <Typography.Text type="secondary">
+                    本行无完工超出，无需确认
+                  </Typography.Text>
+                );
               }
-              const p = produceByLine[r.lineId] ?? r.short;
+              const minP =
+                r.defaultProduceQty ??
+                defaultInhouseProduceQty(r.shipQty, r.productStock);
+              const p = produceByLine[r.lineId] ?? minP + r.short;
               return (
                 <div style={{ maxWidth: 800 }}>
                   <Typography.Text strong>BOM 物料（按现入库 {p} 件测算）</Typography.Text>

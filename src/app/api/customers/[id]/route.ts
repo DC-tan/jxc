@@ -14,6 +14,7 @@ const patchSchema = z.object({
   address: z.string().optional().nullable(),
   mainProduct: z.string().optional().nullable(),
   quality: z.nativeEnum(CustomerQuality).optional(),
+  priceIncludesTax: z.boolean().optional(),
 });
 
 export async function PATCH(
@@ -54,6 +55,8 @@ export async function PATCH(
   if (raw.mainProduct !== undefined)
     data.mainProduct = raw.mainProduct?.trim() || null;
   if (raw.quality !== undefined) data.quality = raw.quality;
+  if (raw.priceIncludesTax !== undefined)
+    data.priceIncludesTax = raw.priceIncludesTax;
 
   if (typeof data.code === "string") {
     const dup = await prisma.customer.findFirst({

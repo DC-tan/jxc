@@ -560,6 +560,13 @@ export function DeliveryNotePrintPage() {
             Object.keys(draft.inhouseProduceByLineId).length > 0
               ? { inhouseProduceByLineId: draft.inhouseProduceByLineId }
               : {}),
+            ...(draft.hybridInhouseProduceByLineId &&
+            Object.keys(draft.hybridInhouseProduceByLineId).length > 0
+              ? {
+                  hybridInhouseProduceByLineId:
+                    draft.hybridInhouseProduceByLineId,
+                }
+              : {}),
           }),
         },
       );
@@ -595,11 +602,8 @@ export function DeliveryNotePrintPage() {
       return;
     }
     if (!draft) return;
-    const fromInhouse =
-      draft.inhouseProduceByLineId &&
-      Object.keys(draft.inhouseProduceByLineId).length > 0;
     saveDraftToSession(mergeLineIntoDraft(draft, lineState));
-    if (fromInhouse) {
+    if (draft.needsInhouseStep) {
       router.push("/dashboard/warehouse/delivery-inhouse");
     } else {
       router.push("/dashboard/warehouse");

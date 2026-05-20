@@ -19,12 +19,18 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import type { ResizeCallbackData } from "react-resizable";
 import type { Dispatch, SetStateAction, SyntheticEvent } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
+import { moneyColumnLabels } from "@/lib/price-tax";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
 import { mergeVisualEditorState, type VisualEditorState } from "@/lib/purchase-template-visual";
 import { PurchaseVisualContractPreview } from "./PurchaseVisualContractPreview";
+import {
+  PurchaseOrderExtraFeesPanel,
+  type PurchaseExtraFeeRow,
+  type PurchaseOrderExtraFeesPanelHandle,
+} from "./PurchaseOrderExtraFeesPanel";
 
 type EligibleSo = {
   id: string;
@@ -60,6 +66,7 @@ type SplitGroup = {
     taxRegistrationNo: string | null;
     /** 与生成采购单时「要求交货日」计算一致 */
     deliveryLeadDays?: number | null;
+    priceIncludesTax: boolean;
   };
   lines: SplitLine[];
 };
@@ -349,6 +356,11 @@ export function PurchaseFromSalesWizard({
   const [visualTemplate, setVisualTemplate] = useState<VisualEditorState | null>(null);
   /** 与系统采购单号规则一致的下一单号预览（不写库） */
   const [previewContractNo, setPreviewContractNo] = useState<string | null>(null);
+  /** 按供应商：生成前预览里录入的附加费用 */
+  const [extraFeesBySupplierId, setExtraFeesBySupplierId] = useState<
+    Record<string, PurchaseExtraFeeRow[]>
+  >({});
+  const previewFeesPanelRef = useRef<PurchaseOrderExtraFeesPanelHandle>(null);
   const [submitting, setSubmitting] = useState(false);
   const [noPurchaseMarking, setNoPurchaseMarking] = useState(false);
   /** 物料 id -> 当前库存（MaterialInbound 汇总） */
@@ -409,6 +421,7 @@ export function PurchaseFromSalesWizard({
       setGroups([]);
       setPreviewOpen(false);
       setPreviewSupplierId(undefined);
+      setExtraFeesBySupplierId({});
       setMaterialStockById({});
       setActualDemandByProductId({});
       void loadEligible();
@@ -563,7 +576,11 @@ export function PurchaseFromSalesWizard({
   );
 
   const makeSplitGroupColumns = useCallback(
-    (gi: number): ColumnsType<EditableLine> => [
+    (gi: number): ColumnsType<EditableLine> => {
+      const priceLabels = moneyColumnLabels(
+        groups[gi]?.supplier.priceIncludesTax ?? false,
+      );
+      return [
       { key: "code", title: "物料编号", width: 120, render: (_, r) => r.code },
       {
         key: "model",
@@ -614,7 +631,7 @@ export function PurchaseFromSalesWizard({
       },
       {
         key: "unitPrice",
-        title: "单价",
+        title: priceLabels.unitPrice,
         width: 110,
         render: (_, row, ri) => (
           <InputNumber
@@ -633,7 +650,7 @@ export function PurchaseFromSalesWizard({
       },
       {
         key: "total",
-        title: "总价",
+        title: groups[gi]?.supplier.priceIncludesTax ? "总价（含税）" : "总价",
         width: 100,
         align: "right",
         render: (_, r) => (r.quantity * r.unitPriceNum).toFixed(4),
@@ -649,8 +666,9 @@ export function PurchaseFromSalesWizard({
           />
         ),
       },
-    ],
-    [updateLine, materialStockById],
+    ];
+    },
+    [updateLine, materialStockById, groups],
   );
 
   const getSplitGroupColumnsForTable = useCallback(
@@ -779,6 +797,10 @@ export function PurchaseFromSalesWizard({
               unitPrice: l.unitPriceNum,
               remark: l.remark || undefined,
             })),
+            extraFees: (extraFeesBySupplierId[g.supplierId] ?? []).map((f) => ({
+              amount: f.amount,
+              purpose: f.purpose,
+            })),
           })),
         }),
       });
@@ -806,6 +828,24 @@ export function PurchaseFromSalesWizard({
     }
     return positiveQtyGroups[0] ?? null;
   }, [positiveQtyGroups, previewSupplierId]);
+
+  const previewActiveSupplierId =
+    previewSupplierId ?? positiveQtyGroups[0]?.supplierId ?? null;
+
+  const previewExtraFees = previewActiveSupplierId
+    ? (extraFeesBySupplierId[previewActiveSupplierId] ?? [])
+    : [];
+
+  const setPreviewExtraFees = useCallback(
+    (fees: PurchaseExtraFeeRow[]) => {
+      if (!previewActiveSupplierId) return;
+      setExtraFeesBySupplierId((prev) => ({
+        ...prev,
+        [previewActiveSupplierId]: fees,
+      }));
+    },
+    [previewActiveSupplierId],
+  );
 
   /** 预览合同交货日与正式生成采购单时相同规则（创建日 + 供应商交货天数） */
   const previewDeliveryDueAtIso = useMemo(() => {
@@ -837,7 +877,7 @@ export function PurchaseFromSalesWizard({
     };
   }, [previewOpen, previewGroup?.supplierId]);
 
-  /** 打印另存 PDF 时标题与合同编号一致；生成正式单后请在订单列表用「订单预览」 */
+  /** 打印另存 PDF 时标题与合同编号一致 */
   useEffect(() => {
     if (!previewOpen || !previewGroup) return;
     const prev = document.title;
@@ -1097,7 +1137,7 @@ export function PurchaseFromSalesWizard({
         }}
         destroyOnHidden
         footer={
-          <Space>
+          <Space wrap>
             <Button
               onClick={() => {
                 setPreviewOpen(false);
@@ -1105,6 +1145,9 @@ export function PurchaseFromSalesWizard({
               }}
             >
               返回编辑
+            </Button>
+            <Button onClick={() => previewFeesPanelRef.current?.openAddFee()}>
+              添加费用
             </Button>
             <Button onClick={printPreview}>打印 / 导出 PDF</Button>
             <Button
@@ -1122,7 +1165,7 @@ export function PurchaseFromSalesWizard({
           className="purchase-contract-print-ui"
           style={{ marginBottom: 8 }}
         >
-          浏览器打印对话框中选择「另存为 PDF」即可导出 PDF。下方可先选择供应商，再打印对应乙方的采购合同。
+          浏览器打印对话框中选择「另存为 PDF」即可导出 PDF。请先选择乙方（供应商），可为本合同添加开模费、测试架等附加费用，再打印或点击「确定生成」。
         </Typography.Paragraph>
         {split && positiveQtyGroups.length > 0 && (
           <Space className="purchase-contract-print-ui" style={{ marginBottom: 16 }} wrap align="center">
@@ -1140,6 +1183,13 @@ export function PurchaseFromSalesWizard({
             />
           </Space>
         )}
+        <PurchaseOrderExtraFeesPanel
+          ref={previewFeesPanelRef}
+          className="purchase-contract-print-ui"
+          purchaseOrderId={null}
+          fees={previewExtraFees}
+          onFeesChange={setPreviewExtraFees}
+        />
         <div id="purchase-batch-preview" style={{ padding: 8 }}>
           {split && previewGroup && (
             <PurchaseVisualContractPreview
@@ -1149,6 +1199,7 @@ export function PurchaseFromSalesWizard({
               deliveryDueAtIso={previewDeliveryDueAtIso}
               customerLine={`${split.salesOrder.customer.code} ${split.salesOrder.customer.name} ${split.salesOrder.customerOrderNo?.trim() || "—"}`}
               contractNoOverride={previewContractNo}
+              extraFees={previewExtraFees}
             />
           )}
         </div>

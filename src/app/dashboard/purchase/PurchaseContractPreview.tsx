@@ -26,6 +26,8 @@ export type ContractPreviewSupplier = {
   bankName: string | null;
   bankAccount: string | null;
   taxRegistrationNo: string | null;
+  /** 供应商标价是否含税；为 true 时合同表格上方显示「含税：13%」 */
+  priceIncludesTax?: boolean;
 };
 
 function PlaceholderOrValue({

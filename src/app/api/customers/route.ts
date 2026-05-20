@@ -13,6 +13,7 @@ const bodySchema = z.object({
   address: z.string().optional().nullable(),
   mainProduct: z.string().optional().nullable(),
   quality: z.nativeEnum(CustomerQuality),
+  priceIncludesTax: z.boolean().optional().default(false),
 });
 
 export async function GET() {
@@ -64,6 +65,7 @@ export async function POST(req: Request) {
       address: d.address?.trim() || null,
       mainProduct: d.mainProduct?.trim() || null,
       quality: d.quality,
+      priceIncludesTax: d.priceIncludesTax,
     },
   });
   return NextResponse.json({ id: row.id });

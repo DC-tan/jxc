@@ -126,20 +126,34 @@ export async function GET(
       },
     });
 
-    /** 外发回收产生的成品入库（套数），用于「收回明细」弹层，非物料行 */
-    const productRecoveryBatches = await prisma.productInbound.findMany({
-      where: {
-        purchaseOrderNo: row.orderNo,
-        productId: row.productId,
-        quantity: { gt: 0 },
-      },
-      select: {
-        quantity: true,
-        receivedAt: true,
-        partDescription: true,
-      },
-      orderBy: { receivedAt: "asc" },
-    });
+    /** 外发回收批次：纯外发走成品入库；外发+自加工走外发回收库 */
+    const productRecoveryBatches =
+      row.product.processingMode === "OUTSOURCE_INHOUSE"
+        ? await prisma.outsourceRecoveryInbound.findMany({
+            where: {
+              outsourceOrderId: row.id,
+              quantity: { gt: 0 },
+            },
+            select: {
+              quantity: true,
+              receivedAt: true,
+              partDescription: true,
+            },
+            orderBy: { receivedAt: "asc" },
+          })
+        : await prisma.productInbound.findMany({
+            where: {
+              purchaseOrderNo: row.orderNo,
+              productId: row.productId,
+              quantity: { gt: 0 },
+            },
+            select: {
+              quantity: true,
+              receivedAt: true,
+              partDescription: true,
+            },
+            orderBy: { receivedAt: "asc" },
+          });
 
     const returnedByMaterialId = new Map<string, number>();
     for (const b of materialReturnBatches) {
@@ -290,15 +304,18 @@ export async function DELETE(
       return NextResponse.json({ error: "仅未回收状态可取消" }, { status: 400 });
     }
 
-    const [materialRecvCount, productRecvCount] = await Promise.all([
+    const [materialRecvCount, productRecvCount, recoveryRecvCount] = await Promise.all([
       prisma.materialInbound.count({
         where: { purchaseOrderNo: row.orderNo, quantity: { gt: 0 } },
       }),
       prisma.productInbound.count({
         where: { purchaseOrderNo: row.orderNo, quantity: { gt: 0 } },
       }),
+      prisma.outsourceRecoveryInbound.count({
+        where: { outsourceOrderId: row.id, quantity: { gt: 0 } },
+      }),
     ]);
-    if (materialRecvCount > 0 || productRecvCount > 0) {
+    if (materialRecvCount > 0 || productRecvCount > 0 || recoveryRecvCount > 0) {
       return NextResponse.json(
         { error: "该外发单已有出货/回收入库记录，不可取消" },
         { status: 400 },
@@ -385,15 +402,18 @@ export async function PATCH(
       return NextResponse.json({ error: "仅未回收状态可编辑" }, { status: 400 });
     }
 
-    const [materialRecvCount, productRecvCount] = await Promise.all([
+    const [materialRecvCount, productRecvCount, recoveryRecvCount] = await Promise.all([
       prisma.materialInbound.count({
         where: { purchaseOrderNo: order.orderNo, quantity: { gt: 0 } },
       }),
       prisma.productInbound.count({
         where: { purchaseOrderNo: order.orderNo, quantity: { gt: 0 } },
       }),
+      prisma.outsourceRecoveryInbound.count({
+        where: { outsourceOrderId: order.id, quantity: { gt: 0 } },
+      }),
     ]);
-    const locked = materialRecvCount > 0 || productRecvCount > 0;
+    const locked = materialRecvCount > 0 || productRecvCount > 0 || recoveryRecvCount > 0;
 
     if (locked) {
       return NextResponse.json(

@@ -168,7 +168,10 @@ export async function PATCH(
     );
   }
 
-  const exists = await prisma.material.findUnique({ where: { id } });
+  const exists = await prisma.material.findUnique({
+    where: { id },
+    include: { presetKind: { select: { namingMode: true } } },
+  });
   if (!exists) {
     return NextResponse.json({ error: "物料不存在" }, { status: 404 });
   }
@@ -182,6 +185,7 @@ export async function PATCH(
     }
   }
 
+  let nextKindNamingMode = exists.presetKind?.namingMode ?? null;
   if (parsed.data.kindId) {
     const k = await prisma.materialPresetKind.findUnique({
       where: { id: parsed.data.kindId },
@@ -189,6 +193,7 @@ export async function PATCH(
     if (!k) {
       return NextResponse.json({ error: "物料种类不存在" }, { status: 400 });
     }
+    nextKindNamingMode = k.namingMode;
   }
   const data = parsed.data;
   const safetyStockParsed =
@@ -219,6 +224,11 @@ export async function PATCH(
       return NextResponse.json({ error: "客供客户不存在" }, { status: 400 });
     }
   }
+  const materialCustomerId = nextIsCustomerSupplied
+    ? nextCustomerId
+    : nextKindNamingMode === "CUSTOM"
+      ? nextCustomerId
+      : null;
 
   if (!nextIsCustomerSupplied && data.supplierId !== undefined) {
     const supplierId = data.supplierId.trim();
@@ -264,7 +274,7 @@ export async function PATCH(
           ? { kindId: data.kindId, kind: null }
           : {}),
         isCustomerSupplied: nextIsCustomerSupplied,
-        customerId: nextIsCustomerSupplied ? nextCustomerId : null,
+        customerId: materialCustomerId,
         ...(nextIsCustomerSupplied
           ? { supplierId: (await ensureCustomerSupplySupplier(tx)).id }
           : data.supplierId !== undefined

@@ -26,6 +26,7 @@ const bodySchema = z.object({
     }),
   attrProduction: z.boolean().optional().default(true),
   attrProcessing: z.boolean().optional().default(false),
+  priceIncludesTax: z.boolean().optional().default(false),
 });
 
 export async function GET(req: Request) {
@@ -99,6 +100,7 @@ export async function POST(req: Request) {
         deliveryLeadDays: d.deliveryLeadDays ?? null,
         attrProduction: parsed.data.attrProduction,
         attrProcessing: parsed.data.attrProcessing,
+        priceIncludesTax: parsed.data.priceIncludesTax,
       },
     });
     return NextResponse.json({ id: row.id });

@@ -6,10 +6,12 @@ import { fetchJson } from "@/lib/fetch-json";
 import { exportHtmlNodeToPdf } from "@/lib/exportHtmlNodeToPdf";
 import { mergeVisualEditorState, type VisualEditorState } from "@/lib/purchase-template-visual";
 import type { ContractPreviewLine, ContractPreviewSupplier } from "./PurchaseContractPreview";
+import type { PurchaseExtraFeeRow } from "@/lib/purchase-extra-fees";
 import { PurchaseVisualContractPreview } from "./PurchaseVisualContractPreview";
 
 type ContractDetailSupplier = ContractPreviewSupplier & {
   id: string;
+  priceIncludesTax: boolean;
 };
 
 type ContractDetailPayload = {
@@ -40,6 +42,7 @@ type ContractDetailPayload = {
   }[];
   /** 采购单详情接口附带，合同预览不使用 */
   receiptBatches?: { materialId: string; quantity: number; receivedAt: string }[];
+  extraFees?: { id: string; amount: string; purpose: string }[];
 };
 
 /** 原始下单数量：合成明细（syn-*）直接使用数量；其余为待收 + 本单入库汇总 */
@@ -78,6 +81,7 @@ function mapDetailToPreview(d: ContractDetailPayload): {
     bankName: d.supplier.bankName,
     bankAccount: d.supplier.bankAccount,
     taxRegistrationNo: d.supplier.taxRegistrationNo,
+    priceIncludesTax: d.supplier.priceIncludesTax ?? false,
   };
   const lines: ContractPreviewLine[] = d.lines.map((l) => ({
     code: l.material.code,
@@ -121,6 +125,7 @@ export function PurchaseOrderContractPreviewModal({
   const [detail, setDetail] = useState<ContractDetailPayload | null>(null);
   const [visual, setVisual] = useState<VisualEditorState | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [extraFees, setExtraFees] = useState<PurchaseExtraFeeRow[]>([]);
 
   useEffect(() => {
     if (!open || !purchaseOrderId) {
@@ -144,6 +149,13 @@ export function PurchaseOrderContractPreviewModal({
         if (!cancelled) {
           setDetail(d);
           setVisual(mergeVisualEditorState(ve));
+          setExtraFees(
+            (d.extraFees ?? []).map((f) => ({
+              id: f.id,
+              amount: Number(f.amount),
+              purpose: f.purpose,
+            })),
+          );
         }
       } catch (e) {
         if (!cancelled) {
@@ -226,7 +238,7 @@ export function PurchaseOrderContractPreviewModal({
           className="purchase-contract-print-ui"
           style={{ marginBottom: 8 }}
         >
-          「打印 / 另存为 PDF」将打开系统打印对话框，另存为 PDF 时默认文件名一般与页面标题一致（已设为当前采购单号）。「下载 PDF」文件名为「采购单号.pdf」（长合同自动分页）。
+          「打印 / 另存为 PDF」将打开系统打印对话框，另存为 PDF 时默认文件名一般与页面标题一致（已设为当前采购单号）。「下载 PDF」文件名为「采购单号.pdf」（长合同自动分页）。附加费用请在生成采购单前的「确认生成预览」中维护，此处仅展示与打印。
         </Typography.Paragraph>
         <Spin spinning={loading}>
           <div id="purchase-order-contract-print-root" ref={printRootRef} style={{ padding: 8 }}>
@@ -238,6 +250,7 @@ export function PurchaseOrderContractPreviewModal({
                 deliveryDueAtIso={previewProps.deliveryDueAtIso}
                 customerLine={previewProps.customerLine}
                 contractNoOverride={orderNo ?? detail?.orderNo ?? null}
+                extraFees={extraFees}
               />
             ) : !loading ? (
               <Typography.Text type="secondary">暂无数据</Typography.Text>

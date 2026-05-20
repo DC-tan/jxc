@@ -1,91 +1,9 @@
 import { NextResponse } from "next/server";
-import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
-import { ceilOutsourceMaterialQty, computeOutsourceLinesFromBom } from "@/lib/outsource-lines";
-import { getMaterialInboundTotalsByIds } from "@/lib/materialStock";
-import {
-  productBomForOutsource,
-  productBomForInhouseProduction,
-} from "@/lib/product-bom-scope";
-
-type Tx = Prisma.TransactionClient;
-
-type OrderForInhouse = {
-  orderNo: string;
-  product: {
-    model: string | null;
-    processingMode: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE";
-    productMaterials: {
-      materialId: string;
-      usageQty: unknown;
-      scope: import("@prisma/client").ProductBomLineScope;
-    }[];
-  };
-};
-
-/**
- * 外发+自加工：按成品套数在库存中扣减自加工侧物料（`MaterialInbound` 负数量，与全系统库存汇总一致）
- */
-async function applyInhouseMaterialDeduction(
-  tx: Tx,
-  order: OrderForInhouse,
-  setCount: number,
-  now: Date,
-  partDescription: string,
-  operatorUserId: string,
-): Promise<void> {
-  if (setCount <= 0) return;
-  if (order.product.processingMode !== "OUTSOURCE_INHOUSE") return;
-  const inhouseBom = productBomForInhouseProduction(
-    order.product.processingMode,
-    order.product.productMaterials ?? [],
-  );
-  if (inhouseBom.length === 0) return;
-  const deductLines = computeOutsourceLinesFromBom(
-    inhouseBom.map((x) => ({
-      materialId: x.materialId,
-      usageQty: Number(x.usageQty),
-    })),
-    setCount,
-  );
-  const mIds = deductLines.map((d) => d.materialId);
-  const stockMap = await getMaterialInboundTotalsByIds(tx, mIds);
-  const shortage: string[] = [];
-  for (const d of deductLines) {
-    if (d.quantity <= 0) continue;
-    const have = stockMap.get(d.materialId) ?? 0;
-    if (d.quantity > have) {
-      const mat = await tx.material.findUnique({
-        where: { id: d.materialId },
-        select: { code: true, name: true },
-      });
-      const label = mat ? `${mat.code}（${mat.name}）` : d.materialId;
-      shortage.push(
-        `${label}需扣 ${d.quantity}，当前库存（含本单已记账流水）${have}`,
-      );
-    }
-  }
-  if (shortage.length > 0) {
-    throw new Error(
-      `自加工侧物料库存不足，无法按 ${setCount} 套扣料：${shortage.join("；")}`,
-    );
-  }
-  for (const d of deductLines) {
-    if (d.quantity <= 0) continue;
-    await tx.materialInbound.create({
-      data: {
-        materialId: d.materialId,
-        quantity: -d.quantity,
-        receivedAt: now,
-        purchaseOrderNo: order.orderNo,
-        partDescription,
-        operatorUserId,
-      },
-    });
-  }
-}
+import { ceilOutsourceMaterialQty } from "@/lib/outsource-lines";
+import { productBomForOutsource } from "@/lib/product-bom-scope";
 
 function perSetMaterialNeedFromBom(usageQty: number): number {
   return ceilOutsourceMaterialQty(Number(usageQty) * 1);
@@ -120,7 +38,7 @@ const receiveBodySchema = z.object({
   lines: z.array(receiveLineSchema).optional(),
 });
 
-/** 确认回收：只登记成品入库；外发物料在建单时已扣库，回收时不再回冲物料库存 */
+/** 确认回收：纯外发登记成品入库；外发+自加工登记外发回收库；外发物料在建单时已扣库，回收时不再回冲物料库存 */
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
@@ -234,10 +152,16 @@ export async function POST(
       );
     }
 
-    const sumBeforeCheck = await prisma.productInbound.aggregate({
-      where: { purchaseOrderNo: order.orderNo },
-      _sum: { quantity: true },
-    });
+    const sumBeforeCheck =
+      order.product.processingMode === "OUTSOURCE_INHOUSE"
+        ? await prisma.outsourceRecoveryInbound.aggregate({
+            where: { outsourceOrderId: id },
+            _sum: { quantity: true },
+          })
+        : await prisma.productInbound.aggregate({
+            where: { purchaseOrderNo: order.orderNo },
+            _sum: { quantity: true },
+          });
     const sumBefore0 = Number(sumBeforeCheck._sum.quantity ?? 0);
     const inferred0 = impliedProductSetsFromBatch(
       linesInput,
@@ -277,11 +201,24 @@ export async function POST(
         }
       }
 
-      const piSumBefore = await tx.productInbound.aggregate({
-        where: { purchaseOrderNo: order.orderNo },
-        _sum: { quantity: true },
-      });
-      const sumBefore = piSumBefore._sum.quantity ?? 0;
+      const sumBefore =
+        order.product.processingMode === "OUTSOURCE_INHOUSE"
+          ? Number(
+              (
+                await tx.outsourceRecoveryInbound.aggregate({
+                  where: { outsourceOrderId: id },
+                  _sum: { quantity: true },
+                })
+              )._sum.quantity ?? 0,
+            )
+          : Number(
+              (
+                await tx.productInbound.aggregate({
+                  where: { purchaseOrderNo: order.orderNo },
+                  _sum: { quantity: true },
+                })
+              )._sum.quantity ?? 0,
+            );
 
       const inferred = impliedProductSetsFromBatch(
         linesInput,
@@ -295,56 +232,57 @@ export async function POST(
 
       const modelRef = (order.product?.model ?? "").trim() || "—";
       if (setsBatch > 0) {
-        await applyInhouseMaterialDeduction(
-          tx,
-          order,
-          setsBatch,
-          now,
-          `外发加工回收-自加工扣料（${modelRef}×${setsBatch}）`,
-          auth.user.id,
-        );
-        await tx.productInbound.create({
-          data: {
-            productId: order.productId,
-            quantity: setsBatch,
-            receivedAt: now,
-            purchaseOrderNo: order.orderNo,
-            partDescription: `外发加工回收入库（${modelRef}×${setsBatch}）`,
-            operatorUserId: auth.user.id,
-          },
-        });
+        if (order.product.processingMode === "OUTSOURCE_INHOUSE") {
+          await tx.outsourceRecoveryInbound.create({
+            data: {
+              productId: order.productId,
+              outsourceOrderId: id,
+              outsourceOrderNo: order.orderNo,
+              quantity: setsBatch,
+              receivedAt: now,
+              partDescription: `外发加工回收库入库（${modelRef}×${setsBatch}）`,
+              entryType: "RECOVERY",
+              operatorUserId: auth.user.id,
+            },
+          });
+        } else {
+          await tx.productInbound.create({
+            data: {
+              productId: order.productId,
+              quantity: setsBatch,
+              receivedAt: now,
+              purchaseOrderNo: order.orderNo,
+              partDescription: `外发加工回收入库（${modelRef}×${setsBatch}）`,
+              operatorUserId: auth.user.id,
+            },
+          });
+        }
       }
 
       const remaining = await tx.outsourceOrderLine.count({
         where: { outsourceOrderId: id, quantity: { gt: 0 } },
       });
       if (remaining === 0) {
-        const piSumAfter = await tx.productInbound.aggregate({
-          where: { purchaseOrderNo: order.orderNo },
-          _sum: { quantity: true },
-        });
-        const sumAfter = piSumAfter._sum.quantity ?? 0;
-        const gap = order.productQty - sumAfter;
-        if (gap > 0) {
-          const model = (order.product?.model ?? "").trim() || "—";
-          await applyInhouseMaterialDeduction(
-            tx,
-            order,
-            gap,
-            now,
-            `外发加工回收-自加工扣料-补差（${model}×${gap}）`,
-            auth.user.id,
-          );
-          await tx.productInbound.create({
-            data: {
-              productId: order.productId,
-              quantity: gap,
-              receivedAt: now,
-              purchaseOrderNo: order.orderNo,
-              partDescription: `外发加工回收入库补差（${model}×${gap}）`,
-              operatorUserId: auth.user.id,
-            },
+        if (order.product.processingMode !== "OUTSOURCE_INHOUSE") {
+          const piSumAfter = await tx.productInbound.aggregate({
+            where: { purchaseOrderNo: order.orderNo },
+            _sum: { quantity: true },
           });
+          const sumAfter = piSumAfter._sum.quantity ?? 0;
+          const gap = order.productQty - sumAfter;
+          if (gap > 0) {
+            const model = (order.product?.model ?? "").trim() || "—";
+            await tx.productInbound.create({
+              data: {
+                productId: order.productId,
+                quantity: gap,
+                receivedAt: now,
+                purchaseOrderNo: order.orderNo,
+                partDescription: `外发加工回收入库补差（${model}×${gap}）`,
+                operatorUserId: auth.user.id,
+              },
+            });
+          }
         }
         await tx.outsourceOrder.update({
           where: { id },

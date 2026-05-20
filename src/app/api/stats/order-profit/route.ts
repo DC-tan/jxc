@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
+import { sumPurchaseExtraFeesForSalesOrderIds } from "@/lib/purchase-extra-fees";
+import { unitPriceToExclusive, unitPriceToInclusive } from "@/lib/price-tax";
 
 const OPERATION_COST_RATE = 0.08;
 
@@ -10,6 +12,8 @@ type ProductLineAgg = {
   model: string;
   quantity: number;
   salesAmount: number;
+  /** 按录入价折合的含税销售额（未税客户 ×1.13，含税客户为录入价） */
+  salesAmountInclusive: number;
   materialCostPerUnit: number;
   processingCostPerUnit: number;
   baseCostAmount: number;
@@ -41,7 +45,9 @@ export async function GET(req: Request) {
       where: { customerOrderNo: orderNo },
       orderBy: { createdAt: "desc" },
       include: {
-        customer: { select: { id: true, code: true, name: true } },
+        customer: {
+          select: { id: true, code: true, name: true, priceIncludesTax: true },
+        },
         lines: {
           select: {
             quantity: true,
@@ -55,7 +61,12 @@ export async function GET(req: Request) {
                 productMaterials: {
                   select: {
                     usageQty: true,
-                    material: { select: { unitPrice: true } },
+                    material: {
+                      select: {
+                        unitPrice: true,
+                        supplier: { select: { priceIncludesTax: true } },
+                      },
+                    },
                   },
                 },
               },
@@ -74,15 +85,31 @@ export async function GET(req: Request) {
     for (const order of orders) {
       for (const line of order.lines) {
         const qty = Number(line.quantity ?? 0);
-        const saleUnitPrice = Number(line.unitPrice ?? 0);
+        const rawUnitPrice = Number(line.unitPrice ?? 0);
+        const saleUnitPrice = unitPriceToExclusive(
+          rawUnitPrice,
+          order.customer.priceIncludesTax,
+          "customer",
+        );
+        const saleUnitInclusive = unitPriceToInclusive(
+          rawUnitPrice,
+          order.customer.priceIncludesTax,
+          "customer",
+        );
         const salesAmount = qty * saleUnitPrice;
+        const salesAmountInclusive = qty * saleUnitInclusive;
 
         let materialCostPerUnit = 0;
         for (const pm of line.product.productMaterials) {
           const usageQty = Number(pm.usageQty ?? 0);
-          const materialUnitPrice = Number(pm.material.unitPrice ?? 0);
+          let materialUnitPrice = Number(pm.material.unitPrice ?? 0);
           if (!Number.isFinite(usageQty) || !Number.isFinite(materialUnitPrice)) continue;
           if (usageQty < 0 || materialUnitPrice < 0) continue;
+          materialUnitPrice = unitPriceToExclusive(
+            materialUnitPrice,
+            pm.material.supplier.priceIncludesTax,
+            "supplier",
+          );
           materialCostPerUnit += usageQty * materialUnitPrice;
         }
         const processingCostPerUnit = Number(line.product.processingCost ?? 0);
@@ -98,6 +125,7 @@ export async function GET(req: Request) {
         if (prev) {
           prev.quantity += qty;
           prev.salesAmount += salesAmount;
+          prev.salesAmountInclusive += salesAmountInclusive;
           prev.baseCostAmount += baseCostAmount;
           prev.operationCostAmount += operationCostAmount;
           prev.profitAmount += profitAmount;
@@ -109,6 +137,7 @@ export async function GET(req: Request) {
             model: line.product.model || "—",
             quantity: qty,
             salesAmount,
+            salesAmountInclusive,
             materialCostPerUnit,
             processingCostPerUnit: Number.isFinite(processingCostPerUnit)
               ? processingCostPerUnit
@@ -130,6 +159,7 @@ export async function GET(req: Request) {
           ...r,
           quantity: round2(r.quantity),
           salesAmount: round2(r.salesAmount),
+          salesAmountInclusive: round2(r.salesAmountInclusive),
           materialCostPerUnit: round2(r.materialCostPerUnit),
           processingCostPerUnit: round2(r.processingCostPerUnit),
           baseCostAmount: round2(r.baseCostAmount),
@@ -140,10 +170,15 @@ export async function GET(req: Request) {
       })
       .sort((a, b) => b.profitAmount - a.profitAmount);
 
+    const purchaseExtraFeeAmount = await sumPurchaseExtraFeesForSalesOrderIds(
+      orders.map((o) => o.id),
+    );
+
     const summary = rows.reduce(
       (acc, r) => {
         acc.quantity += r.quantity;
         acc.salesAmount += r.salesAmount;
+        acc.salesAmountInclusive += r.salesAmountInclusive;
         acc.baseCostAmount += r.baseCostAmount;
         acc.operationCostAmount += r.operationCostAmount;
         acc.profitAmount += r.profitAmount;
@@ -152,11 +187,14 @@ export async function GET(req: Request) {
       {
         quantity: 0,
         salesAmount: 0,
+        salesAmountInclusive: 0,
         baseCostAmount: 0,
         operationCostAmount: 0,
         profitAmount: 0,
       },
     );
+    summary.baseCostAmount += purchaseExtraFeeAmount;
+    summary.profitAmount -= purchaseExtraFeeAmount;
     const summaryProfitRate =
       summary.salesAmount > 0
         ? (summary.profitAmount / summary.salesAmount) * 100
@@ -182,8 +220,10 @@ export async function GET(req: Request) {
       summary: {
         quantity: round2(summary.quantity),
         salesAmount: round2(summary.salesAmount),
+        salesAmountInclusive: round2(summary.salesAmountInclusive),
         baseCostAmount: round2(summary.baseCostAmount),
         operationCostAmount: round2(summary.operationCostAmount),
+        purchaseExtraFeeAmount: round2(purchaseExtraFeeAmount),
         profitAmount: round2(summary.profitAmount),
         profitRate: round2(summaryProfitRate),
       },

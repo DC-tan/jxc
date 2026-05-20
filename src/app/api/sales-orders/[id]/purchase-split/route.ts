@@ -158,6 +158,7 @@ export async function GET(
           taxRegistrationNo: string | null;
           /** 与生成采购单时计算要求交货日一致 */
           deliveryLeadDays: number | null;
+          priceIncludesTax: boolean;
         };
         lines: {
           materialId: string;
@@ -188,6 +189,7 @@ export async function GET(
             bankAccount: s.bankAccount,
             taxRegistrationNo: s.taxRegistrationNo,
             deliveryLeadDays: s.deliveryLeadDays ?? null,
+            priceIncludesTax: s.priceIncludesTax,
           },
           lines: [],
         });

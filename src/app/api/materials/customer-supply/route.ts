@@ -8,6 +8,8 @@ const createSchema = z.object({
   materialId: z.string().min(1, "请选择客供料"),
   quantity: z.union([z.number(), z.string()]).transform((v) => String(v)),
   receivedAt: z.string().optional(),
+  partDescription: z.string().optional().nullable(),
+  /** 来料批次等；存 purchaseOrderNo，与部件描述分开 */
   remark: z.string().optional().nullable(),
 });
 
@@ -30,9 +32,45 @@ export async function GET(req: Request) {
       code: true,
       name: true,
       customerId: true,
+      partDescription: true,
       customer: { select: { id: true, code: true, name: true } },
     },
   });
+
+  const suggestionWhere = {
+    isCustomerSupplied: true as const,
+    partDescription: { not: null },
+    ...(customerId ? { customerId } : {}),
+    ...(materialId ? { id: materialId } : {}),
+  };
+  const [materialDescRows, inboundDescRows] = await Promise.all([
+    prisma.material.findMany({
+      where: suggestionWhere,
+      select: { partDescription: true },
+    }),
+    prisma.materialInbound.findMany({
+      where: {
+        entryType: "CUSTOMER_SUPPLY_RECEIPT",
+        partDescription: { not: null },
+        material: {
+          isCustomerSupplied: true,
+          ...(customerId ? { customerId } : {}),
+          ...(materialId ? { id: materialId } : {}),
+        },
+      },
+      select: { partDescription: true },
+      distinct: ["partDescription"],
+      take: 80,
+      orderBy: { receivedAt: "desc" },
+    }),
+  ]);
+  const partDescriptionSuggestions = Array.from(
+    new Set(
+      [...materialDescRows, ...inboundDescRows]
+        .map((r) => r.partDescription?.trim())
+        .filter((s): s is string => Boolean(s)),
+    ),
+  ).sort((a, b) => a.localeCompare(b, "zh-CN"));
 
   const customers = Array.from(
     new Map(
@@ -61,6 +99,7 @@ export async function GET(req: Request) {
         ? {
             OR: [
               { partDescription: { contains: keyword, mode: "insensitive" } },
+              { purchaseOrderNo: { contains: keyword, mode: "insensitive" } },
               { material: { code: { contains: keyword, mode: "insensitive" } } },
               { material: { name: { contains: keyword, mode: "insensitive" } } },
               { material: { customer: { name: { contains: keyword, mode: "insensitive" } } } },
@@ -98,23 +137,31 @@ export async function GET(req: Request) {
       code: m.code,
       name: m.name,
       customerId: m.customerId,
+      partDescription: m.partDescription,
       customer: m.customer,
     })),
-    list: list.map((r) => ({
-      id: r.id,
-      quantity: r.quantity,
-      receivedAt: r.receivedAt.toISOString(),
-      remark: r.partDescription,
-      customer: r.material.customer,
-      material: {
-        id: r.material.id,
-        code: r.material.code,
-        name: r.material.name,
-        unit: r.material.unit,
-      },
-      operatorName: r.operator?.name ?? null,
-      operatorEmployeeNo: r.operator?.employeeNo ?? null,
-    })),
+    partDescriptionSuggestions,
+    list: list.map((r) => {
+      const po = r.purchaseOrderNo?.trim() || null;
+      const desc = r.partDescription?.trim() || null;
+      const legacyRemarkOnly = !po && desc;
+      return {
+        id: r.id,
+        quantity: r.quantity,
+        receivedAt: r.receivedAt.toISOString(),
+        partDescription: legacyRemarkOnly ? null : desc,
+        remark: po ?? (legacyRemarkOnly ? desc : null),
+        customer: r.material.customer,
+        material: {
+          id: r.material.id,
+          code: r.material.code,
+          name: r.material.name,
+          unit: r.material.unit,
+        },
+        operatorName: r.operator?.name ?? null,
+        operatorEmployeeNo: r.operator?.employeeNo ?? null,
+      };
+    }),
   });
 }
 
@@ -184,8 +231,8 @@ export async function POST(req: Request) {
       materialId: material.id,
       quantity: qty,
       receivedAt,
-      purchaseOrderNo: null,
-      partDescription: parsed.data.remark?.trim() || null,
+      purchaseOrderNo: parsed.data.remark?.trim() || null,
+      partDescription: parsed.data.partDescription?.trim() || null,
       entryType: "CUSTOMER_SUPPLY_RECEIPT",
       operatorUserId: auth.user.id,
     },

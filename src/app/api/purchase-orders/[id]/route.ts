@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
+import { PURCHASE_EXTRA_FEES_LOCKED_MSG } from "@/lib/purchase-extra-fees";
 
 const lineSchema = z.object({
   materialId: z.string().min(1),
@@ -15,6 +16,10 @@ const patchUpdateSchema = z.object({
   supplierId: z.string().min(1),
   remark: z.string().optional().nullable(),
   lines: z.array(lineSchema).min(1),
+});
+
+const patchExtraFeesOnlySchema = z.object({
+  extraFees: z.array(z.unknown()),
 });
 
 const confirmReceiptLineSchema = z.object({
@@ -68,6 +73,7 @@ export async function GET(
             bankName: true,
             bankAccount: true,
             taxRegistrationNo: true,
+            priceIncludesTax: true,
           },
         },
         salesOrder: {
@@ -93,6 +99,7 @@ export async function GET(
             },
           },
         },
+        extraFees: { orderBy: { sortOrder: "asc" } },
       },
     });
 
@@ -203,6 +210,11 @@ export async function GET(
         materialId: b.materialId,
         quantity: b.quantity,
         receivedAt: b.receivedAt.toISOString(),
+      })),
+      extraFees: row.extraFees.map((f) => ({
+        id: f.id,
+        amount: f.amount.toString(),
+        purpose: f.purpose,
       })),
     });
   } catch (e) {
@@ -400,6 +412,17 @@ export async function PATCH(
     }
   }
 
+  const extraOnlyTry = patchExtraFeesOnlySchema.safeParse(json);
+  if (
+    extraOnlyTry.success &&
+    typeof json === "object" &&
+    json !== null &&
+    !("lines" in json) &&
+    !("supplierId" in json)
+  ) {
+    return NextResponse.json({ error: PURCHASE_EXTRA_FEES_LOCKED_MSG }, { status: 400 });
+  }
+
   const authEdit = await requirePermission("purchase.edit");
   if (!authEdit.ok) {
     return NextResponse.json({ error: authEdit.message }, { status: authEdit.status });
@@ -414,6 +437,12 @@ export async function PATCH(
   }
 
   const d = parsed.data;
+  const hasExtraFeesField =
+    typeof json === "object" && json !== null && "extraFees" in json;
+  if (hasExtraFeesField) {
+    return NextResponse.json({ error: PURCHASE_EXTRA_FEES_LOCKED_MSG }, { status: 400 });
+  }
+
   const sup = await prisma.supplier.findUnique({
     where: { id: d.supplierId },
     select: { id: true, deliveryLeadDays: true },

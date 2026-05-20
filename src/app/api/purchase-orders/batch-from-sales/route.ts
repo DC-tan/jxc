@@ -4,6 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
 import { allocatePurchaseOrderNo } from "@/lib/purchase-order-number";
+import {
+  parseExtraFeesPayload,
+  syncPurchaseOrderExtraFees,
+} from "@/lib/purchase-extra-fees";
 
 const lineInSchema = z.object({
   materialId: z.string().min(1),
@@ -16,6 +20,7 @@ const groupSchema = z.object({
   supplierId: z.string().min(1),
   /** 先原样接受，提交后过滤掉 quantity <= 0 行；行全空则整组丢弃 */
   lines: z.array(lineInSchema),
+  extraFees: z.array(z.unknown()).optional(),
 });
 
 const bodySchema = z.object({
@@ -66,12 +71,24 @@ export async function POST(req: Request) {
 
   const { salesOrderId, groups: rawGroups, remark } = parsed.data;
 
-  const groups = rawGroups
-    .map((g) => ({
-      ...g,
-      lines: g.lines.filter((l) => isPositiveIntQuantity(l.quantity)),
-    }))
-    .filter((g) => g.lines.length > 0);
+  const groups: {
+    supplierId: string;
+    lines: z.infer<typeof lineInSchema>[];
+    extraFees: { amount: number; purpose: string }[];
+  }[] = [];
+  for (const g of rawGroups) {
+    const lines = g.lines.filter((l) => isPositiveIntQuantity(l.quantity));
+    if (lines.length === 0) continue;
+    const extraParsed = parseExtraFeesPayload(g.extraFees);
+    if (!extraParsed.ok) {
+      return NextResponse.json({ error: extraParsed.error }, { status: 400 });
+    }
+    groups.push({
+      supplierId: g.supplierId,
+      lines,
+      extraFees: extraParsed.fees,
+    });
+  }
   if (groups.length === 0) {
     return NextResponse.json(
       { error: "没有有效的采购明细（每行数量须大于 0）" },
@@ -177,6 +194,7 @@ export async function POST(req: Request) {
             _count: { select: { lines: true } },
           },
         });
+        await syncPurchaseOrderExtraFees(tx, row.id, g.extraFees);
         out.push({
           id: row.id,
           orderNo: row.orderNo,

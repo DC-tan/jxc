@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
   Row,
   Space,
   Table,
@@ -38,6 +39,7 @@ type Row = {
   deliveryLeadDays: number | null;
   attrProduction: boolean;
   attrProcessing: boolean;
+  priceIncludesTax: boolean;
 };
 
 export function SuppliersPage() {
@@ -80,7 +82,8 @@ export function SuppliersPage() {
         <Space size={4} wrap>
           {r.attrProduction ? <Tag color="blue">生产</Tag> : null}
           {r.attrProcessing ? <Tag color="orange">加工</Tag> : null}
-          {!r.attrProduction && !r.attrProcessing ? (
+          {r.priceIncludesTax ? <Tag color="purple">含税</Tag> : null}
+          {!r.attrProduction && !r.attrProcessing && !r.priceIncludesTax ? (
             <Typography.Text type="secondary">—</Typography.Text>
           ) : null}
         </Space>
@@ -165,12 +168,14 @@ export function SuppliersPage() {
         deliveryLeadDays: editing.deliveryLeadDays ?? undefined,
         attrProduction: editing.attrProduction,
         attrProcessing: editing.attrProcessing,
+        priceIncludesTax: editing.priceIncludesTax,
       });
     } else {
       form.resetFields();
       form.setFieldsValue({
         attrProduction: true,
         attrProcessing: false,
+        priceIncludesTax: false,
       });
     }
   }, [open, editing, form]);
@@ -202,6 +207,7 @@ export function SuppliersPage() {
         ...v,
         attrProduction: Boolean(v.attrProduction),
         attrProcessing: Boolean(v.attrProcessing),
+        priceIncludesTax: Boolean(v.priceIncludesTax),
       };
       if (!editing) {
         await fetchJson("/api/suppliers", {
@@ -257,7 +263,11 @@ export function SuppliersPage() {
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ attrProduction: true, attrProcessing: false }}
+          initialValues={{
+            attrProduction: true,
+            attrProcessing: false,
+            priceIncludesTax: false,
+          }}
         >
           <Row gutter={16}>
             <Col span={24}>
@@ -299,6 +309,16 @@ export function SuppliersPage() {
                     <Checkbox>加工</Checkbox>
                   </Form.Item>
                 </Space>
+              </Form.Item>
+              <Form.Item
+                name="priceIncludesTax"
+                label="标价"
+                tooltip="勾选「含税」时，采购单价按含税价录入；统计利润时按 ÷1.1 折成未税再算成本。"
+              >
+                <Radio.Group>
+                  <Radio value={false}>未税</Radio>
+                  <Radio value={true}>含税</Radio>
+                </Radio.Group>
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>

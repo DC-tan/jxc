@@ -7,6 +7,7 @@ import {
   Col,
   DatePicker,
   Divider,
+  AutoComplete,
   Input,
   Modal,
   Radio,
@@ -22,8 +23,16 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type Key,
+  type ReactNode,
+} from "react";
 import { fetchJson } from "@/lib/fetch-json";
+import { exclusiveStatLabel, moneyColumnLabels } from "@/lib/price-tax";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 
 const STATS_MAIN_TAB_PERM: Record<string, string> = {
@@ -84,6 +93,8 @@ type OverviewPayload = {
     totalCost: number;
     totalProfit: number;
     totalPureProfit: number;
+    purchaseExtraFeeTotal: number;
+    purchaseExtraFeeUnlinked: number;
     operationCostRate: number;
     byCustomer: {
       customerId: string;
@@ -116,6 +127,7 @@ type OrderProfitRow = {
   model: string;
   quantity: number;
   salesAmount: number;
+  salesAmountInclusive: number;
   materialCostPerUnit: number;
   processingCostPerUnit: number;
   baseCostAmount: number;
@@ -134,10 +146,12 @@ type OrderProfitPayload = {
   summary: {
     quantity: number;
     salesAmount: number;
+    salesAmountInclusive: number;
     baseCostAmount: number;
     operationCostAmount: number;
     profitAmount: number;
     profitRate: number;
+    purchaseExtraFeeAmount: number;
   };
 };
 
@@ -264,12 +278,12 @@ function StatisticsTab() {
     {
       title:
         financeModal === "revenue"
-          ? "销售额"
+          ? exclusiveStatLabel("销售额")
           : financeModal === "cost"
-            ? "成本"
+            ? exclusiveStatLabel("成本")
             : financeModal === "pureProfit"
-              ? "纯利润"
-              : "利润",
+              ? exclusiveStatLabel("纯利润")
+              : exclusiveStatLabel("利润"),
       key: "val",
       align: "right",
       width: 160,
@@ -288,12 +302,12 @@ function StatisticsTab() {
 
   const financeModalTitle =
     financeModal === "revenue"
-      ? "销售总金额 — 按客户明细"
+      ? `${exclusiveStatLabel("销售总金额")} — 按客户明细`
       : financeModal === "cost"
-        ? "总成本 — 按客户明细"
+        ? `${exclusiveStatLabel("总成本")} — 按客户明细`
         : financeModal === "pureProfit"
-          ? "纯利润 — 按客户明细"
-        : "利润 — 按客户明细";
+          ? `${exclusiveStatLabel("纯利润")} — 按客户明细`
+          : `${exclusiveStatLabel("利润")} — 按客户明细`;
 
   const cardHover = {
     cursor: "pointer" as const,
@@ -332,44 +346,51 @@ function StatisticsTab() {
       render: (v: number) => v.toLocaleString("zh-CN"),
     },
     {
-      title: "销售额",
+      title: "销售金额",
       dataIndex: "salesAmount",
-      width: 120,
+      width: 108,
+      align: "right",
+      render: (v: number) => money(v),
+    },
+    {
+      title: "订单金额（含税）",
+      dataIndex: "salesAmountInclusive",
+      width: 118,
       align: "right",
       render: (v: number) => money(v),
     },
     {
       title: "BOM材料成本/件",
       dataIndex: "materialCostPerUnit",
-      width: 140,
+      width: 118,
       align: "right",
       render: (v: number) => money(v),
     },
     {
       title: "加工成本/件",
       dataIndex: "processingCostPerUnit",
-      width: 120,
+      width: 96,
       align: "right",
       render: (v: number) => money(v),
     },
     {
       title: "基础成本合计",
       dataIndex: "baseCostAmount",
-      width: 130,
+      width: 108,
       align: "right",
       render: (v: number) => money(v),
     },
     {
       title: "运营成本(8%)",
       dataIndex: "operationCostAmount",
-      width: 130,
+      width: 108,
       align: "right",
       render: (v: number) => money(v),
     },
     {
       title: "利润",
       dataIndex: "profitAmount",
-      width: 120,
+      width: 96,
       align: "right",
       render: (v: number) => (
         <Typography.Text type={v < 0 ? "danger" : undefined}>{money(v)}</Typography.Text>
@@ -610,9 +631,12 @@ function StatisticsTab() {
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
             按本区间内销售订单
             <strong>明细行</strong>
-            汇总：销售总金额 = ∑（行单价×数量）；总成本 = 物料成本 + 加工成本。其中物料成本 = ∑（商品
-            BOM 用量 × 对应物料单价）× 本行数量；加工成本 = 商品「加工成本」× 本行数量。利润 = 销售总金额 −
-            总成本。纯利润 = 利润 − 销售总金额 × {Math.round((data.finance.operationCostRate ?? 0.08) * 100)}%。
+            汇总：销售总金额（未税）= ∑（行单价×数量，客户为含税时先 ÷1.13 折未税）；总成本（未税）= 物料成本 + 加工成本。其中物料成本
+            = ∑（商品 BOM 用量 × 对应物料单价，供应商为含税时先 ÷1.1 折未税）× 本行数量；加工成本 = 商品「加工成本」×
+            本行数量；另含本区间内<strong>从销售订单生成的采购单</strong>
+            在下单时录入的附加费用（开模/测试架等，按销售单客户归集）。利润（未税）= 销售总金额（未税）−
+            总成本（未税）。纯利润（未税）= 利润 − 销售总金额（未税）×{" "}
+            {Math.round((data.finance.operationCostRate ?? 0.08) * 100)}%。
             点击下方卡片可查看
             <strong>各客户</strong>
             展开明细。
@@ -632,7 +656,7 @@ function StatisticsTab() {
                 styles={{ body: { padding: 16 } }}
               >
                 <Statistic
-                  title="销售总金额"
+                  title={exclusiveStatLabel("销售总金额")}
                   value={data.finance.totalRevenue}
                   valueStyle={{ color: "#1677ff", fontSize: 22 }}
                   formatter={(v) => (v != null && v !== "" ? money(Number(v)) : "0.00")}
@@ -656,7 +680,7 @@ function StatisticsTab() {
                 styles={{ body: { padding: 16 } }}
               >
                 <Statistic
-                  title="总成本"
+                  title={exclusiveStatLabel("总成本")}
                   value={data.finance.totalCost}
                   valueStyle={{ color: "#d46b08", fontSize: 22 }}
                   formatter={(v) => (v != null && v !== "" ? money(Number(v)) : "0.00")}
@@ -680,7 +704,7 @@ function StatisticsTab() {
                 styles={{ body: { padding: 16 } }}
               >
                 <Statistic
-                  title="利润"
+                  title={exclusiveStatLabel("利润")}
                   value={data.finance.totalProfit}
                   valueStyle={{ color: "#389e0d", fontSize: 22 }}
                   formatter={(v) => (v != null && v !== "" ? money(Number(v)) : "0.00")}
@@ -704,7 +728,7 @@ function StatisticsTab() {
                 styles={{ body: { padding: 16 } }}
               >
                 <Statistic
-                  title="纯利润"
+                  title={exclusiveStatLabel("纯利润")}
                   value={data.finance.totalPureProfit}
                   valueStyle={{ color: "#c41d7f", fontSize: 22 }}
                   formatter={(v) => (v != null && v !== "" ? money(Number(v)) : "0.00")}
@@ -790,8 +814,9 @@ function StatisticsTab() {
             五、订单利润查询
           </Typography.Title>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-            口径：基础成本 = BOM材料成本 × 用量 + 加工成本；运营成本 = 销售额 × 8%；利润 = 销售额 - 基础成本 -
-            运营成本。
+            口径：销售金额（未税）、BOM 物料单价均先按客户/供应商含税设置折成未税（客户 ÷1.13、供应商 ÷1.1）；订单金额（含税）为录入价折合含税（未税客户 ×1.13）。基础成本（未税）=
+            BOM材料成本 × 用量 + 加工成本 + 关联采购单附加费；运营成本（未税）= 销售金额（未税）× 8%；利润（未税）=
+            销售金额（未税）− 基础成本（未税）− 运营成本（未税）。
           </Typography.Paragraph>
           <Space wrap style={{ marginBottom: 8 }}>
             <Input
@@ -816,6 +841,9 @@ function StatisticsTab() {
                 {profitData.orderCount > 1
                   ? `（匹配到 ${profitData.orderCount} 张同号订单，已合并统计）`
                   : ""}
+                {profitData.summary.purchaseExtraFeeAmount > 0
+                  ? ` · 已扣减关联采购单附加费 ${money(profitData.summary.purchaseExtraFeeAmount)}`
+                  : ""}
               </Typography.Paragraph>
               <Table<OrderProfitRow>
                 size="small"
@@ -827,7 +855,7 @@ function StatisticsTab() {
                   showSizeChanger: true,
                   pageSizeOptions: [10, 20, 50, 100],
                 }}
-                scroll={{ x: 1500 }}
+                scroll={{ x: "max-content" }}
                 summary={() => (
                   <Table.Summary fixed>
                     <Table.Summary.Row>
@@ -842,25 +870,30 @@ function StatisticsTab() {
                       <Table.Summary.Cell index={3} align="right">
                         <Typography.Text strong>{money(profitData.summary.salesAmount)}</Typography.Text>
                       </Table.Summary.Cell>
-                      <Table.Summary.Cell index={4} />
+                      <Table.Summary.Cell index={4} align="right">
+                        <Typography.Text strong>
+                          {money(profitData.summary.salesAmountInclusive)}
+                        </Typography.Text>
+                      </Table.Summary.Cell>
                       <Table.Summary.Cell index={5} />
-                      <Table.Summary.Cell index={6} align="right">
+                      <Table.Summary.Cell index={6} />
+                      <Table.Summary.Cell index={7} align="right">
                         <Typography.Text strong>{money(profitData.summary.baseCostAmount)}</Typography.Text>
                       </Table.Summary.Cell>
-                      <Table.Summary.Cell index={7} align="right">
+                      <Table.Summary.Cell index={8} align="right">
                         <Typography.Text strong>
                           {money(profitData.summary.operationCostAmount)}
                         </Typography.Text>
                       </Table.Summary.Cell>
-                      <Table.Summary.Cell index={8} align="right">
+                      <Table.Summary.Cell index={9} align="right">
                         <Typography.Text strong type={profitData.summary.profitAmount < 0 ? "danger" : undefined}>
                           {money(profitData.summary.profitAmount)}
                         </Typography.Text>
                       </Table.Summary.Cell>
-                      <Table.Summary.Cell index={9} align="right">
+                      <Table.Summary.Cell index={10} align="right">
                         <Typography.Text strong>{money(profitData.summary.profitRate)}%</Typography.Text>
                       </Table.Summary.Cell>
-                      <Table.Summary.Cell index={10} />
+                      <Table.Summary.Cell index={11} />
                     </Table.Summary.Row>
                   </Table.Summary>
                 )}
@@ -875,13 +908,17 @@ function StatisticsTab() {
 }
 
 type ReconcileMode = "whole" | "split";
+type PurchaseExtraFeesFilter = "all" | "yes" | "no";
 
 type ReconcileFilterOptions = {
-  suppliers: { id: string; code: string; name: string }[];
-  customers: { id: string; code: string; name: string }[];
+  suppliers: { id: string; code: string; name: string; priceIncludesTax: boolean }[];
+  customers: { id: string; code: string; name: string; priceIncludesTax: boolean }[];
+  purchaseMaterialNames?: string[];
+  purchasePartDescriptions?: string[];
 };
 
 type PurchaseReconcileRow = {
+  lineKey: string;
   交货日期: string;
   采购订单号: string;
   订单数量: number;
@@ -890,6 +927,9 @@ type PurchaseReconcileRow = {
   交货数量: number;
   单价: number;
   金额: number;
+  附加费用: string;
+  extraFeeAmount: number;
+  备注: string;
 };
 
 type WarehouseReconcileRow = {
@@ -913,16 +953,7 @@ function formatReconcileDate(iso: string) {
 }
 
 function purchaseReconcileRowKey(r: PurchaseReconcileRow): string {
-  return [
-    r.交货日期,
-    r.采购订单号,
-    r.物料名称,
-    r.部件描述,
-    r.订单数量,
-    r.交货数量,
-    r.单价,
-    r.金额,
-  ].join("|");
+  return r.lineKey;
 }
 
 function warehouseReconcileRowKey(r: WarehouseReconcileRow): string {
@@ -960,11 +991,75 @@ function ReconcileTabContent({
   ]);
   const [mode, setMode] = useState<ReconcileMode>("whole");
   const [supplierId, setSupplierId] = useState<string | undefined>(undefined);
+  const [materialName, setMaterialName] = useState<string>("");
+  const [partDescription, setPartDescription] = useState<string>("");
+  const [purchaseCustomerId, setPurchaseCustomerId] = useState<string | undefined>(
+    undefined,
+  );
+  const [extraFeesFilter, setExtraFeesFilter] =
+    useState<PurchaseExtraFeesFilter>("all");
   const [customerId, setCustomerId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [purchaseRows, setPurchaseRows] = useState<PurchaseReconcileRow[]>([]);
   const [warehouseRows, setWarehouseRows] = useState<WarehouseReconcileRow[]>([]);
   const [totalAmount, setTotalAmount] = useState(0);
+  const [totalExtraFeeAmount, setTotalExtraFeeAmount] = useState(0);
+  const [purchaseSelectedKeys, setPurchaseSelectedKeys] = useState<Key[]>([]);
+  const [remarkModalOpen, setRemarkModalOpen] = useState(false);
+  const [remarkSaving, setRemarkSaving] = useState(false);
+  const [remarkDraft, setRemarkDraft] = useState("");
+
+  const patchPurchaseRemarks = useCallback((lineKeys: string[], remark: string) => {
+    const set = new Set(lineKeys);
+    setPurchaseRows((prev) =>
+      prev.map((r) => (set.has(r.lineKey) ? { ...r, 备注: remark } : r)),
+    );
+  }, []);
+
+  const openPurchaseRemarkModal = () => {
+    if (purchaseSelectedKeys.length === 0) {
+      message.warning("请先勾选要对帐的行");
+      return;
+    }
+    setRemarkDraft("");
+    setRemarkModalOpen(true);
+  };
+
+  const submitPurchaseRemarks = async () => {
+    const remark = remarkDraft.trim();
+    if (!remark) {
+      message.warning("请填写备注内容");
+      return;
+    }
+    const lineKeys = purchaseSelectedKeys.map(String);
+    setRemarkSaving(true);
+    try {
+      await fetchJson("/api/stats/reconcile/purchase/remark", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineKeys, remark }),
+      });
+      patchPurchaseRemarks(lineKeys, remark);
+      message.success(`已为 ${lineKeys.length} 行保存备注`);
+      setRemarkModalOpen(false);
+      setPurchaseSelectedKeys([]);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "保存备注失败");
+    } finally {
+      setRemarkSaving(false);
+    }
+  };
+
+  const purchaseRowSelection =
+    kind === "purchase"
+      ? {
+          columnTitle: "选择",
+          selectedRowKeys: purchaseSelectedKeys,
+          onChange: (keys: Key[]) => setPurchaseSelectedKeys(keys),
+          columnWidth: 52,
+        }
+      : undefined;
 
   const load = useCallback(async () => {
     if (!active) return;
@@ -976,14 +1071,26 @@ function ReconcileTabContent({
         const res = await fetchJson<{
           rows: PurchaseReconcileRow[];
           totalAmount: number;
+          totalExtraFeeAmount: number;
         }>("/api/stats/reconcile/purchase", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ from, to, mode, supplierId: supplierId ?? null }),
+          body: JSON.stringify({
+            from,
+            to,
+            mode,
+            supplierId: supplierId ?? null,
+            customerId: purchaseCustomerId ?? null,
+            extraFees: extraFeesFilter,
+            materialName: materialName.trim() || null,
+            partDescription: partDescription.trim() || null,
+          }),
         });
         setPurchaseRows(res.rows);
         setTotalAmount(res.totalAmount);
+        setTotalExtraFeeAmount(res.totalExtraFeeAmount ?? 0);
+        setPurchaseSelectedKeys([]);
       } else {
         const res = await fetchJson<{
           rows: WarehouseReconcileRow[];
@@ -999,17 +1106,75 @@ function ReconcileTabContent({
       }
     } catch (e) {
       message.error(e instanceof Error ? e.message : "加载对帐数据失败");
-      if (kind === "purchase") setPurchaseRows([]);
-      else setWarehouseRows([]);
+      if (kind === "purchase") {
+        setPurchaseRows([]);
+        setTotalExtraFeeAmount(0);
+      } else setWarehouseRows([]);
       setTotalAmount(0);
     } finally {
       setLoading(false);
     }
-  }, [active, kind, message, mode, range, supplierId, customerId]);
+  }, [
+    active,
+    customerId,
+    extraFeesFilter,
+    kind,
+    materialName,
+    message,
+    mode,
+    partDescription,
+    purchaseCustomerId,
+    range,
+    supplierId,
+  ]);
+
+  const purchaseMaterialNameOptions = useMemo(
+    () =>
+      (filterOptions?.purchaseMaterialNames ?? []).map((n) => ({
+        value: n,
+        label: n,
+      })),
+    [filterOptions?.purchaseMaterialNames],
+  );
+
+  const purchasePartDescriptionOptions = useMemo(
+    () =>
+      (filterOptions?.purchasePartDescriptions ?? []).map((d) => ({
+        value: d,
+        label: d,
+      })),
+    [filterOptions?.purchasePartDescriptions],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const purchasePriceIncludesTax = useMemo(() => {
+    if (kind !== "purchase" || !supplierId || !filterOptions) return false;
+    return (
+      filterOptions.suppliers.find((s) => s.id === supplierId)?.priceIncludesTax ??
+      false
+    );
+  }, [kind, supplierId, filterOptions]);
+
+  const warehousePriceIncludesTax = useMemo(() => {
+    if (kind !== "warehouse" || !customerId || !filterOptions) return false;
+    return (
+      filterOptions.customers.find((c) => c.id === customerId)?.priceIncludesTax ??
+      false
+    );
+  }, [kind, customerId, filterOptions]);
+
+  const purchaseMoneyLabels = useMemo(
+    () => moneyColumnLabels(purchasePriceIncludesTax),
+    [purchasePriceIncludesTax],
+  );
+
+  const warehouseMoneyLabels = useMemo(
+    () => moneyColumnLabels(warehousePriceIncludesTax),
+    [warehousePriceIncludesTax],
+  );
 
   const exportPurchaseExcel = useCallback(async () => {
     if (purchaseRows.length === 0) {
@@ -1017,6 +1182,8 @@ function ReconcileTabContent({
       return;
     }
     const XLSX = await import("xlsx");
+    const unitKey = purchaseMoneyLabels.unitPrice;
+    const amountKey = purchaseMoneyLabels.amount;
     const exportRows = purchaseRows.map((r) => ({
       交货日期: formatReconcileDate(r.交货日期),
       采购订单号: r.采购订单号,
@@ -1024,8 +1191,10 @@ function ReconcileTabContent({
       物料名称: r.物料名称,
       部件描述: r.部件描述,
       交货数量: r.交货数量,
-      单价: r.单价,
-      金额: r.金额,
+      [unitKey]: r.单价,
+      [amountKey]: r.金额,
+      附加费用: r.附加费用,
+      备注: r.备注,
     }));
     exportRows.push({
       交货日期: "合计",
@@ -1034,14 +1203,16 @@ function ReconcileTabContent({
       物料名称: "",
       部件描述: "",
       交货数量: "" as unknown as number,
-      单价: "" as unknown as number,
-      金额: totalAmount,
+      [unitKey]: "" as unknown as number,
+      [amountKey]: totalAmount,
+      附加费用: totalExtraFeeAmount,
+      备注: "",
     });
     const ws = XLSX.utils.json_to_sheet(exportRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "采购对帐");
     XLSX.writeFile(wb, `采购对帐_${dayjs().format("YYYYMMDD_HHmmss")}.xlsx`);
-  }, [message, purchaseRows, totalAmount]);
+  }, [message, purchaseMoneyLabels, purchaseRows, totalAmount, totalExtraFeeAmount]);
 
   const exportWarehouseExcel = useCallback(async () => {
     if (warehouseRows.length === 0) {
@@ -1049,6 +1220,8 @@ function ReconcileTabContent({
       return;
     }
     const XLSX = await import("xlsx");
+    const unitKey = warehouseMoneyLabels.unitPrice;
+    const amountKey = warehouseMoneyLabels.amount;
     const exportRows = warehouseRows.map((r) => ({
       送货日期: formatReconcileDate(r.送货日期),
       送货单号: r.送货单号,
@@ -1059,8 +1232,8 @@ function ReconcileTabContent({
       物料料号: r.物料料号,
       单位: r.单位,
       送货数量: r.送货数量,
-      单价: r.单价,
-      金额: r.金额,
+      [unitKey]: r.单价,
+      [amountKey]: r.金额,
       备品数量: r.备品数量,
     }));
     exportRows.push({
@@ -1073,8 +1246,8 @@ function ReconcileTabContent({
       物料料号: "",
       单位: "",
       送货数量: "" as unknown as number,
-      单价: "" as unknown as number,
-      金额: totalAmount,
+      [unitKey]: "" as unknown as number,
+      [amountKey]: totalAmount,
       备品数量: "" as unknown as number,
     });
     const ws = XLSX.utils.json_to_sheet(exportRows);
@@ -1084,9 +1257,10 @@ function ReconcileTabContent({
       wb,
       `仓库出货对帐_${dayjs().format("YYYYMMDD_HHmmss")}.xlsx`,
     );
-  }, [message, totalAmount, warehouseRows]);
+  }, [message, totalAmount, warehouseMoneyLabels, warehouseRows]);
 
-  const purchaseColumns: ColumnsType<PurchaseReconcileRow> = [
+  const purchaseColumns: ColumnsType<PurchaseReconcileRow> = useMemo(
+    () => [
     {
       title: "交货日期",
       dataIndex: "交货日期",
@@ -1109,22 +1283,39 @@ function ReconcileTabContent({
       align: "right",
     },
     {
-      title: "单价",
+      title: purchaseMoneyLabels.unitPrice,
       dataIndex: "单价",
       width: 120,
       align: "right",
       render: (v: number) => money(v),
     },
     {
-      title: "金额",
+      title: purchaseMoneyLabels.amount,
       dataIndex: "金额",
       width: 130,
       align: "right",
       render: (v: number) => money(v),
     },
-  ];
+    {
+      title: "附加费用",
+      dataIndex: "附加费用",
+      width: 200,
+      ellipsis: true,
+      render: (v: string) => v || "—",
+    },
+    {
+      title: "备注",
+      dataIndex: "备注",
+      width: 160,
+      ellipsis: true,
+      render: (v: string) => v?.trim() || "—",
+    },
+  ],
+    [purchaseMoneyLabels],
+  );
 
-  const warehouseColumns: ColumnsType<WarehouseReconcileRow> = [
+  const warehouseColumns: ColumnsType<WarehouseReconcileRow> = useMemo(
+    () => [
     {
       title: "送货日期",
       dataIndex: "送货日期",
@@ -1150,14 +1341,14 @@ function ReconcileTabContent({
       align: "right",
     },
     {
-      title: "单价",
+      title: warehouseMoneyLabels.unitPrice,
       dataIndex: "单价",
       width: 120,
       align: "right",
       render: (v: number) => money(v),
     },
     {
-      title: "金额",
+      title: warehouseMoneyLabels.amount,
       dataIndex: "金额",
       width: 130,
       align: "right",
@@ -1169,7 +1360,9 @@ function ReconcileTabContent({
       width: 90,
       align: "right",
     },
-  ];
+  ],
+    [warehouseMoneyLabels],
+  );
 
   if (!active) {
     return null;
@@ -1187,23 +1380,87 @@ function ReconcileTabContent({
           allowClear={false}
         />
         {kind === "purchase" ? (
-          <Space size="small" align="center">
-            <Typography.Text>供应商</Typography.Text>
-            <Select
-              allowClear
-              showSearch
-              placeholder="全部"
-              optionFilterProp="label"
-              loading={filtersLoading}
-              value={supplierId}
-              onChange={(v) => setSupplierId(v)}
-              options={(filterOptions?.suppliers ?? []).map((s) => ({
-                value: s.id,
-                label: `${s.code} ${s.name}`.trim(),
-              }))}
-              style={{ minWidth: 220 }}
-            />
-          </Space>
+          <>
+            <Space size="small" align="center">
+              <Typography.Text>供应商</Typography.Text>
+              <Select
+                allowClear
+                showSearch
+                placeholder="全部"
+                optionFilterProp="label"
+                loading={filtersLoading}
+                value={supplierId}
+                onChange={(v) => setSupplierId(v)}
+                options={(filterOptions?.suppliers ?? []).map((s) => ({
+                  value: s.id,
+                  label: `${s.code} ${s.name}`.trim(),
+                }))}
+                style={{ minWidth: 200 }}
+              />
+            </Space>
+            <Space size="small" align="center">
+              <Typography.Text>客户</Typography.Text>
+              <Select
+                allowClear
+                showSearch
+                placeholder="全部"
+                optionFilterProp="label"
+                loading={filtersLoading}
+                value={purchaseCustomerId}
+                onChange={(v) => setPurchaseCustomerId(v)}
+                options={(filterOptions?.customers ?? []).map((c) => ({
+                  value: c.id,
+                  label: `${c.code} ${c.name}`.trim(),
+                }))}
+                style={{ minWidth: 200 }}
+              />
+            </Space>
+            <Space size="small" align="center">
+              <Typography.Text>附加费</Typography.Text>
+              <Select
+                value={extraFeesFilter}
+                onChange={(v) => setExtraFeesFilter(v)}
+                options={[
+                  { value: "all", label: "全部" },
+                  { value: "yes", label: "有" },
+                  { value: "no", label: "无" },
+                ]}
+                style={{ minWidth: 88 }}
+              />
+            </Space>
+            <Space size="small" align="center">
+              <Typography.Text>物料名称</Typography.Text>
+              <AutoComplete
+                allowClear
+                placeholder="输入或选择"
+                value={materialName}
+                onChange={(v) => setMaterialName(v)}
+                options={purchaseMaterialNameOptions}
+                filterOption={(input, option) =>
+                  String(option?.value ?? "")
+                    .toLowerCase()
+                    .includes(String(input ?? "").trim().toLowerCase())
+                }
+                style={{ minWidth: 180 }}
+              />
+            </Space>
+            <Space size="small" align="center">
+              <Typography.Text>部件描述</Typography.Text>
+              <AutoComplete
+                allowClear
+                placeholder="输入或选择"
+                value={partDescription}
+                onChange={(v) => setPartDescription(v)}
+                options={purchasePartDescriptionOptions}
+                filterOption={(input, option) =>
+                  String(option?.value ?? "")
+                    .toLowerCase()
+                    .includes(String(input ?? "").trim().toLowerCase())
+                }
+                style={{ minWidth: 200 }}
+              />
+            </Space>
+          </>
         ) : (
           <Space size="small" align="center">
             <Typography.Text>客户名称</Typography.Text>
@@ -1245,6 +1502,14 @@ function ReconcileTabContent({
         >
           导出 Excel
         </Button>
+        {kind === "purchase" ? (
+          <Button onClick={openPurchaseRemarkModal}>
+            添加备注
+            {purchaseSelectedKeys.length > 0
+              ? `（已选 ${purchaseSelectedKeys.length} 行）`
+              : ""}
+          </Button>
+        ) : null}
       </Space>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0, fontSize: 13 }}>
         {kind === "purchase" ? (
@@ -1253,7 +1518,10 @@ function ReconcileTabContent({
             <strong>整单对帐</strong>
             仅列本区间内已整单收料确认的采购明细（未在区间内交完的订单不列入，顺延至交清后期间）；
             <strong>分单对帐</strong>
-            则凡落在区间内的每笔收料各列一行。默认整单对帐。可选供应商筛选本页数据。
+            则凡落在区间内的每笔收料各列一行。默认整单对帐。可按供应商、客户、附加费（有/无）、物料名称、部件描述筛选。
+            「客户」指物料主数据中填写的关联客户（自定义种类）；选客户后再选「附加费：有」，可查看该客户在区间内产生附加费的收料行。
+            「附加费用」列：仅当该行物料为自定义种类且填写了关联客户时，显示该采购单生成前录入的费用。
+            勾选行后点「添加备注」填写对帐说明（如模具费已退），将写入所选行的备注列。
           </>
         ) : (
           <>
@@ -1266,29 +1534,63 @@ function ReconcileTabContent({
         )}
       </Typography.Paragraph>
       {kind === "purchase" ? (
+        <>
         <Spin spinning={loading}>
           <Table<PurchaseReconcileRow>
             size="small"
             rowKey={purchaseReconcileRowKey}
+            rowSelection={purchaseRowSelection}
             columns={purchaseColumns}
             dataSource={purchaseRows}
             pagination={{ defaultPageSize: 20, showSizeChanger: true }}
-            scroll={{ x: 1100 }}
+            scroll={{ x: 1280 }}
             locale={{ emptyText: "暂无对帐行" }}
             summary={() => (
               <Table.Summary fixed>
                 <Table.Summary.Row>
-                  <Table.Summary.Cell index={0} colSpan={7} align="right">
+                  <Table.Summary.Cell index={0} colSpan={8} align="right">
                     <Typography.Text strong>金额合计</Typography.Text>
                   </Table.Summary.Cell>
-                  <Table.Summary.Cell index={7} align="right">
+                  <Table.Summary.Cell index={8} align="right">
                     <Typography.Text strong>{money(totalAmount)}</Typography.Text>
                   </Table.Summary.Cell>
+                  <Table.Summary.Cell index={9} align="right">
+                    <div>
+                      <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>
+                        附加费用合计
+                      </Typography.Text>
+                      <Typography.Text strong>{money(totalExtraFeeAmount)}</Typography.Text>
+                    </div>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={10} />
                 </Table.Summary.Row>
               </Table.Summary>
             )}
           />
         </Spin>
+        <Modal
+          title={`添加备注（已选 ${purchaseSelectedKeys.length} 行）`}
+          open={remarkModalOpen}
+          onCancel={() => setRemarkModalOpen(false)}
+          onOk={() => void submitPurchaseRemarks()}
+          confirmLoading={remarkSaving}
+          destroyOnHidden
+        >
+          <div>
+            <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+              备注内容
+            </Typography.Text>
+            <Input.TextArea
+              value={remarkDraft}
+              onChange={(e) => setRemarkDraft(e.target.value)}
+              rows={3}
+              placeholder="如：模具费已退、测试架费已对帐"
+              maxLength={2000}
+              showCount
+            />
+          </div>
+        </Modal>
+        </>
       ) : (
         <Spin spinning={loading}>
           <Table<WarehouseReconcileRow>

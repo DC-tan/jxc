@@ -14,7 +14,9 @@ export async function GET(req: Request) {
     }
 
     const { searchParams } = new URL(req.url);
-    const rows = await queryMaterialInventoryList(searchParams);
+    const bomPickerParams = new URLSearchParams(searchParams);
+    bomPickerParams.set("deprecated", "0");
+    const rows = await queryMaterialInventoryList(bomPickerParams);
     const kinds = await prisma.materialPresetKind.findMany({
       orderBy: { sortOrder: "asc" },
       select: { id: true, name: true },

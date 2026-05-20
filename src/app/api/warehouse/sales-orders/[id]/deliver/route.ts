@@ -5,11 +5,17 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { getMaterialInboundTotalsByIds } from "@/lib/materialStock";
 import {
-  productAllowsShipmentInhouseBackfill,
-  productBomForInhouseProduction,
-} from "@/lib/product-bom-scope";
+  shipmentMaterialPartLabel,
+  shipmentProductModelLabel,
+} from "@/lib/inhouse-bom-display";
+import { formatOutsourceRecoveryMaterialCode } from "@/lib/outsource-recovery-display";
+import { getOutsourceRecoveryQtyByProductId } from "@/lib/outsource-recovery-stock";
 import {
-  effectiveQuantityShipped,
+  defaultInhouseProduceQty,
+  inhouseProduceTooLowToShipMessage,
+} from "@/lib/warehouse-delivery-inhouse-step";
+import { productBomForInhouseProduction } from "@/lib/product-bom-scope";
+import {
   storedQuantityShipped,
 } from "@/lib/sales-order-shipping";
 
@@ -31,12 +37,25 @@ const bodySchema = z.object({
   inhouseProduceByLineId: z
     .record(z.string(), z.union([z.number(), z.string()]))
     .optional(),
+  hybridInhouseProduceByLineId: z
+    .record(z.string(), z.union([z.number(), z.string()]))
+    .optional(),
 });
 
 function toNonNegInt(v: unknown): number {
   const n = Math.trunc(Number(v));
   if (!Number.isFinite(n) || n < 0) return 0;
   return n;
+}
+
+function lineInhouseProduceQty(
+  lineId: string,
+  shipQty: number,
+  hybridMap?: Record<string, unknown>,
+  inhouseMap?: Record<string, unknown>,
+): number {
+  const raw = hybridMap?.[lineId] ?? inhouseMap?.[lineId];
+  return raw !== undefined ? toNonNegInt(raw) : shipQty;
 }
 
 type InhouseBackfillLine = { materialCode: string; qty: number };
@@ -106,7 +125,13 @@ export async function POST(
                     materialId: true,
                     scope: true,
                     usageQty: true,
-                    material: { select: { code: true, name: true } },
+                    material: {
+                      select: {
+                        code: true,
+                        name: true,
+                        partDescription: true,
+                      },
+                    },
                   },
                 },
               },
@@ -167,31 +192,40 @@ export async function POST(
             materialId: string;
             scope: "DEFAULT" | "OUTSOURCE" | "INHOUSE";
             usageQty: unknown;
-            material: { code: string; name: string };
+            material: {
+              code: string;
+              name: string;
+              partDescription: string | null;
+            };
           }[];
         };
 
-        const agg = await tx.productInbound.aggregate({
-          where: { productId: pid },
-          _sum: { quantity: true },
-        });
-        const have = Number(agg._sum.quantity ?? 0);
-        const short = Math.max(0, inc.add - have);
+        const productModel = shipmentProductModelLabel(prod);
+        const label = productModel === "—" ? "商品" : productModel;
 
-        if (short > 0) {
-          const label =
-            prod.model?.trim() ||
-            prod.customerMaterialCode?.trim() ||
-            "商品";
-
-          if (!productAllowsShipmentInhouseBackfill(prod.processingMode)) {
+        if (prod.processingMode === "OUTSOURCE_INHOUSE") {
+          const shipQty = inc.add;
+          const agg = await tx.productInbound.aggregate({
+            where: { productId: pid },
+            _sum: { quantity: true },
+          });
+          const have = Number(agg._sum.quantity ?? 0);
+          const defaultProduce = defaultInhouseProduceQty(shipQty, have);
+          const produceRaw =
+            parsed.data.hybridInhouseProduceByLineId?.[inc.lineId] ??
+            parsed.data.inhouseProduceByLineId?.[inc.lineId];
+          const inhouseProduce =
+            produceRaw !== undefined
+              ? toNonNegInt(produceRaw)
+              : defaultProduce;
+          if (inhouseProduce < defaultProduce) {
             throw new Error(
               JSON.stringify({
-                kind: "INVENTORY_SHORT" as const,
-                label,
-                have,
-                need: inc.add,
-                processingMode: prod.processingMode,
+                kind: "PRODUCE_SHORT" as const,
+                lineId: inc.lineId,
+                productModel,
+                needProduce: defaultProduce,
+                produce: inhouseProduce,
               }),
             );
           }
@@ -200,92 +234,251 @@ export async function POST(
             prod.processingMode,
             prod.productMaterials ?? [],
           );
-          if (boms.length === 0) {
+          if (boms.length === 0 && defaultProduce > 0) {
             throw new Error(
               JSON.stringify({
                 kind: "NO_BOM" as const,
-                label,
-                short,
+                productModel,
+                short: defaultProduce,
               }),
             );
           }
 
-          const produceRaw = parsed.data.inhouseProduceByLineId?.[inc.lineId];
-          const produce =
-            produceRaw !== undefined ? toNonNegInt(produceRaw) : short;
-          if (produce < short) {
+          const recoveryQty = await getOutsourceRecoveryQtyByProductId(tx, pid);
+          if (inhouseProduce > 0 && recoveryQty < inhouseProduce) {
             throw new Error(
               JSON.stringify({
-                kind: "PRODUCE_SHORT" as const,
-                lineId: inc.lineId,
-                label,
-                needProduce: short,
-                produce,
+                kind: "RECOVERY_SHORT" as const,
+                productModel,
+                recoveryLabel: formatOutsourceRecoveryMaterialCode(
+                  prod.customerMaterialCode,
+                ),
+                have: recoveryQty,
+                need: inhouseProduce,
               }),
             );
           }
 
-          const matIds = boms.map((b) => b.materialId);
-          const stockMap = await getMaterialInboundTotalsByIds(tx, matIds);
-
+          const matQty = Math.max(inhouseProduce, defaultProduce);
           const bomLines: InhouseBackfillLine[] = [];
-          for (const b of boms) {
-            const need = bomNeedForShort(b.usageQty, produce);
-            if (need <= 0) continue;
-            const stock = stockMap.get(b.materialId) ?? 0;
-            const matCode = b.material.code?.trim() || b.materialId;
-            if (stock < need) {
-              throw new Error(
-                JSON.stringify({
-                  kind: "MATERIAL_SHORT" as const,
-                  productLabel: label,
-                  materialCode: matCode,
-                  have: stock,
-                  need,
-                }),
-              );
+          if (matQty > 0 && boms.length > 0) {
+            const matIds = boms.map((b) => b.materialId);
+            const stockMap = await getMaterialInboundTotalsByIds(tx, matIds);
+            for (const b of boms) {
+              const need = bomNeedForShort(b.usageQty, matQty);
+              if (need <= 0) continue;
+              const stock = stockMap.get(b.materialId) ?? 0;
+              const matCode = b.material.code?.trim() || b.materialId;
+              if (stock < need) {
+                throw new Error(
+                  JSON.stringify({
+                    kind: "MATERIAL_SHORT" as const,
+                    productModel,
+                    materialPart: shipmentMaterialPartLabel(b.material),
+                    shipQty: matQty,
+                    have: stock,
+                    need,
+                  }),
+                );
+              }
+              bomLines.push({ materialCode: matCode, qty: need });
             }
-            bomLines.push({ materialCode: matCode, qty: need });
+
+            for (const b of boms) {
+              const need = bomNeedForShort(b.usageQty, matQty);
+              if (need <= 0) continue;
+              await tx.materialInbound.create({
+                data: {
+                  materialId: b.materialId,
+                  quantity: -need,
+                  receivedAt: at,
+                  purchaseOrderNo: order.customerOrderNo?.trim() || null,
+                  partDescription: `外发+自加工扣料·自加工完工（${label}×${matQty}）`,
+                  operatorUserId: auth.user.id,
+                },
+              });
+            }
           }
 
-          for (const b of boms) {
-            const need = bomNeedForShort(b.usageQty, produce);
-            if (need <= 0) continue;
-            await tx.materialInbound.create({
+          if (inhouseProduce > defaultProduce) {
+            inhouseBackfills.push({
+              productLabel: productModel,
+              shortQty: inhouseProduce - defaultProduce,
+              bomLines,
+            });
+          }
+
+          if (inhouseProduce > 0) {
+            await tx.outsourceRecoveryInbound.create({
               data: {
-                materialId: b.materialId,
-                quantity: -need,
+                productId: pid,
+                quantity: -inhouseProduce,
                 receivedAt: at,
-                purchaseOrderNo: order.customerOrderNo?.trim() || null,
-                partDescription: `自加工扣料·出货补产（${label}×${produce}）`,
+                entryType: "SHIP_CONSUME",
+                partDescription: `销售出货消耗外发回收库（${label}×${inhouseProduce}，本批自加工完工）`,
+                remark: `销售单 ${order.customerOrderNo?.trim() || id}`,
                 operatorUserId: auth.user.id,
               },
             });
           }
 
-          await tx.productInbound.create({
-            data: {
-              productId: pid,
-              quantity: produce,
-              receivedAt: at,
-              purchaseOrderNo: order.customerOrderNo?.trim() || null,
-              partDescription: `自加工完工入库（本批补产 ${produce}）`,
-              remark: `销售单 ${order.customerOrderNo?.trim() || id}`,
-              operatorUserId: auth.user.id,
-            },
-          });
+          // 商品流水：外发结转入库记本批自加工实际完工数；销售出货记本批实发数（净增 = 完工 − 出货，超出部分留商品库存）
+          if (inhouseProduce > 0) {
+            await tx.productInbound.create({
+              data: {
+                productId: pid,
+                quantity: inhouseProduce,
+                receivedAt: at,
+                purchaseOrderNo: order.customerOrderNo?.trim() || null,
+                partDescription: `外发回收库结转（${label}×${inhouseProduce}，本批自加工完工）`,
+                remark: `销售单 ${order.customerOrderNo?.trim() || id}`,
+                operatorUserId: auth.user.id,
+              },
+            });
+          }
 
-          inhouseBackfills.push({
-            productLabel: label,
-            shortQty: produce,
-            bomLines,
+          continue;
+        }
+
+        if (prod.processingMode === "INHOUSE") {
+          const shipQty = inc.add;
+          const agg = await tx.productInbound.aggregate({
+            where: { productId: pid },
+            _sum: { quantity: true },
           });
+          const have = Number(agg._sum.quantity ?? 0);
+          const defaultProduce = defaultInhouseProduceQty(shipQty, have);
+          const produceRaw =
+            parsed.data.hybridInhouseProduceByLineId?.[inc.lineId] ??
+            parsed.data.inhouseProduceByLineId?.[inc.lineId];
+          const produce =
+            produceRaw !== undefined
+              ? toNonNegInt(produceRaw)
+              : defaultProduce;
+          if (produce < defaultProduce) {
+            throw new Error(
+              JSON.stringify({
+                kind: "PRODUCE_SHORT" as const,
+                lineId: inc.lineId,
+                productModel,
+                needProduce: defaultProduce,
+                produce,
+              }),
+            );
+          }
+
+          const boms = productBomForInhouseProduction(
+            prod.processingMode,
+            prod.productMaterials ?? [],
+          );
+          if (boms.length === 0 && defaultProduce > 0) {
+            throw new Error(
+              JSON.stringify({
+                kind: "NO_BOM" as const,
+                productModel,
+                short: defaultProduce,
+              }),
+            );
+          }
+
+          if (produce > 0 && boms.length > 0) {
+            const matIds = boms.map((b) => b.materialId);
+            const stockMap = await getMaterialInboundTotalsByIds(tx, matIds);
+            const bomLines: InhouseBackfillLine[] = [];
+            for (const b of boms) {
+              const need = bomNeedForShort(b.usageQty, produce);
+              if (need <= 0) continue;
+              const stock = stockMap.get(b.materialId) ?? 0;
+              const matCode = b.material.code?.trim() || b.materialId;
+              if (stock < need) {
+                throw new Error(
+                  JSON.stringify({
+                    kind: "MATERIAL_SHORT" as const,
+                    productModel,
+                    materialPart: shipmentMaterialPartLabel(b.material),
+                    have: stock,
+                    need,
+                  }),
+                );
+              }
+              bomLines.push({ materialCode: matCode, qty: need });
+            }
+
+            for (const b of boms) {
+              const need = bomNeedForShort(b.usageQty, produce);
+              if (need <= 0) continue;
+              await tx.materialInbound.create({
+                data: {
+                  materialId: b.materialId,
+                  quantity: -need,
+                  receivedAt: at,
+                  purchaseOrderNo: order.customerOrderNo?.trim() || null,
+                  partDescription: `自加工扣料·出货（${label}×${produce}）`,
+                  operatorUserId: auth.user.id,
+                },
+              });
+            }
+
+            await tx.productInbound.create({
+              data: {
+                productId: pid,
+                quantity: produce,
+                receivedAt: at,
+                purchaseOrderNo: order.customerOrderNo?.trim() || null,
+                partDescription:
+                  produce > defaultProduce
+                    ? `自加工完工入库（本批 ${produce}，默认 ${defaultProduce}，补产 ${produce - defaultProduce}）`
+                    : `自加工完工入库（本批 ${produce}）`,
+                remark: `销售单 ${order.customerOrderNo?.trim() || id}`,
+                operatorUserId: auth.user.id,
+              },
+            });
+            if (produce > defaultProduce) {
+              inhouseBackfills.push({
+                productLabel: productModel,
+                shortQty: produce - defaultProduce,
+                bomLines,
+              });
+            }
+          } else if (defaultProduce > 0) {
+            throw new Error(
+              JSON.stringify({
+                kind: "INVENTORY_SHORT" as const,
+                productModel,
+                have,
+                need: shipQty,
+                processingMode: prod.processingMode,
+              }),
+            );
+          }
+
+          continue;
+        }
+
+        const agg = await tx.productInbound.aggregate({
+          where: { productId: pid },
+          _sum: { quantity: true },
+        });
+        const have = Number(agg._sum.quantity ?? 0);
+        const short = Math.max(0, inc.add - have);
+        if (short > 0) {
+          throw new Error(
+            JSON.stringify({
+              kind: "INVENTORY_SHORT" as const,
+              productModel,
+              have,
+              need: inc.add,
+              processingMode: prod.processingMode,
+            }),
+          );
         }
       }
 
       for (const inc of increments) {
         const ln = lineById.get(inc.lineId)!;
         const pid = (ln as { productId: string }).productId;
+        const prodMode = (ln.product as { processingMode: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE" }).processingMode;
+        if (prodMode === "OUTSOURCE_INHOUSE") continue;
         const aggCheck = await tx.productInbound.aggregate({
           where: { productId: pid },
           _sum: { quantity: true },
@@ -314,13 +507,18 @@ export async function POST(
         });
         const ln = lineById.get(inc.lineId)!;
         const pid = (ln as { productId: string }).productId;
+        const prodMode = (ln.product as { processingMode: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE" }).processingMode;
+        const shipPartDescription =
+          prodMode === "OUTSOURCE_INHOUSE"
+            ? "销售出货（外发+自加工）"
+            : "销售出货";
         await tx.productInbound.create({
           data: {
             productId: pid,
             quantity: -inc.add,
             receivedAt: at,
             purchaseOrderNo: order.customerOrderNo?.trim() || null,
-            partDescription: "销售出货",
+            partDescription: shipPartDescription,
             remark: `送货单 · ${order.customerOrderNo?.trim() || id}`,
             operatorUserId: auth.user.id,
           },
@@ -371,6 +569,7 @@ export async function POST(
       };
       if (parsed.kind === "INVENTORY_SHORT") {
         const p = parsed as {
+          productModel?: string;
           label?: string;
           have?: number;
           need?: number;
@@ -382,42 +581,83 @@ export async function POST(
             : "外发加工商品不支持出货补产，请先办理成品入库后再出货。";
         return NextResponse.json(
           {
-            error: `「${p.label ?? "商品"}」商品库存不足（当前 ${p.have ?? 0}，本次出货 ${p.need ?? 0}）。${tail}`,
+            error: `「${p.productModel ?? p.label ?? "商品"}」商品库存不足（当前 ${p.have ?? 0}，本次出货 ${p.need ?? 0}）。${tail}`,
           },
           { status: 400 },
         );
       }
       if (parsed.kind === "NO_BOM") {
+        const p = parsed as { productModel?: string; label?: string; short?: number };
+        const model = p.productModel ?? p.label ?? "商品";
+        const shortN = p.short ?? 0;
+        if (shortN > 0 && model !== "商品") {
+          return NextResponse.json(
+            {
+              error: `外发+自加工商品「${model}」未维护自加工侧 BOM，无法按出货扣减自加工物料。请先维护 BOM。`,
+            },
+            { status: 400 },
+          );
+        }
         return NextResponse.json(
           {
-            error: `自加工商品「${parsed.label ?? "商品"}」库存不足（缺 ${(parsed as { short?: number }).short ?? 0}），且未维护 BOM，无法自动扣料投产。请在商品信息中维护 BOM 或先办理成品入库。`,
+            error: `自加工商品「${model}」库存不足（缺 ${shortN}），且未维护 BOM，无法自动扣料投产。请在商品信息中维护 BOM 或先办理成品入库。`,
           },
           { status: 400 },
         );
       }
       if (parsed.kind === "MATERIAL_SHORT") {
         const p = parsed as {
+          productModel?: string;
           productLabel?: string;
+          materialPart?: string;
           materialCode?: string;
+          shipQty?: number;
           have?: number;
           need?: number;
         };
+        const model = p.productModel ?? p.productLabel ?? "商品";
+        const mat =
+          p.materialPart ?? p.materialCode ?? "—";
+        if (p.shipQty != null && p.shipQty > 0) {
+          return NextResponse.json(
+            {
+              error: `外发+自加工出货「${model}」时自加工物料「${mat}」库存不足（当前 ${p.have ?? 0}，需 ${p.need ?? 0}，按出货 ${p.shipQty} 件测算）。`,
+            },
+            { status: 400 },
+          );
+        }
         return NextResponse.json(
           {
-            error: `自加工补产「${p.productLabel ?? "商品"}」时物料「${p.materialCode ?? "—"}」库存不足（当前 ${p.have ?? 0}，需 ${p.need ?? 0}）。`,
+            error: `自加工补产「${model}」时物料「${mat}」库存不足（当前 ${p.have ?? 0}，需 ${p.need ?? 0}）。`,
+          },
+          { status: 400 },
+        );
+      }
+      if (parsed.kind === "RECOVERY_SHORT") {
+        const p = parsed as {
+          productModel?: string;
+          recoveryLabel?: string;
+          label?: string;
+          have?: number;
+          need?: number;
+        };
+        const model = p.productModel ?? p.label ?? "商品";
+        const rec = p.recoveryLabel?.trim();
+        const head = rec ? `「${rec} / ${model}」` : `「${model}」`;
+        return NextResponse.json(
+          {
+            error: `${head}外发回收库库存不足（当前 ${p.have ?? 0}，本批自加工完工 ${p.need ?? 0}）。请先在“物料外发 → 外发回收库”补充库存。`,
           },
           { status: 400 },
         );
       }
       if (parsed.kind === "PRODUCE_SHORT") {
-        const p = parsed as {
-          label?: string;
-          needProduce?: number;
-          produce?: number;
-        };
+        const p = parsed as { productModel?: string; label?: string };
         return NextResponse.json(
           {
-            error: `「${p.label ?? "商品"}」现入库/补产数量不能少于本批不足数（需至少 ${p.needProduce ?? 0} 件，当前 ${p.produce ?? 0} 件）。`,
+            error: inhouseProduceTooLowToShipMessage(
+              p.productModel ?? p.label ?? "商品",
+            ),
           },
           { status: 400 },
         );

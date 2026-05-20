@@ -170,10 +170,16 @@ export async function POST(req: Request) {
 
   const products = await prisma.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, customerId: true },
+    select: { id: true, customerId: true, isDeprecated: true },
   });
   if (products.length !== productIds.length) {
     return NextResponse.json({ error: "存在无效的商品" }, { status: 400 });
+  }
+  if (products.some((p) => p.isDeprecated)) {
+    return NextResponse.json(
+      { error: "不能添加已弃用的商品" },
+      { status: 400 },
+    );
   }
   const wrongCustomer = products
     .filter((p) => p.customerId !== d.customerId)

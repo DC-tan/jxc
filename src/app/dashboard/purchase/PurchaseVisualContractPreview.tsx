@@ -14,6 +14,7 @@ import {
   type ContractPreviewLine,
   type ContractPreviewSupplier,
 } from "./PurchaseContractPreview";
+import type { PurchaseExtraFeeRow } from "@/lib/purchase-extra-fees";
 import { PartyAFooterSealOverlay } from "./PartyAFooterSealOverlay";
 
 const cell: CSSProperties = {
@@ -126,6 +127,7 @@ export function PurchaseVisualContractPreview({
   deliveryDueAtIso,
   customerLine,
   contractNoOverride,
+  extraFees = [],
 }: {
   visual: VisualEditorState;
   supplier: ContractPreviewSupplier;
@@ -134,6 +136,7 @@ export function PurchaseVisualContractPreview({
   deliveryDueAtIso: string | null;
   /** 已保存采购单号或与规则一致的预览号；模板为自动生成时展示 */
   contractNoOverride?: string | null;
+  extraFees?: PurchaseExtraFeeRow[];
 }) {
   const t = visual.texts;
   const total = lines.reduce((s, l) => s + l.quantity * l.unitPriceNum, 0);
@@ -269,6 +272,17 @@ export function PurchaseVisualContractPreview({
             >
               {t.sectionOneTitle}
             </div>
+            {supplier.priceIncludesTax ? (
+              <div
+                style={{
+                  textAlign: "right",
+                  fontSize: 13,
+                  marginBottom: 4,
+                }}
+              >
+                含税：13%
+              </div>
+            ) : null}
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ background: "#f5f5f5" }}>
@@ -297,6 +311,20 @@ export function PurchaseVisualContractPreview({
                 </tr>
               </tbody>
             </table>
+            {extraFees.length > 0 ? (
+              <div style={{ marginTop: 10, fontSize: 13 }}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>附加费用</div>
+                {extraFees.map((f, i) => (
+                  <div key={f.id ?? i} style={{ lineHeight: 1.6 }}>
+                    {Number(f.amount).toLocaleString("zh-CN", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 4,
+                    })}
+                    （{f.purpose}）
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         );
       }

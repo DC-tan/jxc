@@ -1,4 +1,4 @@
-/** sessionStorage 草稿：确认出货后先可能进入「自加工补产」再进送货单；点「完成」才调用 deliver API */
+/** sessionStorage 草稿：确认出货后可能经「自加工补产入库存」再进送货单；点「完成」才调用 deliver API */
 export const WAREHOUSE_DELIVERY_DRAFT_KEY = "warehouse-delivery-slip-draft";
 
 export type WarehouseDeliveryLineDraft = {
@@ -17,8 +17,14 @@ export type WarehouseDeliveryDraft = {
   orderId: string;
   actualDeliveredAt: string;
   lines: WarehouseDeliveryLineDraft[];
-  /** 自加工缺额行在补产页填写的本批成品「现入库」数量，与 shipQty 一并提交 deliver */
+  /**
+   * 自加工 / 外发+自加工：确认出货弹窗填写的本批自加工完工数（≥ 本批出货）。
+   */
   inhouseProduceByLineId?: Record<string, number>;
+  /** 与 inhouseProduceByLineId 相同键值；外发+自加工行 deliver API 优先读此字段 */
+  hybridInhouseProduceByLineId?: Record<string, number>;
+  /** 为 true 时进入「自加工补产入库存」页（完工数大于默认数） */
+  needsInhouseStep?: boolean;
   /** 送货单 NO（年度流水，进入打印页时分配，写入后保存草稿） */
   documentNo?: string;
 };

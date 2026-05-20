@@ -59,6 +59,8 @@ model User {
   materialInboundOperations MaterialInbound[] @relation("MaterialInboundOperator")
   /// 商品成品出入库流水操作人（可选）
   productInboundOperations ProductInbound[] @relation("ProductInboundOperator")
+  /// 外发回收库流水操作人（可选）
+  outsourceRecoveryOperations OutsourceRecoveryInbound[] @relation("OutsourceRecoveryOperator")
   createdChangeReminders CustomerChangeReminder[] @relation("ChangeReminderCreator")
   salesConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderSalesConfirmer")
   purchaseConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderPurchaseConfirmer")
@@ -136,6 +138,8 @@ model Customer {
   address     String?          @db.Text
   mainProduct String? /// 客户主营产品
   quality     CustomerQuality
+  /// 销售单价是否为含税价（统计利润时 ÷1.13 折未税）
+  priceIncludesTax Boolean @default(false)
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
   products    Product[]
@@ -200,6 +204,8 @@ model Supplier {
   attrProduction Boolean @default(true)
   /// 供应商属性：加工类；为 true 时出现在「物料外发 → 加工方」备选
   attrProcessing Boolean @default(true)
+  /// 采购单价是否为含税价（统计利润时物料成本 ÷1.1 折未税）
+  priceIncludesTax Boolean @default(false)
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
   materials    Material[]
@@ -347,12 +353,37 @@ model PurchaseOrder {
   createdAt  DateTime            @default(now())
   updatedAt  DateTime            @updatedAt
   lines      PurchaseOrderLine[]
+  extraFees  PurchaseOrderExtraFee[]
 
   @@index([supplierId])
   @@index([createdAt])
   @@index([salesOrderId])
   @@index([deliveryDueAt])
   @@index([actualDeliveredAt])
+}
+
+/// 采购单附加费用（模具/测试架等，记在本单）
+model PurchaseOrderExtraFee {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  amount          Decimal       @db.Decimal(14, 4)
+  purpose         String        @db.Text
+  sortOrder       Int           @default(0)
+  createdAt       DateTime      @default(now())
+
+  @@index([purchaseOrderId])
+}
+
+/// 采购对帐行备注（分单按入库流水、整单按采购单号+物料，手动维护）
+model PurchaseReconcileRemark {
+  id              String   @id @default(cuid())
+  lineKey         String   @unique
+  remark          String   @db.Text
+  updatedAt       DateTime @updatedAt
+  updatedByUserId String?
+
+  @@index([updatedAt])
 }
 
 /// 采购订单明细
@@ -502,6 +533,7 @@ model Product {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   inbounds        ProductInbound[]
+  outsourceRecoveryIns OutsourceRecoveryInbound[]
   productMaterials ProductMaterial[]
   salesOrderLines SalesOrderLine[]
   outsourceOrders OutsourceOrder[]
@@ -573,6 +605,7 @@ model OutsourceOrder {
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
   lines       OutsourceOrderLine[]
+  recoveryIns OutsourceRecoveryInbound[]
 
   @@index([productId])
   @@index([supplierId])
@@ -616,6 +649,41 @@ enum ProductInboundEntryType {
   REGULAR
   /// 商品信息中「手动调整库存」产生的差额
   MANUAL_STOCK_ADJUST
+}
+
+/// 外发回收库流水类型
+enum OutsourceRecoveryEntryType {
+  /// 外发单回收入库
+  RECOVERY
+  /// 外发回收库手动调整
+  MANUAL_STOCK_ADJUST
+  /// 销售出货消耗
+  SHIP_CONSUME
+}
+
+/// 外发回收库流水（仅外发+自加工商品使用）
+model OutsourceRecoveryInbound {
+  id                String @id @default(cuid())
+  productId         String
+  product           Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  outsourceOrderId  String?
+  outsourceOrder    OutsourceOrder? @relation(fields: [outsourceOrderId], references: [id], onDelete: SetNull)
+  /// 冗余保存外发单号，便于历史追溯与导出
+  outsourceOrderNo  String?
+  quantity          Int
+  receivedAt        DateTime @default(now())
+  partDescription   String? @db.Text
+  remark            String? @db.Text
+  entryType         OutsourceRecoveryEntryType @default(RECOVERY)
+  createdAt         DateTime @default(now())
+  operatorUserId    String?
+  operator          User? @relation("OutsourceRecoveryOperator", fields: [operatorUserId], references: [id], onDelete: SetNull)
+
+  @@index([productId])
+  @@index([outsourceOrderId])
+  @@index([outsourceOrderNo])
+  @@index([receivedAt])
+  @@index([operatorUserId])
 }
 
 /// 商品入库 / 库存流水

@@ -145,7 +145,13 @@ export const PERMISSION_DEFINITIONS: {
     "outsource.view",
     "outsource.edit",
   ] },
-  { module: "物料外发", name: "外发单设置", code: "tab.os.settings", sortOrder: 84, expandTo: [
+  { module: "物料外发", name: "外发回收库", code: "tab.os.recovery", sortOrder: 84, expandTo: [
+    "outsource.view",
+  ] },
+  { module: "物料外发", name: "回收库手动调整", code: "tab.os.recoveryAdjust", sortOrder: 85, expandTo: [
+    "outsource.recovery.adjust",
+  ] },
+  { module: "物料外发", name: "外发单设置", code: "tab.os.settings", sortOrder: 86, expandTo: [
     "outsource.view",
     "outsource.edit",
   ] },
@@ -303,6 +309,8 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.os.open",
     "tab.os.query",
     "tab.os.stock",
+    "tab.os.recovery",
+    "tab.os.recoveryAdjust",
     "tab.os.settings",
     "tab.mat.inv",
     "tab.prod.inv",

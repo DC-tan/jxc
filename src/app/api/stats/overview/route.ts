@@ -2,19 +2,32 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { parseStatsRange, statsRangeQuerySchema } from "@/lib/stats-range";
+import { sumPurchaseExtraFeesByCustomerInRange } from "@/lib/purchase-extra-fees";
+import { unitPriceToExclusive } from "@/lib/price-tax";
 
 const OPERATION_COST_RATE = 0.08;
 
-/** 销售行物料成本：商品 BOM 各行 用量×物料单价，再×本行销售数量 */
+/** 销售行物料成本：商品 BOM 各行 用量×物料单价（含税供应商则 ÷1.1），再×本行销售数量 */
 function materialCostForSalesLine(
   lineQty: number,
-  productMaterials: { usageQty: unknown; material: { unitPrice: unknown } }[],
+  productMaterials: {
+    usageQty: unknown;
+    material: {
+      unitPrice: unknown;
+      supplier: { priceIncludesTax: boolean };
+    };
+  }[],
 ): number {
   let s = 0;
   for (const pm of productMaterials) {
     const u = Number(pm.usageQty);
-    const unit = Number(pm.material.unitPrice);
+    let unit = Number(pm.material.unitPrice);
     if (!Number.isFinite(u) || !Number.isFinite(unit) || u < 0) continue;
+    unit = unitPriceToExclusive(
+      unit,
+      pm.material.supplier.priceIncludesTax,
+      "supplier",
+    );
     s += lineQty * u * unit;
   }
   return s;
@@ -22,7 +35,7 @@ function materialCostForSalesLine(
 
 
 /**
- * 经营统计：销售、采购、财务（行销售额 − 行总成本，成本= BOM 物料成本+加工成本）、外发、出货、趋势、客户 TOP（须 stats.view）
+ * 经营统计：销售、采购、财务（利润 = 销售未税 − 物料/加工成本 − 关联采购单附加费）、外发、出货、趋势、客户 TOP（须 stats.view）
  */
 export async function GET(req: Request) {
   const auth = await requirePermission("stats.view");
@@ -104,7 +117,12 @@ export async function GET(req: Request) {
               productMaterials: {
                 select: {
                   usageQty: true,
-                  material: { select: { unitPrice: true } },
+                  material: {
+                    select: {
+                      unitPrice: true,
+                      supplier: { select: { priceIncludesTax: true } },
+                    },
+                  },
                 },
               },
             },
@@ -112,7 +130,14 @@ export async function GET(req: Request) {
           salesOrder: {
             select: {
               customerId: true,
-              customer: { select: { id: true, code: true, name: true } },
+              customer: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  priceIncludesTax: true,
+                },
+              },
             },
           },
         },
@@ -123,6 +148,8 @@ export async function GET(req: Request) {
       (s, l) => s + l.quantity * Number(l.unitPrice),
       0,
     );
+    const extraFeesAgg = await sumPurchaseExtraFeesByCustomerInRange(from, to);
+
     const financeByCustomer = new Map<
       string,
       {
@@ -139,7 +166,12 @@ export async function GET(req: Request) {
       const k = line.salesOrder.customerId;
       const c = line.salesOrder.customer;
       const q = line.quantity;
-      const rev = q * Number(line.unitPrice);
+      const saleUnit = unitPriceToExclusive(
+        Number(line.unitPrice),
+        line.salesOrder.customer.priceIncludesTax,
+        "customer",
+      );
+      const rev = q * saleUnit;
       const matCost = materialCostForSalesLine(q, line.product.productMaterials);
       const procCost = q * Number(line.product.processingCost);
       const cst = matCost + procCost;
@@ -163,16 +195,47 @@ export async function GET(req: Request) {
         });
       }
     }
+    const extraCustomerIdsMissing = [...extraFeesAgg.byCustomerId.keys()].filter(
+      (id) => !financeByCustomer.has(id),
+    );
+    if (extraCustomerIdsMissing.length > 0) {
+      const extraCustomers = await prisma.customer.findMany({
+        where: { id: { in: extraCustomerIdsMissing } },
+        select: { id: true, code: true, name: true },
+      });
+      for (const c of extraCustomers) {
+        const extra = extraFeesAgg.byCustomerId.get(c.id) ?? 0;
+        if (extra <= 0) continue;
+        financeByCustomer.set(c.id, {
+          customerId: c.id,
+          code: c.code,
+          name: c.name,
+          revenue: 0,
+          cost: extra,
+          profit: -extra,
+          pureProfit: -extra,
+        });
+      }
+    }
+    for (const row of financeByCustomer.values()) {
+      const extra = extraFeesAgg.byCustomerId.get(row.customerId) ?? 0;
+      if (extra <= 0) continue;
+      row.cost += extra;
+      row.profit -= extra;
+      row.pureProfit -= extra;
+    }
+
     const financeByCustomerList = Array.from(financeByCustomer.values()).sort(
       (a, b) => b.revenue - a.revenue,
     );
     const totalFinanceRevenue = financeByCustomerList.reduce((s, x) => s + x.revenue, 0);
-    const totalFinanceCost = financeByCustomerList.reduce((s, x) => s + x.cost, 0);
-    const totalFinanceProfit = financeByCustomerList.reduce((s, x) => s + x.profit, 0);
-    const totalFinancePureProfit = financeByCustomerList.reduce(
-      (s, x) => s + x.pureProfit,
-      0,
-    );
+    let totalFinanceCost =
+      financeByCustomerList.reduce((s, x) => s + x.cost, 0) + extraFeesAgg.unlinked;
+    let totalFinanceProfit =
+      financeByCustomerList.reduce((s, x) => s + x.profit, 0) - extraFeesAgg.unlinked;
+    let totalFinancePureProfit =
+      financeByCustomerList.reduce((s, x) => s + x.pureProfit, 0) -
+      extraFeesAgg.unlinked;
 
     const salesOrdersInRange = await prisma.salesOrder.findMany({
       where: salesWhere,
@@ -296,6 +359,8 @@ export async function GET(req: Request) {
         totalCost: totalFinanceCost,
         totalProfit: totalFinanceProfit,
         totalPureProfit: totalFinancePureProfit,
+        purchaseExtraFeeTotal: extraFeesAgg.total,
+        purchaseExtraFeeUnlinked: extraFeesAgg.unlinked,
         operationCostRate: OPERATION_COST_RATE,
         byCustomer: financeByCustomerList,
       },

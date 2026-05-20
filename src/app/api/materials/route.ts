@@ -217,6 +217,11 @@ export async function POST(req: Request) {
   if (!kind) {
     return NextResponse.json({ error: "物料种类不存在" }, { status: 400 });
   }
+  const materialCustomerId = isCustomerSupplied
+    ? customerId
+    : kind.namingMode === "CUSTOM"
+      ? customerId
+      : null;
   const customName = parsed.data.customName?.trim() ?? "";
   const customNamePrefix = (parsed.data.customNamePrefix ?? "")
     .trim()
@@ -288,7 +293,7 @@ export async function POST(req: Request) {
           kindId: parsed.data.kindId,
           kind: null,
           isCustomerSupplied,
-          customerId: isCustomerSupplied ? customerId : null,
+          customerId: materialCustomerId,
           supplierId: isCustomerSupplied
             ? (await ensureCustomerSupplySupplier(tx)).id
             : String(manualSupplierId),

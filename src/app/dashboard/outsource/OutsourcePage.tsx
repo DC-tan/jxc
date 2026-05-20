@@ -28,6 +28,8 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
+import { inhouseMaterialRowsForProductSets } from "@/lib/inhouse-bom-display";
+import { formatOutsourceRecoveryMaterialCode } from "@/lib/outsource-recovery-display";
 import {
   ceilOutsourceMaterialQty,
   computeOutsourceLinesFromBom,
@@ -38,6 +40,7 @@ const OUTSOURCE_TAB_PERM: Record<string, string> = {
   open: "tab.os.open",
   query: "tab.os.query",
   stock: "tab.os.stock",
+  recovery: "tab.os.recovery",
   settings: "tab.os.settings",
 };
 import { OutsourceOrderSlipPreviewModal } from "./OutsourceOrderSlipPreviewModal";
@@ -241,6 +244,18 @@ type OutsourceStockHistoryRow = {
   operatorName: string;
 };
 
+type OutsourceRecoveryStockRow = {
+  productId: string;
+  customerCode: string;
+  customerName: string;
+  customerMaterialCode: string;
+  recoveryMaterialCode: string;
+  model: string;
+  unit: string;
+  quantity: number;
+  lastReceivedAt: string | null;
+};
+
 function stockRowKey(r: Pick<OutsourceMaterialStockRow, "supplierId" | "materialId">): string {
   return `${r.supplierId ?? "NONE"}-${r.materialId}`;
 }
@@ -256,46 +271,6 @@ type CloseLineInput = {
   lossBySets: number;
   returnQty: number;
 };
-
-type InhouseBomLineInput = {
-  materialId: string;
-  usageQty: string | number;
-  material: { code: string; name: string; unit: string };
-};
-
-/** 自加工侧：按成品套数折算需扣/备数量（与 BOM 外发单用量取整规则一致） */
-function inhouseMaterialRowsForProductSets(
-  inhouse: InhouseBomLineInput[] | undefined,
-  productSets: number,
-): { code: string; name: string; unit: string; quantity: number }[] {
-  if (!inhouse?.length) return [];
-  const sets = Math.max(0, Math.trunc(Number(productSets)) || 0);
-  if (sets <= 0) return [];
-  const computed = computeOutsourceLinesFromBom(
-    inhouse.map((b) => ({
-      materialId: b.materialId,
-      usageQty: b.usageQty,
-    })),
-    sets,
-  );
-  return computed.map((row) => {
-    const b = inhouse.find((x) => x.materialId === row.materialId);
-    if (!b) {
-      return {
-        code: "—",
-        name: "—",
-        unit: "—",
-        quantity: row.quantity,
-      };
-    }
-    return {
-      code: b.material.code,
-      name: b.material.name,
-      unit: b.material.unit,
-      quantity: row.quantity,
-    };
-  });
-}
 
 function returnBatchesForMaterial(
   batches: OutsourceReturnBatch[] | undefined,
@@ -416,6 +391,15 @@ export function OutsourcePage() {
   const [stockHistoryTarget, setStockHistoryTarget] = useState<OutsourceMaterialStockRow | null>(
     null,
   );
+  const [recoveryKeyword, setRecoveryKeyword] = useState("");
+  const [recoveryRows, setRecoveryRows] = useState<OutsourceRecoveryStockRow[]>([]);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recoveryAdjustOpen, setRecoveryAdjustOpen] = useState(false);
+  const [recoveryAdjusting, setRecoveryAdjusting] = useState(false);
+  const [recoveryAdjustTarget, setRecoveryAdjustTarget] = useState<OutsourceRecoveryStockRow | null>(null);
+  const [recoveryAdjustQty, setRecoveryAdjustQty] = useState(0);
+  const [recoveryAdjustReason, setRecoveryAdjustReason] = useState("");
+  const recoveryKeywordRef = useRef("");
   const [closeOpen, setCloseOpen] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
   const [closeSubmitting, setCloseSubmitting] = useState(false);
@@ -491,22 +475,6 @@ export function OutsourcePage() {
         : [],
     [selectedProduct, productQty],
   );
-
-  const recycleInhouseRows = useMemo(() => {
-    if (!recycleDetail) return [];
-    if (recycleDetail.product.processingMode !== "OUTSOURCE_INHOUSE")
-      return [];
-    const b = recycleDetail.product.inhouseBom;
-    if (!b?.length) return [];
-    return inhouseMaterialRowsForProductSets(
-      b.map((x) => ({
-        materialId: x.materialId,
-        usageQty: x.usageQty,
-        material: x.material,
-      })),
-      recycleSetsThis,
-    );
-  }, [recycleDetail, recycleSetsThis]);
 
   const recycleCap = useMemo(() => {
     if (!recycleDetail) return 0;
@@ -1030,13 +998,91 @@ export function OutsourcePage() {
 
   useEffect(() => {
     if (tab === "stock") {
-      void loadOutsourceMaterialStock({
-        keyword: stockKeyword,
-        supplierId: stockSupplierId,
-        materialId: stockMaterialId,
-      });
+      void loadOutsourceMaterialStock();
     }
   }, [tab, loadOutsourceMaterialStock]);
+
+  const loadRecoveryStock = useCallback(
+    async (keyword = "") => {
+      setRecoveryLoading(true);
+      try {
+        const p = new URLSearchParams();
+        if (keyword.trim()) p.set("keyword", keyword.trim());
+        const data = await fetchJson<{ list: OutsourceRecoveryStockRow[] }>(
+          `/api/outsource-recovery-stock${p.toString() ? `?${p.toString()}` : ""}`,
+          { credentials: "include" },
+        );
+        setRecoveryRows(data.list ?? []);
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "加载外发回收库失败");
+      } finally {
+        setRecoveryLoading(false);
+      }
+    },
+    [message],
+  );
+
+  useEffect(() => {
+    recoveryKeywordRef.current = recoveryKeyword;
+  }, [recoveryKeyword]);
+
+  useEffect(() => {
+    if (tab === "recovery") {
+      void loadRecoveryStock(recoveryKeywordRef.current);
+    }
+  }, [tab, loadRecoveryStock]);
+
+  const openRecoveryAdjust = useCallback((row: OutsourceRecoveryStockRow) => {
+    setRecoveryAdjustTarget(row);
+    setRecoveryAdjustQty(0);
+    setRecoveryAdjustReason("");
+    setRecoveryAdjustOpen(true);
+  }, []);
+
+  const submitRecoveryAdjust = useCallback(async () => {
+    if (!recoveryAdjustTarget) return;
+    const qty = Math.trunc(Number(recoveryAdjustQty));
+    if (!Number.isFinite(qty) || qty === 0) {
+      message.warning("请输入非 0 的调整数量（正数增加，负数减少）");
+      return;
+    }
+    const reason = recoveryAdjustReason.trim();
+    if (!reason) {
+      message.warning("请填写调整原因");
+      return;
+    }
+    setRecoveryAdjusting(true);
+    try {
+      await fetchJson<{ ok: true; currentQty: number }>(
+        "/api/outsource-recovery-stock/adjust",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            productId: recoveryAdjustTarget.productId,
+            quantity: qty,
+            reason,
+          }),
+        },
+      );
+      message.success("回收库库存已调整");
+      setRecoveryAdjustOpen(false);
+      setRecoveryAdjustTarget(null);
+      await loadRecoveryStock(recoveryKeyword);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "调整失败");
+    } finally {
+      setRecoveryAdjusting(false);
+    }
+  }, [
+    loadRecoveryStock,
+    message,
+    recoveryAdjustQty,
+    recoveryAdjustReason,
+    recoveryAdjustTarget,
+    recoveryKeyword,
+  ]);
 
   const openStockReturnModal = useCallback(() => {
     const selected = stockRows.filter((r) =>
@@ -1743,10 +1789,11 @@ export function OutsourcePage() {
   ];
 
   const { loading: tabPermLoading, allowed } = useMeTabPermissions();
+  const canAdjustRecovery = allowed(["outsource.recovery.adjust"]);
 
   const visibleOutsourceTabKeys = useMemo(
     () =>
-      (["add", "open", "query", "stock", "settings"] as const).filter((k) =>
+      (["add", "open", "query", "stock", "recovery", "settings"] as const).filter((k) =>
         allowed([OUTSOURCE_TAB_PERM[k]]),
       ),
     [allowed],
@@ -1917,8 +1964,8 @@ export function OutsourcePage() {
                             }}
                           >
                             {inhouseCreateRows.map((r) => (
-                              <li key={`${r.code}-${r.name}`}>
-                                {r.code} {r.name}：{r.quantity} {r.unit}
+                              <li key={`${r.label}`}>
+                                {r.label}：{r.quantity} {r.unit}
                               </li>
                             ))}
                           </ul>
@@ -2133,6 +2180,94 @@ export function OutsourcePage() {
             ),
           },
           {
+            key: "recovery",
+            label: "外发回收库",
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <Space wrap>
+                  <Input
+                    allowClear
+                    placeholder="客户 / WF料号 / 商品型号"
+                    style={{ width: 320 }}
+                    value={recoveryKeyword}
+                    onChange={(e) => setRecoveryKeyword(e.target.value)}
+                    onPressEnter={() => void loadRecoveryStock(recoveryKeyword)}
+                  />
+                  <Button type="primary" onClick={() => void loadRecoveryStock(recoveryKeyword)}>
+                    查询
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setRecoveryKeyword("");
+                      void loadRecoveryStock("");
+                    }}
+                  >
+                    重置
+                  </Button>
+                  <HelpTip
+                    text={
+                      <>
+                        仅统计「外发+自加工」商品的外发回收库存；列表料号以 <strong>WF-</strong>
+                        前缀表示外发回来的半成品，与商品档案客户料号对应（如档案为 ABC 则显示 WF-ABC）。仓库出货时从该库扣减，并同步扣减自加工物料库存。
+                      </>
+                    }
+                  />
+                </Space>
+                <Table<OutsourceRecoveryStockRow>
+                  rowKey="productId"
+                  loading={recoveryLoading}
+                  dataSource={recoveryRows}
+                  pagination={{
+                    defaultPageSize: 10,
+                    showSizeChanger: true,
+                    pageSizeOptions: [10, 20, 50, 100],
+                  }}
+                  scroll={{ x: "max-content" }}
+                  columns={[
+                    {
+                      title: "客户",
+                      key: "customer",
+                      width: 220,
+                      render: (_, r) => `${r.customerCode} ${r.customerName}`,
+                    },
+                    {
+                      title: "回收料号",
+                      dataIndex: "recoveryMaterialCode",
+                      width: 148,
+                      render: (v: string, r) =>
+                        v ||
+                        formatOutsourceRecoveryMaterialCode(r.customerMaterialCode),
+                    },
+                    { title: "商品型号", dataIndex: "model", width: 180, ellipsis: true },
+                    { title: "单位", dataIndex: "unit", width: 80 },
+                    { title: "回收库库存", dataIndex: "quantity", width: 120, align: "right" },
+                    {
+                      title: "最近变动",
+                      dataIndex: "lastReceivedAt",
+                      width: 170,
+                      render: (v: string | null) =>
+                        v ? dayjs(v).format("YYYY-MM-DD HH:mm:ss") : "—",
+                    },
+                    {
+                      title: "操作",
+                      key: "actions",
+                      width: 120,
+                      render: (_, r) =>
+                        canAdjustRecovery ? (
+                          <Button size="small" onClick={() => openRecoveryAdjust(r)}>
+                            手动调整
+                          </Button>
+                        ) : (
+                          "—"
+                        ),
+                    },
+                  ]}
+                  locale={{ emptyText: "暂无外发回收库存" }}
+                />
+              </Space>
+            ),
+          },
+          {
             key: "settings",
             label: "外发单设置",
             children: <OutsourceSettingsTab />,
@@ -2143,6 +2278,46 @@ export function OutsourcePage() {
         })}
       />
       )}
+
+      <Modal
+        title="外发回收库手动调整"
+        open={recoveryAdjustOpen}
+        onCancel={() => {
+          if (recoveryAdjusting) return;
+          setRecoveryAdjustOpen(false);
+          setRecoveryAdjustTarget(null);
+        }}
+        onOk={() => void submitRecoveryAdjust()}
+        okText="确认调整"
+        confirmLoading={recoveryAdjusting}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Text>
+            商品：
+            {recoveryAdjustTarget
+              ? `${recoveryAdjustTarget.recoveryMaterialCode || formatOutsourceRecoveryMaterialCode(recoveryAdjustTarget.customerMaterialCode)} ${recoveryAdjustTarget.model}`
+              : "—"}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            当前库存：{recoveryAdjustTarget?.quantity ?? 0}（正数增加，负数减少）
+          </Typography.Text>
+          <InputNumber
+            style={{ width: "100%" }}
+            precision={0}
+            value={recoveryAdjustQty}
+            onChange={(v) => setRecoveryAdjustQty(Math.trunc(Number(v) || 0))}
+            placeholder="请输入调整数量，如 +10 或 -5"
+          />
+          <Input.TextArea
+            rows={3}
+            maxLength={300}
+            value={recoveryAdjustReason}
+            onChange={(e) => setRecoveryAdjustReason(e.target.value)}
+            placeholder="请填写调整原因（必填）"
+          />
+        </Space>
+      </Modal>
 
       <Modal
         title={
@@ -2355,9 +2530,6 @@ export function OutsourcePage() {
               <div>
                 <Typography.Text strong>外发加工套数：</Typography.Text>{" "}
                 <Typography.Text>{recycleDetail.productQty} 套</Typography.Text>
-                <Typography.Text type="secondary">
-                  （与下表一致，均为成品加工套数）
-                </Typography.Text>
               </div>
             </Space>
             <Table<{ key: string }>
@@ -2488,40 +2660,6 @@ export function OutsourcePage() {
                 },
               ]}
             />
-            {recycleDetail.product.processingMode === "OUTSOURCE_INHOUSE" &&
-            (recycleDetail.product.inhouseBom?.length ?? 0) > 0 ? (
-              <div>
-                <Typography.Text
-                  type="danger"
-                  style={{ display: "block", marginTop: 4, lineHeight: 1.5 }}
-                >
-                  自加工部分（与本次外发回收入库对应：厂内按加工套数需扣/备以下物料。数量随「本次回收」套数、与
-                  商品「自加工物料」BOM 及取整规则计算。确认回收成功后，将按上表在「物料库存」中记自加工侧扣料流水（与下方数量一致）：
-                </Typography.Text>
-                {recycleSetsThis <= 0 ? (
-                  <Typography.Text
-                    type="danger"
-                    style={{ display: "block", marginTop: 8 }}
-                  >
-                    请填写「本次回收」套数（须大于 0）后，将显示自加工需扣/备料明细。
-                  </Typography.Text>
-                ) : (
-                  <ul
-                    style={{
-                      margin: "8px 0 0 0",
-                      paddingLeft: 20,
-                      color: "#cf1322",
-                    }}
-                  >
-                    {recycleInhouseRows.map((r) => (
-                      <li key={`${r.code}-${r.name}`}>
-                        {r.code} {r.name}：{r.quantity} {r.unit}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ) : null}
           </Space>
         ) : null}
       </Modal>

@@ -251,10 +251,28 @@ export async function PATCH(
 
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, customerId: true },
+      select: { id: true, customerId: true, isDeprecated: true },
     });
     if (products.length !== productIds.length) {
       return NextResponse.json({ error: "存在无效的商品" }, { status: 400 });
+    }
+    const existingLineProductIds = new Set(
+      (
+        await prisma.salesOrderLine.findMany({
+          where: { salesOrderId: id },
+          select: { productId: true },
+        })
+      ).map((l) => l.productId),
+    );
+    if (
+      products.some(
+        (p) => p.isDeprecated && !existingLineProductIds.has(p.id),
+      )
+    ) {
+      return NextResponse.json(
+        { error: "不能添加已弃用的商品" },
+        { status: 400 },
+      );
     }
     const wrongCustomer = products
       .filter((p) => p.customerId !== d.customerId)

@@ -113,6 +113,18 @@ export async function GET(
     const lastPositive = p.inbounds.find((i) => Number(i.quantity) > 0);
     const lastReceivedAt = lastPositive?.receivedAt ?? null;
 
+    const productInboundRows = p.inbounds.map((i) => ({
+      id: i.id,
+      quantity: i.quantity.toString(),
+      entryType: i.entryType,
+      receivedAt: i.receivedAt.toISOString(),
+      purchaseOrderNo: i.purchaseOrderNo,
+      partDescription: i.partDescription,
+      remark: i.remark,
+      operatorName: i.operator?.name ?? null,
+      operatorEmployeeNo: i.operator?.employeeNo ?? null,
+    }));
+
     return NextResponse.json({
       id: p.id,
       isDeprecated: p.isDeprecated,
@@ -137,17 +149,7 @@ export async function GET(
       updatedAt: p.updatedAt.toISOString(),
       totalQty,
       lastReceivedAt: lastReceivedAt?.toISOString() ?? null,
-      inbounds: p.inbounds.map((i) => ({
-        id: i.id,
-        quantity: i.quantity.toString(),
-        entryType: i.entryType,
-        receivedAt: i.receivedAt.toISOString(),
-        purchaseOrderNo: i.purchaseOrderNo,
-        partDescription: i.partDescription,
-        remark: i.remark,
-        operatorName: i.operator?.name ?? null,
-        operatorEmployeeNo: i.operator?.employeeNo ?? null,
-      })),
+      inbounds: productInboundRows,
       productMaterials: p.productMaterials.map((pm) => {
         const m = pm.material;
         const totalQty = m.inbounds.reduce((s, i) => s + Number(i.quantity), 0);
@@ -320,10 +322,26 @@ export async function PATCH(
     const matIds = [...new Set(data.materials.map((m) => m.materialId))];
     const mats = await prisma.material.findMany({
       where: { id: { in: matIds } },
-      select: { id: true },
+      select: { id: true, isDeprecated: true },
     });
     if (mats.length !== matIds.length) {
       return NextResponse.json({ error: "存在无效的物料" }, { status: 400 });
+    }
+    const existingBomMaterialIds = new Set(
+      (
+        await prisma.productMaterial.findMany({
+          where: { productId: id },
+          select: { materialId: true },
+        })
+      ).map((pm) => pm.materialId),
+    );
+    if (
+      mats.some((m) => m.isDeprecated && !existingBomMaterialIds.has(m.id))
+    ) {
+      return NextResponse.json(
+        { error: "不能向 BOM 添加已弃用的物料" },
+        { status: 400 },
+      );
     }
   }
 
