@@ -22,6 +22,7 @@ const patchSchema = z.object({
   kindId: z.string().min(1).optional(),
   supplierId: z.string().optional(),
   isCustomerSupplied: z.boolean().optional(),
+  isPcbPurchase: z.boolean().optional(),
   customerId: z.string().optional().nullable(),
   inspectionNotes: z.string().optional().nullable(),
   sampleImageUrls: z.array(z.string()).max(3).optional(),
@@ -118,6 +119,7 @@ export async function GET(
       kind: m.kind,
       presetKind: m.presetKind,
       isCustomerSupplied: m.isCustomerSupplied,
+      isPcbPurchase: m.purchaseChannel === "PROCESSING_CONTRACT",
       customer: m.customer,
       supplier: m.supplier,
       inspectionNotes: m.inspectionNotes,
@@ -272,6 +274,13 @@ export async function PATCH(
           : {}),
         ...(data.kindId !== undefined
           ? { kindId: data.kindId, kind: null }
+          : {}),
+        ...(data.isPcbPurchase !== undefined
+          ? {
+              purchaseChannel: data.isPcbPurchase
+                ? "PROCESSING_CONTRACT"
+                : "STANDARD_PURCHASE",
+            }
           : {}),
         isCustomerSupplied: nextIsCustomerSupplied,
         customerId: materialCustomerId,

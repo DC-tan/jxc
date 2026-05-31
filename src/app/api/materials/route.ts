@@ -6,7 +6,6 @@ import { requirePermission } from "@/lib/api-auth";
 import { allocateMaterialCode } from "@/lib/materialCodeAllocation";
 import { resolveMaterialNaming } from "@/lib/materialCreateNaming";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
-import { resolveMaterialPurchaseChannelByKindName } from "@/lib/material-purchase-channel";
 import { ensureCustomerSupplySupplier } from "@/lib/customer-supply";
 
 const createSchema = z.object({
@@ -24,6 +23,7 @@ const createSchema = z.object({
   supplierId: z.string().optional(),
   isCustomerSupplied: z.boolean().optional(),
   customerId: z.string().optional().nullable(),
+  isPcbPurchase: z.boolean().optional(),
   inspectionNotes: z.string().optional().nullable(),
   sampleImageUrls: z.array(z.string()).max(3).optional(),
 });
@@ -121,6 +121,7 @@ export async function GET(req: Request) {
         kindName: kindDisplay(m),
         kind: m.kind,
         isCustomerSupplied: m.isCustomerSupplied,
+        isPcbPurchase: m.purchaseChannel === "PROCESSING_CONTRACT",
         customerId: m.customerId,
         customer: m.customer,
         supplierId: m.supplierId,
@@ -256,7 +257,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: namingResolved.error }, { status: 400 });
   }
   const { materialName, allocNamePrefix, sequencePadLength } = namingResolved;
-  const purchaseChannel = resolveMaterialPurchaseChannelByKindName(kind.name);
+  const purchaseChannel = parsed.data.isPcbPurchase
+    ? "PROCESSING_CONTRACT"
+    : "STANDARD_PURCHASE";
 
   try {
     const row = await prisma.$transaction(async (tx) => {

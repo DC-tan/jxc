@@ -73,6 +73,7 @@ type MaterialRow = {
   kindId: string | null;
   kindName: string;
   isCustomerSupplied: boolean;
+  isPcbPurchase?: boolean;
   customer: CustomerOpt | null;
   supplier: SupplierOpt;
   inspectionNotes: string | null;
@@ -97,6 +98,7 @@ type InventoryRow = {
   kindId: string | null;
   kindName: string;
   isCustomerSupplied: boolean;
+  isPcbPurchase?: boolean;
   customer: CustomerOpt | null;
   supplier: SupplierOpt;
   inspectionNotes: string | null;
@@ -147,6 +149,7 @@ type DetailPayload = {
   kindId: string | null;
   kindName: string;
   isCustomerSupplied: boolean;
+  isPcbPurchase?: boolean;
   customer: CustomerOpt | null;
   supplier: { id: string; code: string; name: string; materialType: string | null; level: string | null };
   inspectionNotes: string | null;
@@ -190,6 +193,12 @@ type PresetBundle = {
   brands: { id: string; name: string; sortOrder: number }[];
   units: { id: string; name: string; isDefault: boolean; sortOrder: number }[];
 };
+
+function isPcbKindName(name: string | null | undefined): boolean {
+  return String(name ?? "")
+    .trim()
+    .toUpperCase() === "PCB";
+}
 
 function inferCustomNamePrefixFromCode(code: string): string {
   const seg = String(code ?? "")
@@ -745,6 +754,7 @@ export function MaterialsPage() {
       safetyStock: 0,
       maxStock: 0,
       isCustomerSupplied: false,
+      isPcbPurchase: false,
     };
     setAddOpen(true);
   };
@@ -887,6 +897,7 @@ export function MaterialsPage() {
         safetyStock: d.safetyStock ?? 0,
         maxStock: d.maxStock ?? 0,
         isCustomerSupplied: d.isCustomerSupplied,
+        isPcbPurchase: Boolean(d.isPcbPurchase),
         customerId: d.customer?.id,
         kindId: d.kindId ?? undefined,
         supplierId: d.isCustomerSupplied ? undefined : d.supplier.id,
@@ -2395,6 +2406,7 @@ export function MaterialsPage() {
                       presetNameId: undefined,
                       customName: undefined,
                       customNamePrefix: undefined,
+                      isPcbPurchase: isPcbKindName(nextKind?.name),
                       ...(nextKind?.namingMode !== "CUSTOM" && !addIsCustomerSupplied
                         ? { customerId: undefined }
                         : {}),
@@ -2504,6 +2516,11 @@ export function MaterialsPage() {
                     label: u.isDefault ? `${u.name}（默认）` : u.name,
                   }))}
                 />
+              </Form.Item>
+            </Col>
+            <Col span={24}>
+              <Form.Item name="isPcbPurchase" valuePropName="checked">
+                <Checkbox>属PCB采购（不进入销售拆分采购）</Checkbox>
               </Form.Item>
             </Col>
             <Col span={24}>
@@ -2675,6 +2692,7 @@ export function MaterialsPage() {
                       presetNameId: undefined,
                       customName: undefined,
                       customNamePrefix: undefined,
+                      isPcbPurchase: isPcbKindName(nextKind?.name),
                       ...(nextKind?.namingMode !== "CUSTOM" && !editIsCustomerSupplied
                         ? { customerId: undefined }
                         : {}),
@@ -2786,6 +2804,11 @@ export function MaterialsPage() {
                     label: u.name,
                   }))}
                 />
+              </Form.Item>
+            </Col>
+            <Col span={24}>
+              <Form.Item name="isPcbPurchase" valuePropName="checked">
+                <Checkbox>属PCB采购（不进入销售拆分采购）</Checkbox>
               </Form.Item>
             </Col>
             <Col span={24}>
