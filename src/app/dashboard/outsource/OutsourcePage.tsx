@@ -254,6 +254,16 @@ type OutsourceRecoveryStockRow = {
   unit: string;
   quantity: number;
   lastReceivedAt: string | null;
+  sharedProductCount?: number;
+  sharedProducts?: {
+    productId: string;
+    customerCode: string;
+    customerName: string;
+    customerMaterialCode: string;
+    recoveryMaterialCode: string;
+    model: string;
+    unit: string;
+  }[];
 };
 
 function stockRowKey(r: Pick<OutsourceMaterialStockRow, "supplierId" | "materialId">): string {
@@ -359,7 +369,7 @@ function productLabel(p: OutsourceProductHit): string {
 }
 
 export function OutsourcePage() {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -399,6 +409,9 @@ export function OutsourcePage() {
   const [recoveryAdjustTarget, setRecoveryAdjustTarget] = useState<OutsourceRecoveryStockRow | null>(null);
   const [recoveryAdjustQty, setRecoveryAdjustQty] = useState(0);
   const [recoveryAdjustReason, setRecoveryAdjustReason] = useState("");
+  const [recoveryPoolDetailOpen, setRecoveryPoolDetailOpen] = useState(false);
+  const [recoveryPoolDetailTarget, setRecoveryPoolDetailTarget] =
+    useState<OutsourceRecoveryStockRow | null>(null);
   const recoveryKeywordRef = useRef("");
   const [closeOpen, setCloseOpen] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
@@ -942,6 +955,24 @@ export function OutsourcePage() {
     loadOpenOrders,
   ]);
 
+  const cancelOutsourceOrder = useCallback(
+    async (r: OutsourceOrderRow) => {
+      try {
+        await fetchJson(`/api/outsource-orders/${r.id}`, {
+          method: "DELETE",
+          credentials: "include",
+        });
+        message.success("已取消");
+        void loadTodayOrders();
+        void loadOpenOrders();
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "取消失败");
+        throw e;
+      }
+    },
+    [message, loadTodayOrders, loadOpenOrders],
+  );
+
   const confirmCancelTodayOrder = useCallback(
     (r: OutsourceOrderRow) => {
       if (r.status !== "OPEN") return;
@@ -949,22 +980,14 @@ export function OutsourcePage() {
         message.warning("该外发单已有出货/回收入库记录，不可取消");
         return;
       }
-      Modal.confirm({
+      modal.confirm({
         title: "取消此外发单？",
         content: `单号 ${r.orderNo} 将作废。`,
         okType: "danger",
-        onOk: async () => {
-          await fetchJson(`/api/outsource-orders/${r.id}`, {
-            method: "DELETE",
-            credentials: "include",
-          });
-          message.success("已取消");
-          void loadTodayOrders();
-          void loadOpenOrders();
-        },
+        onOk: async () => cancelOutsourceOrder(r),
       });
     },
-    [message, loadTodayOrders, loadOpenOrders],
+    [message, cancelOutsourceOrder],
   );
 
   const loadOutsourceMaterialStock = useCallback(
@@ -1037,6 +1060,11 @@ export function OutsourcePage() {
     setRecoveryAdjustQty(0);
     setRecoveryAdjustReason("");
     setRecoveryAdjustOpen(true);
+  }, []);
+
+  const openRecoveryPoolDetail = useCallback((row: OutsourceRecoveryStockRow) => {
+    setRecoveryPoolDetailTarget(row);
+    setRecoveryPoolDetailOpen(true);
   }, []);
 
   const submitRecoveryAdjust = useCallback(async () => {
@@ -1632,18 +1660,11 @@ export function OutsourcePage() {
                 size="small"
                 danger
                 onClick={() => {
-                  Modal.confirm({
+                  modal.confirm({
                     title: "取消此外发单？",
                     content: `单号 ${r.orderNo} 将作废。`,
                     okType: "danger",
-                    onOk: async () => {
-                      await fetchJson(`/api/outsource-orders/${r.id}`, {
-                        method: "DELETE",
-                        credentials: "include",
-                      });
-                      message.success("已取消");
-                      void loadOpenOrders();
-                    },
+                    onOk: async () => cancelOutsourceOrder(r),
                   });
                 }}
               >
@@ -2208,7 +2229,7 @@ export function OutsourcePage() {
                     text={
                       <>
                         仅统计「外发+自加工」商品的外发回收库存；列表料号以 <strong>WF-</strong>
-                        前缀表示外发回来的半成品，与商品档案客户料号对应（如档案为 ABC 则显示 WF-ABC）。仓库出货时从该库扣减，并同步扣减自加工物料库存。
+                        前缀表示外发回来的半成品。若多个商品的外发侧 BOM（物料+用量）完全一致，将共享同一回收库库存池；仓库出货时按共享池扣减，并同步扣减自加工物料库存。
                       </>
                     }
                   />
@@ -2242,6 +2263,13 @@ export function OutsourcePage() {
                     { title: "单位", dataIndex: "unit", width: 80 },
                     { title: "回收库库存", dataIndex: "quantity", width: 120, align: "right" },
                     {
+                      title: "共享商品数",
+                      dataIndex: "sharedProductCount",
+                      width: 108,
+                      align: "right",
+                      render: (v: number | undefined) => v ?? 1,
+                    },
+                    {
                       title: "最近变动",
                       dataIndex: "lastReceivedAt",
                       width: 170,
@@ -2251,15 +2279,19 @@ export function OutsourcePage() {
                     {
                       title: "操作",
                       key: "actions",
-                      width: 120,
-                      render: (_, r) =>
-                        canAdjustRecovery ? (
-                          <Button size="small" onClick={() => openRecoveryAdjust(r)}>
-                            手动调整
+                      width: 200,
+                      render: (_, r) => (
+                        <Space size={6} wrap>
+                          <Button size="small" onClick={() => openRecoveryPoolDetail(r)}>
+                            详情
                           </Button>
-                        ) : (
-                          "—"
-                        ),
+                          {canAdjustRecovery ? (
+                            <Button size="small" onClick={() => openRecoveryAdjust(r)}>
+                              手动调整
+                            </Button>
+                          ) : null}
+                        </Space>
+                      ),
                     },
                   ]}
                   locale={{ emptyText: "暂无外发回收库存" }}
@@ -2315,6 +2347,51 @@ export function OutsourcePage() {
             value={recoveryAdjustReason}
             onChange={(e) => setRecoveryAdjustReason(e.target.value)}
             placeholder="请填写调整原因（必填）"
+          />
+        </Space>
+      </Modal>
+
+      <Modal
+        title="共享池商品明细"
+        open={recoveryPoolDetailOpen}
+        onCancel={() => {
+          setRecoveryPoolDetailOpen(false);
+          setRecoveryPoolDetailTarget(null);
+        }}
+        footer={null}
+        width={960}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={10} style={{ width: "100%" }}>
+          <Typography.Text>
+            共享池：
+            {recoveryPoolDetailTarget
+              ? `${recoveryPoolDetailTarget.recoveryMaterialCode || formatOutsourceRecoveryMaterialCode(recoveryPoolDetailTarget.customerMaterialCode)} · ${recoveryPoolDetailTarget.model}`
+              : "—"}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            当前共享池库存：{recoveryPoolDetailTarget?.quantity ?? 0}
+          </Typography.Text>
+          <Table<
+            NonNullable<OutsourceRecoveryStockRow["sharedProducts"]>[number]
+          >
+            size="small"
+            rowKey={(r) => r.productId}
+            pagination={false}
+            dataSource={recoveryPoolDetailTarget?.sharedProducts ?? []}
+            columns={[
+              {
+                title: "客户",
+                key: "customer",
+                width: 220,
+                render: (_, r) => `${r.customerCode} ${r.customerName}`,
+              },
+              { title: "回收料号", dataIndex: "recoveryMaterialCode", width: 150 },
+              { title: "客户料号", dataIndex: "customerMaterialCode", width: 150 },
+              { title: "商品型号", dataIndex: "model", ellipsis: true },
+              { title: "单位", dataIndex: "unit", width: 90 },
+            ]}
+            locale={{ emptyText: "无共享商品明细" }}
           />
         </Space>
       </Modal>

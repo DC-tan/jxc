@@ -95,6 +95,7 @@ export async function GET(
                 unit: true,
                 unitPrice: true,
                 partDescription: true,
+                purchaseChannel: true,
               },
             },
           },
@@ -129,6 +130,7 @@ export async function GET(
         unit: string;
         unitPrice: string;
         partDescription: string | null;
+        purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
       };
     };
 
@@ -164,6 +166,7 @@ export async function GET(
             unit: true,
             unitPrice: true,
             partDescription: true,
+            purchaseChannel: true,
           },
         });
         mats.sort((a, b) => a.code.localeCompare(b.code, "zh-Hans-CN"));
@@ -181,6 +184,7 @@ export async function GET(
               unit: m.unit,
               unitPrice: m.unitPrice.toString(),
               partDescription: m.partDescription,
+              purchaseChannel: m.purchaseChannel,
             },
           };
         });
@@ -191,6 +195,7 @@ export async function GET(
       id: row.id,
       orderNo: row.orderNo,
       status: row.status,
+      purchaseChannel: row.purchaseChannel,
       remark: row.remark,
       supplier: row.supplier,
       salesOrder: row.salesOrder
@@ -458,7 +463,12 @@ export async function PATCH(
 
   const mats = await prisma.material.findMany({
     where: { id: { in: matIds } },
-    select: { id: true, supplierId: true, isCustomerSupplied: true },
+    select: {
+      id: true,
+      supplierId: true,
+      isCustomerSupplied: true,
+      purchaseChannel: true,
+    },
   });
   if (mats.length !== matIds.length) {
     return NextResponse.json({ error: "存在无效的物料" }, { status: 400 });
@@ -477,6 +487,14 @@ export async function PATCH(
       );
     }
   }
+  const channels = new Set(mats.map((m) => m.purchaseChannel));
+  if (channels.size !== 1) {
+    return NextResponse.json(
+      { error: "同一采购单不能混用常规采购与PCB加工合同物料" },
+      { status: 400 },
+    );
+  }
+  const purchaseChannel = Array.from(channels)[0];
 
   try {
     const existing = await prisma.purchaseOrder.findUnique({
@@ -504,6 +522,7 @@ export async function PATCH(
         where: { id },
         data: {
           supplierId: d.supplierId,
+          purchaseChannel,
           remark: d.remark?.trim() || null,
           deliveryDueAt,
           lines: {

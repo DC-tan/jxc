@@ -20,6 +20,7 @@ const lineSchema = z.object({
 const createSchema = z.object({
   supplierId: z.string().min(1, "请选择供应商"),
   remark: z.string().optional().nullable(),
+  deliveryDueAt: z.string().optional().nullable(),
   lines: z.array(lineSchema).min(1, "请至少添加一行物料"),
   extraFees: z.array(z.unknown()).optional(),
 });
@@ -49,6 +50,13 @@ export async function GET(req: Request) {
     const createdTo = searchParams.get("createdTo");
     const supplierId = searchParams.get("supplierId")?.trim() || undefined;
     const orderNo = searchParams.get("orderNo")?.trim() || undefined;
+    const purchaseChannelRaw = searchParams.get("purchaseChannel")?.trim();
+    const purchaseChannel =
+      purchaseChannelRaw === "PROCESSING_CONTRACT"
+        ? "PROCESSING_CONTRACT"
+        : purchaseChannelRaw === "STANDARD_PURCHASE"
+          ? "STANDARD_PURCHASE"
+          : undefined;
     /** 未交采购：待收料 */
     const pendingOnly = searchParams.get("pending") === "1";
     /** 采购订单查询：仅已收料确认、已结单或已取消（不含待收料） */
@@ -74,6 +82,7 @@ export async function GET(req: Request) {
       }
     }
     if (supplierId) where.supplierId = supplierId;
+    if (purchaseChannel) where.purchaseChannel = purchaseChannel as never;
     if (orderNo) {
       where.orderNo = { contains: orderNo, mode: "insensitive" };
     }
@@ -149,6 +158,7 @@ export async function GET(req: Request) {
         lineCount: lineCountByOrderId.get(p.id) ?? p._count.lines,
         deliveryDueAt: p.deliveryDueAt?.toISOString() ?? null,
         actualDeliveredAt: p.actualDeliveredAt?.toISOString() ?? null,
+        purchaseChannel: p.purchaseChannel,
         createdAt: p.createdAt.toISOString(),
         updatedAt: p.updatedAt.toISOString(),
       })),
@@ -189,6 +199,14 @@ export async function POST(req: Request) {
   if (!extraParsed.ok) {
     return NextResponse.json({ error: extraParsed.error }, { status: 400 });
   }
+  let deliveryDueAtOverride: Date | null = null;
+  if (d.deliveryDueAt && d.deliveryDueAt.trim()) {
+    const parsedDue = new Date(d.deliveryDueAt);
+    if (Number.isNaN(parsedDue.getTime())) {
+      return NextResponse.json({ error: "交货日期格式不正确" }, { status: 400 });
+    }
+    deliveryDueAtOverride = parsedDue;
+  }
 
   const sup = await prisma.supplier.findUnique({
     where: { id: d.supplierId },
@@ -205,11 +223,19 @@ export async function POST(req: Request) {
 
   const mats = await prisma.material.findMany({
     where: { id: { in: matIds } },
-    select: { id: true },
+    select: { id: true, purchaseChannel: true },
   });
   if (mats.length !== matIds.length) {
     return NextResponse.json({ error: "存在无效的物料" }, { status: 400 });
   }
+  const channels = new Set(mats.map((m) => m.purchaseChannel));
+  if (channels.size !== 1) {
+    return NextResponse.json(
+      { error: "同一采购单不能混用常规采购与PCB加工合同物料" },
+      { status: 400 },
+    );
+  }
+  const purchaseChannel = Array.from(channels)[0];
 
   try {
     const row = await prisma.$transaction(async (tx) => {
@@ -223,10 +249,11 @@ export async function POST(req: Request) {
         data: {
           orderNo,
           supplierId: d.supplierId,
+          purchaseChannel,
           status: "PENDING_RECEIPT",
           remark: d.remark?.trim() || null,
           createdAt,
-          deliveryDueAt,
+          deliveryDueAt: deliveryDueAtOverride ?? deliveryDueAt,
           lines: {
             create: d.lines.map((l, i) => ({
               materialId: l.materialId,
@@ -254,6 +281,7 @@ export async function POST(req: Request) {
       lineCount: row._count.lines,
       deliveryDueAt: row.deliveryDueAt?.toISOString() ?? null,
       actualDeliveredAt: row.actualDeliveredAt?.toISOString() ?? null,
+      purchaseChannel: row.purchaseChannel,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     });

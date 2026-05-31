@@ -4,8 +4,8 @@ import { requirePermission } from "@/lib/api-auth";
 import {
   formatOutsourceRecoveryMaterialCode,
   normalizeOutsourceRecoverySearchKeyword,
-  outsourceRecoveryStockSearchText,
 } from "@/lib/outsource-recovery-display";
+import { outsourceBomSignatureOfProduct } from "@/lib/outsource-recovery-stock";
 
 type Row = {
   productId: string;
@@ -18,6 +18,17 @@ type Row = {
   unit: string;
   quantity: number;
   lastReceivedAt: string | null;
+  /** 共享池内商品数（外发BOM一致） */
+  sharedProductCount?: number;
+  sharedProducts?: {
+    productId: string;
+    customerCode: string;
+    customerName: string;
+    customerMaterialCode: string;
+    recoveryMaterialCode: string;
+    model: string;
+    unit: string;
+  }[];
 };
 
 export async function GET(req: Request) {
@@ -41,48 +52,161 @@ export async function GET(req: Request) {
         receivedAt: true,
         product: {
           select: {
+            id: true,
+            processingMode: true,
             customerMaterialCode: true,
             model: true,
             unit: true,
             customer: { select: { code: true, name: true } },
+            productMaterials: {
+              select: { scope: true, materialId: true, usageQty: true },
+            },
           },
         },
       },
     });
 
-    const byProduct = new Map<string, Row>();
+    const pools = new Map<
+      string,
+      {
+        representativeProductId: string;
+        customerCodes: Set<string>;
+        customerNames: Set<string>;
+        customerMaterialCodes: Set<string>;
+        models: Set<string>;
+        units: Set<string>;
+        quantity: number;
+        lastReceivedAt: string | null;
+        productIds: Set<string>;
+        products: Map<
+          string,
+          {
+            productId: string;
+            customerCode: string;
+            customerName: string;
+            customerMaterialCode: string;
+            recoveryMaterialCode: string;
+            model: string;
+            unit: string;
+          }
+        >;
+      }
+    >();
     for (const e of entries) {
-      const prev = byProduct.get(e.productId);
-      if (!prev) {
-        byProduct.set(e.productId, {
-          productId: e.productId,
-          customerCode: e.product.customer.code,
-          customerName: e.product.customer.name,
-          customerMaterialCode: e.product.customerMaterialCode,
-          recoveryMaterialCode: formatOutsourceRecoveryMaterialCode(
-            e.product.customerMaterialCode,
-          ),
-          model: e.product.model,
-          unit: e.product.unit,
+      const sig = outsourceBomSignatureOfProduct(e.product);
+      const poolKey = sig ?? `single:${e.productId}`;
+      const existing = pools.get(poolKey);
+      if (!existing) {
+        pools.set(poolKey, {
+          representativeProductId: e.productId,
+          customerCodes: new Set([e.product.customer.code]),
+          customerNames: new Set([e.product.customer.name]),
+          customerMaterialCodes: new Set([e.product.customerMaterialCode]),
+          models: new Set([e.product.model]),
+          units: new Set([e.product.unit]),
           quantity: e.quantity,
           lastReceivedAt: e.receivedAt.toISOString(),
+          productIds: new Set([e.productId]),
+          products: new Map([
+            [
+              e.productId,
+              {
+                productId: e.productId,
+                customerCode: e.product.customer.code,
+                customerName: e.product.customer.name,
+                customerMaterialCode: e.product.customerMaterialCode,
+                recoveryMaterialCode: formatOutsourceRecoveryMaterialCode(
+                  e.product.customerMaterialCode,
+                ),
+                model: e.product.model,
+                unit: e.product.unit,
+              },
+            ],
+          ]),
         });
       } else {
-        prev.quantity += e.quantity;
+        existing.customerCodes.add(e.product.customer.code);
+        existing.customerNames.add(e.product.customer.name);
+        existing.customerMaterialCodes.add(e.product.customerMaterialCode);
+        existing.models.add(e.product.model);
+        existing.units.add(e.product.unit);
+        existing.productIds.add(e.productId);
+        if (!existing.products.has(e.productId)) {
+          existing.products.set(e.productId, {
+            productId: e.productId,
+            customerCode: e.product.customer.code,
+            customerName: e.product.customer.name,
+            customerMaterialCode: e.product.customerMaterialCode,
+            recoveryMaterialCode: formatOutsourceRecoveryMaterialCode(
+              e.product.customerMaterialCode,
+            ),
+            model: e.product.model,
+            unit: e.product.unit,
+          });
+        }
+        existing.quantity += e.quantity;
         if (
-          !prev.lastReceivedAt ||
-          e.receivedAt.getTime() > new Date(prev.lastReceivedAt).getTime()
+          !existing.lastReceivedAt ||
+          e.receivedAt.getTime() > new Date(existing.lastReceivedAt).getTime()
         ) {
-          prev.lastReceivedAt = e.receivedAt.toISOString();
+          existing.lastReceivedAt = e.receivedAt.toISOString();
         }
       }
     }
 
-    let list = Array.from(byProduct.values()).filter((x) => x.quantity > 0);
+    let list: Row[] = Array.from(pools.values())
+      .map((p) => {
+        const customerCodes = Array.from(p.customerCodes).filter(Boolean);
+        const customerNames = Array.from(p.customerNames).filter(Boolean);
+        const customerMaterialCodes = Array.from(p.customerMaterialCodes).filter(Boolean);
+        const models = Array.from(p.models).filter(Boolean);
+        const units = Array.from(p.units).filter(Boolean);
+        const customerMaterialCode = customerMaterialCodes[0] ?? "—";
+        const model = models[0] ?? "—";
+        const unit = units[0] ?? "PCS";
+        return {
+          productId: p.representativeProductId,
+          customerCode:
+            customerCodes.length <= 1
+              ? (customerCodes[0] ?? "—")
+              : `${customerCodes[0]} 等${customerCodes.length}个客户`,
+          customerName:
+            customerNames.length <= 1
+              ? (customerNames[0] ?? "—")
+              : `${customerNames[0]} 等${customerNames.length}个客户`,
+          customerMaterialCode,
+          recoveryMaterialCode: formatOutsourceRecoveryMaterialCode(
+            customerMaterialCode,
+          ),
+          model:
+            models.length <= 1 ? model : `${model} 等${models.length}款商品`,
+          unit,
+          quantity: p.quantity,
+          lastReceivedAt: p.lastReceivedAt,
+          sharedProductCount: p.productIds.size,
+          sharedProducts: Array.from(p.products.values()).sort((a, b) =>
+            `${a.customerCode} ${a.customerMaterialCode} ${a.model}`.localeCompare(
+              `${b.customerCode} ${b.customerMaterialCode} ${b.model}`,
+              "zh-Hans-CN",
+            ),
+          ),
+        };
+      })
+      .filter((x) => x.quantity > 0);
+
     if (keyword) {
-      list = list.filter((x) =>
-        outsourceRecoveryStockSearchText(x).includes(keyword),
-      );
+      list = list.filter((x) => {
+        const text = [
+          x.customerCode,
+          x.customerName,
+          x.customerMaterialCode,
+          x.recoveryMaterialCode,
+          x.model,
+        ]
+          .join(" ")
+          .toLowerCase();
+        return text.includes(keyword);
+      });
     }
 
     list.sort((a, b) => {

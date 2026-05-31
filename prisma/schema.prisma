@@ -229,6 +229,12 @@ enum MaterialKindNamingMode {
   CUSTOM
 }
 
+/// 物料采购渠道：常规采购单 / 加工合同
+enum MaterialPurchaseChannel {
+  STANDARD_PURCHASE
+  PROCESSING_CONTRACT
+}
+
 /// 物料种类预设（可增删改，含种类前缀）
 model MaterialPresetKind {
   id        String   @id @default(cuid())
@@ -315,6 +321,8 @@ model Material {
   presetKind      MaterialPresetKind? @relation(fields: [kindId], references: [id])
   /// 是否客户供料：是时不参与采购，单价固定为 0
   isCustomerSupplied Boolean          @default(false)
+  /// 采购渠道：常规采购单 / 加工合同
+  purchaseChannel   MaterialPurchaseChannel @default(STANDARD_PURCHASE)
   /// 客供客户（仅当 isCustomerSupplied=true 时有值）
   customerId      String?
   customer        Customer?           @relation(fields: [customerId], references: [id])
@@ -344,6 +352,8 @@ model PurchaseOrder {
   /// 由销售订单拆分生成时关联
   salesOrderId String?
   salesOrder   SalesOrder?       @relation(fields: [salesOrderId], references: [id])
+  /// 订单归类：常规采购 / PCB加工合同
+  purchaseChannel MaterialPurchaseChannel @default(STANDARD_PURCHASE)
   status       PurchaseOrderStatus @default(PENDING_RECEIPT)
   remark     String?             @db.Text
   /// 要求交货日期（下单时按供应商「交货天数」计算）

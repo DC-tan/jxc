@@ -13,6 +13,21 @@ export type PurchaseExtraFeeRow = PurchaseExtraFeeInput & {
   id?: string;
 };
 
+/** 表格 rowKey / 删除定位用；草稿行无服务端 id 时生成客户端 id */
+export function ensureExtraFeeRowId(
+  row: PurchaseExtraFeeRow,
+): PurchaseExtraFeeRow & { id: string } {
+  const id = row.id?.trim();
+  if (id) return { ...row, id };
+  return { ...row, id: `client-${crypto.randomUUID()}` };
+}
+
+export function ensureExtraFeeRowIds(
+  rows: PurchaseExtraFeeRow[],
+): (PurchaseExtraFeeRow & { id: string })[] {
+  return rows.map(ensureExtraFeeRowId);
+}
+
 /** 对账等：合并为一列，如 5000（开模）；1200（测试架） */
 export function formatPurchaseExtraFeesColumn(
   fees: PurchaseExtraFeeInput[],

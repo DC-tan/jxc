@@ -249,6 +249,8 @@ export function SamplesPage() {
             .validateFields()
             .catch((): Partial<SampleQueryValues> => ({})));
         const p = new URLSearchParams();
+        // 样品查询仅查看已交样记录，不显示未交样品
+        p.set("status", "DELIVERED");
         const range = v.dateRange;
         if (range?.[0]) p.set("from", range[0].startOf("day").toISOString());
         if (range?.[1]) p.set("to", range[1].endOf("day").toISOString());
@@ -676,7 +678,7 @@ export function SamplesPage() {
                       </Space>
                     </Form.Item>
                   </Form>
-                  {sampleTable(queryRows, loadingQuery, "暂无样品记录")}
+                  {sampleTable(queryRows, loadingQuery, "暂无已交样品记录")}
                 </Space>
               ),
             },

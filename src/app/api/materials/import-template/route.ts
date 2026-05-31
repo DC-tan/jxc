@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { requirePermission } from "@/lib/api-auth";
-import { MATERIAL_IMPORT_HEADERS } from "@/lib/materialExcel";
+import {
+  MATERIAL_IMPORT_HEADERS,
+  MATERIAL_IMPORT_OPTIONAL_HEADER,
+} from "@/lib/materialExcel";
 
 export async function GET() {
   const auth = await requirePermission("material.create");
@@ -10,7 +13,7 @@ export async function GET() {
   }
 
   const ws = XLSX.utils.aoa_to_sheet([
-    [...MATERIAL_IMPORT_HEADERS],
+    [...MATERIAL_IMPORT_HEADERS, MATERIAL_IMPORT_OPTIONAL_HEADER],
     [
       "示例电阻",
       "电子料",
@@ -20,6 +23,7 @@ export async function GET() {
       "PCS",
       0.05,
       "进口",
+      "",
     ],
   ]);
   const wb = XLSX.utils.book_new();

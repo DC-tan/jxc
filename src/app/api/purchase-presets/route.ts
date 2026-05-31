@@ -3,20 +3,32 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 
 /** 采购订单表单：供应商、可选物料列表 */
-export async function GET() {
+export async function GET(req: Request) {
   const auth = await requirePermission("purchase.view");
   if (!auth.ok) {
     return NextResponse.json({ error: auth.message }, { status: auth.status });
   }
 
   try {
+    const { searchParams } = new URL(req.url);
+    const purchaseChannel = searchParams.get("purchaseChannel")?.trim();
+    const channelFilter =
+      purchaseChannel === "PROCESSING_CONTRACT"
+        ? "PROCESSING_CONTRACT"
+        : purchaseChannel === "STANDARD_PURCHASE"
+          ? "STANDARD_PURCHASE"
+          : null;
+
     const [suppliers, materials] = await Promise.all([
       prisma.supplier.findMany({
         orderBy: { code: "asc" },
         select: { id: true, code: true, name: true, priceIncludesTax: true },
       }),
       prisma.material.findMany({
-        where: { isCustomerSupplied: false },
+        where: {
+          isCustomerSupplied: false,
+          ...(channelFilter ? ({ purchaseChannel: channelFilter } as never) : {}),
+        },
         orderBy: { code: "asc" },
         select: {
           id: true,
@@ -24,6 +36,7 @@ export async function GET() {
           name: true,
           unit: true,
           unitPrice: true,
+          purchaseChannel: true,
           supplier: { select: { id: true, code: true, name: true } },
         },
       }),
@@ -37,6 +50,7 @@ export async function GET() {
         name: m.name,
         unit: m.unit,
         unitPrice: m.unitPrice.toString(),
+        purchaseChannel: m.purchaseChannel,
         supplier: m.supplier,
       })),
     });

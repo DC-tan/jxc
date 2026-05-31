@@ -111,22 +111,26 @@ export const PERMISSION_DEFINITIONS: {
     "purchase.view",
     "purchase.create",
   ] },
-  { module: "采购订单", name: "未交采购订单", code: "tab.pur.open", sortOrder: 71, expandTo: [
+  { module: "采购订单", name: "PCB采购", code: "tab.pur.pcb", sortOrder: 71, expandTo: [
+    "purchase.view",
+    "purchase.create",
+  ] },
+  { module: "采购订单", name: "未交采购订单", code: "tab.pur.open", sortOrder: 72, expandTo: [
     "purchase.view",
   ] },
-  { module: "采购订单", name: "修改采购单", code: "tab.pur.edit", sortOrder: 72, expandTo: [
+  { module: "采购订单", name: "修改采购单", code: "tab.pur.edit", sortOrder: 73, expandTo: [
     "purchase.edit",
   ] },
-  { module: "采购订单", name: "确定收料", code: "tab.pur.receive", sortOrder: 73, expandTo: [
+  { module: "采购订单", name: "确定收料", code: "tab.pur.receive", sortOrder: 74, expandTo: [
     "purchase.receive",
   ] },
-  { module: "采购订单", name: "删除采购单", code: "tab.pur.delete", sortOrder: 74, expandTo: [
+  { module: "采购订单", name: "删除采购单", code: "tab.pur.delete", sortOrder: 75, expandTo: [
     "purchase.delete",
   ] },
-  { module: "采购订单", name: "采购订单查询", code: "tab.pur.query", sortOrder: 75, expandTo: [
+  { module: "采购订单", name: "采购订单查询", code: "tab.pur.query", sortOrder: 76, expandTo: [
     "purchase.view",
   ] },
-  { module: "采购订单", name: "采购订单设置", code: "tab.pur.settings", sortOrder: 76, expandTo: [
+  { module: "采购订单", name: "采购订单设置", code: "tab.pur.settings", sortOrder: 77, expandTo: [
     "purchase.view",
   ] },
   { module: "物料外发", name: "新增外发订单", code: "tab.os.add", sortOrder: 80, expandTo: [
@@ -272,6 +276,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
   const purchase = new Set([
     "tab.supplier",
     "tab.pur.add",
+    "tab.pur.pcb",
     "tab.pur.open",
     "tab.pur.edit",
     "tab.pur.receive",

@@ -2,7 +2,7 @@ import { MaterialKind } from "@prisma/client";
 import { DEFAULT_MATERIAL_KIND_IDS } from "@/lib/materialPresetConstants";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
 
-/** 与导入模板表头一致 */
+/** 与导入模板表头一致（必填列） */
 export const MATERIAL_IMPORT_HEADERS = [
   "物料名称",
   "物料种类",
@@ -13,6 +13,9 @@ export const MATERIAL_IMPORT_HEADERS = [
   "单价",
   "备注",
 ] as const;
+
+/** 可选列：自定义名称种类建档时填写编号用的名称前缀 */
+export const MATERIAL_IMPORT_OPTIONAL_HEADER = "名称前缀";
 
 export type SupplierLookup = {
   id: string;

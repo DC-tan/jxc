@@ -59,3 +59,4 @@ export function salesOrderStillNeedsPurchase(
   if (active.length === 0) return true;
   return active.some((s) => s !== "CONFIRMED");
 }
+

@@ -4,7 +4,9 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { allocateMaterialCode } from "@/lib/materialCodeAllocation";
+import { resolveMaterialNaming } from "@/lib/materialCreateNaming";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
+import { resolveMaterialPurchaseChannelByKindName } from "@/lib/material-purchase-channel";
 import { ensureCustomerSupplySupplier } from "@/lib/customer-supply";
 
 const createSchema = z.object({
@@ -222,39 +224,39 @@ export async function POST(req: Request) {
     : kind.namingMode === "CUSTOM"
       ? customerId
       : null;
-  const customName = parsed.data.customName?.trim() ?? "";
-  const customNamePrefix = (parsed.data.customNamePrefix ?? "")
-    .trim()
-    .replace(/\s+/g, "")
-    .toUpperCase();
-  const presetNameId = parsed.data.presetNameId?.trim() ?? "";
-  let materialName = "";
-  let allocNamePrefix = "";
-  let sequencePadLength = 3;
+  const presetNames = await prisma.materialPresetName.findMany({
+    select: { id: true, name: true, namePrefix: true },
+  });
+  let namingResolved: ReturnType<typeof resolveMaterialNaming>;
   if (kind.namingMode === "CUSTOM") {
-    if (!customName) {
-      return NextResponse.json({ error: "该种类需手动填写物料名称" }, { status: 400 });
-    }
-    if (!customNamePrefix) {
-      return NextResponse.json({ error: "该种类需填写名称前缀" }, { status: 400 });
-    }
-    materialName = customName;
-    allocNamePrefix = customNamePrefix;
-    sequencePadLength = 2;
+    namingResolved = resolveMaterialNaming(
+      kind,
+      {
+        materialName: parsed.data.customName?.trim() ?? "",
+        customNamePrefix: parsed.data.customNamePrefix,
+      },
+      presetNames,
+    );
   } else {
+    const presetNameId = parsed.data.presetNameId?.trim() ?? "";
     if (!presetNameId) {
       return NextResponse.json({ error: "请选择物料名称" }, { status: 400 });
     }
-    const presetName = await prisma.materialPresetName.findUnique({
-      where: { id: presetNameId },
-    });
+    const presetName = presetNames.find((n) => n.id === presetNameId);
     if (!presetName) {
       return NextResponse.json({ error: "物料名称预设不存在" }, { status: 400 });
     }
-    materialName = presetName.name;
-    allocNamePrefix = presetName.namePrefix.trim();
-    sequencePadLength = 3;
+    namingResolved = resolveMaterialNaming(
+      kind,
+      { materialName: presetName.name },
+      presetNames,
+    );
   }
+  if (!namingResolved.ok) {
+    return NextResponse.json({ error: namingResolved.error }, { status: 400 });
+  }
+  const { materialName, allocNamePrefix, sequencePadLength } = namingResolved;
+  const purchaseChannel = resolveMaterialPurchaseChannelByKindName(kind.name);
 
   try {
     const row = await prisma.$transaction(async (tx) => {
@@ -292,6 +294,7 @@ export async function POST(req: Request) {
           maxStock: maxStockParsed.value,
           kindId: parsed.data.kindId,
           kind: null,
+          purchaseChannel,
           isCustomerSupplied,
           customerId: materialCustomerId,
           supplierId: isCustomerSupplied

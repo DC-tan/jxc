@@ -3059,7 +3059,7 @@ export function ProductsPage() {
             </Space>
           </div>
         )}
-        width={editProcessingMode === "OUTSOURCE_INHOUSE" ? 1100 : 800}
+        width={editProcessingMode === "OUTSOURCE_INHOUSE" ? 1450 : 1080}
         destroyOnHidden
         afterOpenChange={(open) => {
           if (open && editFormFieldsPendingRef.current) {

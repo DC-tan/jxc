@@ -113,7 +113,12 @@ export async function POST(req: Request) {
 
   const mats = await prisma.material.findMany({
     where: { id: { in: [...allMatIds] } },
-    select: { id: true, supplierId: true, isCustomerSupplied: true },
+    select: {
+      id: true,
+      supplierId: true,
+      isCustomerSupplied: true,
+      purchaseChannel: true,
+    },
   });
   if (mats.length !== allMatIds.size) {
     return NextResponse.json({ error: "存在无效物料" }, { status: 400 });
@@ -122,6 +127,12 @@ export async function POST(req: Request) {
   if (mats.some((m) => m.isCustomerSupplied)) {
     return NextResponse.json(
       { error: "存在客供料，请从采购拆单中移除并在客供料入口执行收料" },
+      { status: 400 },
+    );
+  }
+  if (mats.some((m) => m.purchaseChannel !== "STANDARD_PURCHASE")) {
+    return NextResponse.json(
+      { error: "销售订单拆单仅支持常规采购物料，PCB加工合同请在“PCB采购”TAB录入" },
       { status: 400 },
     );
   }
@@ -176,6 +187,7 @@ export async function POST(req: Request) {
             orderNo,
             supplierId: g.supplierId,
             salesOrderId,
+            purchaseChannel: "STANDARD_PURCHASE",
             status: "PENDING_RECEIPT",
             remark: remark?.trim() || null,
             createdAt,

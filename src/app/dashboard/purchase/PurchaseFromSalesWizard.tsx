@@ -18,12 +18,23 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { ResizeCallbackData } from "react-resizable";
-import type { Dispatch, SetStateAction, SyntheticEvent } from "react";
+import type {
+  Dispatch,
+  ReactNode,
+  SetStateAction,
+  SyntheticEvent,
+} from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
 import { moneyColumnLabels } from "@/lib/price-tax";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
+import {
+  loadPurchaseWizardDraft,
+  savePurchaseWizardDraft,
+  upsertWizardSupplierDraft,
+  type WizardLineDraft,
+} from "@/lib/purchase-wizard-draft";
 import { mergeVisualEditorState, type VisualEditorState } from "@/lib/purchase-template-visual";
 import { PurchaseVisualContractPreview } from "./PurchaseVisualContractPreview";
 import {
@@ -48,9 +59,24 @@ type SplitLine = {
   model: string;
   spec: string;
   unit: string;
+  bomNeedQty: number;
+  orderedQty: number;
   suggestedQty: number;
   unitPrice: string;
 };
+
+/** 已下完、仅作参照的物料文字颜色 */
+const ALREADY_ORDERED_GRAY = "#bfbfbf";
+
+function splitLineRemaining(
+  l: Pick<SplitLine, "bomNeedQty" | "orderedQty" | "suggestedQty">,
+): number {
+  return Math.max(0, (l.bomNeedQty ?? l.suggestedQty) - (l.orderedQty ?? 0));
+}
+
+function shouldShowPurchaseLine(l: EditableLine): boolean {
+  return splitLineRemaining(l) > 0 || l.quantity > 0;
+}
 
 type SplitGroup = {
   supplier: {
@@ -69,6 +95,8 @@ type SplitGroup = {
     priceIncludesTax: boolean;
   };
   lines: SplitLine[];
+  /** 补开模式：对应已取消的采购单号 */
+  redoCancelledOrderNos?: string[];
 };
 
 type BomLine = {
@@ -103,6 +131,8 @@ type SplitPayload = {
     deliveryDueAt: string | null;
   };
   bomByProduct: BomProduct[];
+  splitMode: "full_bom" | "redo_cancelled" | "partial_redo";
+  orderedQtyByMaterial: Record<string, number>;
   supplierGroups: SplitGroup[];
 };
 
@@ -189,7 +219,40 @@ type EditableGroup = {
   supplierId: string;
   supplier: SplitGroup["supplier"];
   lines: EditableLine[];
+  /** 已点「确认」：数量/单价/备注锁定，数量显示浇灰色 */
+  confirmed: boolean;
+  redoCancelledOrderNos?: string[];
 };
+
+/** 已核对确认后的数量等文字颜色（浇灰） */
+const CONFIRMED_FIELD_COLOR = "#8c8c8c";
+
+function groupToLineDrafts(lines: EditableLine[]): WizardLineDraft[] {
+  return lines.map((l) => ({
+    materialId: l.materialId,
+    quantity: l.quantity,
+    unitPriceNum: l.unitPriceNum,
+    remark: l.remark,
+  }));
+}
+
+function mergeLinesWithDraft(
+  lines: EditableLine[],
+  drafts: WizardLineDraft[] | undefined,
+): EditableLine[] {
+  if (!drafts?.length) return lines;
+  const byMat = new Map(drafts.map((d) => [d.materialId, d]));
+  return lines.map((l) => {
+    const d = byMat.get(l.materialId);
+    if (!d) return l;
+    return {
+      ...l,
+      quantity: d.quantity,
+      unitPriceNum: d.unitPriceNum,
+      remark: d.remark,
+    };
+  });
+}
 
 /** 数量 > 0 的明细；某供应商下若全部为 0 则整组不采购、不生成采购单。 */
 function groupsWithPositiveQuantityLines(
@@ -468,23 +531,62 @@ export function PurchaseFromSalesWizard({
         message.warning("该销售订单未产生物料需求（请检查商品 BOM）");
         return;
       }
+      const draft = loadPurchaseWizardDraft(data.salesOrder.id);
+      const defaultDemand = Object.fromEntries(
+        data.bomByProduct.map((bp) => [
+          bp.productId,
+          Math.max(0, Math.trunc(bp.salesQty)),
+        ]),
+      );
+      const demandMap =
+        draft?.actualDemandByProductId &&
+        Object.keys(draft.actualDemandByProductId).length > 0
+          ? { ...defaultDemand, ...draft.actualDemandByProductId }
+          : defaultDemand;
+      setActualDemandByProductId(demandMap);
+      const needByMaterialId = materialNeedMapByActualDemand(data, demandMap);
       setGroups(
-        data.supplierGroups.map((g) => ({
-          supplierId: g.supplier.id,
-          supplier: g.supplier,
-          lines: g.lines.map((l) => ({
-            ...l,
-            quantity: l.suggestedQty,
-            unitPriceNum: Number(l.unitPrice || 0),
-            remark: "",
-          })),
-        })),
+        data.supplierGroups.map((g) => {
+          const sd = draft?.suppliers[g.supplier.id];
+          const baseLines = g.lines.map((l) => {
+            const lineDraft = sd?.lines.find(
+              (x) => x.materialId === l.materialId,
+            );
+            if (sd?.confirmed) {
+              return {
+                ...l,
+                quantity: lineDraft?.quantity ?? 0,
+                unitPriceNum: lineDraft?.unitPriceNum ?? Number(l.unitPrice || 0),
+                remark: lineDraft?.remark ?? "",
+              };
+            }
+            return {
+              ...l,
+              quantity:
+                lineDraft?.quantity ??
+                needByMaterialId.get(l.materialId) ??
+                l.suggestedQty,
+              unitPriceNum:
+                lineDraft?.unitPriceNum ?? Number(l.unitPrice || 0),
+              remark: lineDraft?.remark ?? "",
+            };
+          });
+          return {
+            supplierId: g.supplier.id,
+            supplier: g.supplier,
+            lines: mergeLinesWithDraft(baseLines, sd?.lines),
+            confirmed: sd?.confirmed ?? false,
+            redoCancelledOrderNos: g.redoCancelledOrderNos,
+          };
+        }),
       );
-      setActualDemandByProductId(
-        Object.fromEntries(
-          data.bomByProduct.map((bp) => [bp.productId, Math.max(0, Math.trunc(bp.salesQty))]),
-        ),
-      );
+      if (draft?.suppliers) {
+        const fees: Record<string, PurchaseExtraFeeRow[]> = {};
+        for (const [sid, sd] of Object.entries(draft.suppliers)) {
+          if (sd.extraFees?.length) fees[sid] = sd.extraFees;
+        }
+        if (Object.keys(fees).length > 0) setExtraFeesBySupplierId(fees);
+      }
       setSplitGroupColKeys((prev) =>
         prev.includes("stockQty") ? prev : [...prev, "stockQty"],
       );
@@ -505,6 +607,27 @@ export function PurchaseFromSalesWizard({
         }
       } else {
         setMaterialStockById({});
+      }
+      if (
+        data.splitMode === "redo_cancelled" ||
+        data.splitMode === "partial_redo"
+      ) {
+        if (data.supplierGroups.length === 0) {
+          message.warning("没有可补开的已取消采购明细");
+          return;
+        }
+      } else {
+        const hasPending = data.supplierGroups.some((g) =>
+          g.lines.some((l) => l.suggestedQty > 0),
+        );
+        if (
+          !hasPending &&
+          Object.values(data.orderedQtyByMaterial ?? {}).some((q) => q > 0)
+        ) {
+          message.info(
+            "本单物料在有效采购单中已覆盖；若需重下请先取消对应采购单后再进入。",
+          );
+        }
       }
       setStep(1);
     } catch (e) {
@@ -536,27 +659,105 @@ export function PurchaseFromSalesWizard({
     [],
   );
 
-  const applyActualDemandToGroups = useCallback(
+  const persistDraftDemand = useCallback(
     (demandMap: Record<string, number>) => {
       if (!split) return;
+      const base = loadPurchaseWizardDraft(split.salesOrder.id) ?? {
+        salesOrderId: split.salesOrder.id,
+        actualDemandByProductId: {},
+        suppliers: {},
+        updatedAt: new Date().toISOString(),
+      };
+      savePurchaseWizardDraft({
+        ...base,
+        actualDemandByProductId: demandMap,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    [split],
+  );
+
+  const applyActualDemandToGroups = useCallback(
+    (demandMap: Record<string, number>) => {
+      if (
+        !split ||
+        split.splitMode === "redo_cancelled" ||
+        split.splitMode === "partial_redo"
+      ) {
+        return;
+      }
       const needByMaterialId = materialNeedMapByActualDemand(split, demandMap);
       setGroups((prev) =>
-        prev.map((g) => ({
-          ...g,
-          lines: g.lines.map((l) => ({
-            ...l,
-            quantity: needByMaterialId.get(l.materialId) ?? 0,
-          })),
-        })),
+        prev.map((g) => {
+          if (g.confirmed) return g;
+          return {
+            ...g,
+            lines: g.lines.map((l) => {
+              const bomNeed = needByMaterialId.get(l.materialId) ?? l.bomNeedQty;
+              const remaining = Math.max(0, bomNeed - (l.orderedQty ?? 0));
+              return {
+                ...l,
+                bomNeedQty: bomNeed,
+                quantity: remaining,
+              };
+            }),
+          };
+        }),
+      );
+      persistDraftDemand(demandMap);
+    },
+    [split, materialNeedMapByActualDemand, persistDraftDemand],
+  );
+
+  const persistSupplierDraft = useCallback(
+    (g: EditableGroup, confirmed: boolean) => {
+      if (!split) return;
+      upsertWizardSupplierDraft(
+        split.salesOrder.id,
+        g.supplierId,
+        {
+          confirmed,
+          lines: groupToLineDrafts(g.lines),
+          extraFees: extraFeesBySupplierId[g.supplierId],
+        },
+        actualDemandByProductId,
       );
     },
-    [split, materialNeedMapByActualDemand],
+    [split, extraFeesBySupplierId, actualDemandByProductId],
+  );
+
+  const confirmSupplierGroup = useCallback(
+    (gi: number) => {
+      setGroups((prev) => {
+        const next = prev.map((g, i) =>
+          i === gi ? { ...g, confirmed: true } : g,
+        );
+        const g = next[gi];
+        if (g) persistSupplierDraft(g, true);
+        return next;
+      });
+    },
+    [persistSupplierDraft],
+  );
+
+  const modifySupplierGroup = useCallback(
+    (gi: number) => {
+      setGroups((prev) => {
+        const next = prev.map((g, i) =>
+          i === gi ? { ...g, confirmed: false } : g,
+        );
+        const g = next[gi];
+        if (g) persistSupplierDraft(g, false);
+        return next;
+      });
+    },
+    [persistSupplierDraft],
   );
 
   const updateLine = useCallback(
     (
       gi: number,
-      li: number,
+      materialId: string,
       patch: Partial<Pick<EditableLine, "quantity" | "unitPriceNum" | "remark">>,
     ) => {
       setGroups((prev) =>
@@ -565,8 +766,8 @@ export function PurchaseFromSalesWizard({
             ? g
             : {
                 ...g,
-                lines: g.lines.map((l, j) =>
-                  j !== li ? l : { ...l, ...patch },
+                lines: g.lines.map((l) =>
+                  l.materialId !== materialId ? l : { ...l, ...patch },
                 ),
               },
         ),
@@ -577,9 +778,13 @@ export function PurchaseFromSalesWizard({
 
   const makeSplitGroupColumns = useCallback(
     (gi: number): ColumnsType<EditableLine> => {
+      const locked = groups[gi]?.confirmed ?? false;
       const priceLabels = moneyColumnLabels(
         groups[gi]?.supplier.priceIncludesTax ?? false,
       );
+      const lockedFieldStyle = locked
+        ? { color: CONFIRMED_FIELD_COLOR }
+        : undefined;
       return [
       { key: "code", title: "物料编号", width: 120, render: (_, r) => r.code },
       {
@@ -612,19 +817,20 @@ export function PurchaseFromSalesWizard({
         key: "quantity",
         title: "数量",
         width: 100,
-        render: (_, row, ri) => (
+        render: (_, row) => (
           <InputNumber
             min={0}
             max={999999999}
             precision={0}
-            style={{ width: "100%" }}
+            disabled={locked}
+            style={{ width: "100%", ...lockedFieldStyle }}
             value={row.quantity}
             onChange={(v) => {
               const n =
                 v === null || v === undefined
                   ? 0
                   : Math.max(0, Math.min(999999999, Math.round(Number(v))));
-              updateLine(gi, ri, { quantity: n });
+              updateLine(gi, row.materialId, { quantity: n });
             }}
           />
         ),
@@ -633,14 +839,15 @@ export function PurchaseFromSalesWizard({
         key: "unitPrice",
         title: priceLabels.unitPrice,
         width: 110,
-        render: (_, row, ri) => (
+        render: (_, row) => (
           <InputNumber
             min={0}
             precision={4}
-            style={{ width: "100%" }}
+            disabled={locked}
+            style={{ width: "100%", ...lockedFieldStyle }}
             value={row.unitPriceNum}
             onChange={(v) =>
-              updateLine(gi, ri, {
+              updateLine(gi, row.materialId, {
                 unitPriceNum:
                   typeof v === "number" && !Number.isNaN(v) ? v : 0,
               })
@@ -658,10 +865,14 @@ export function PurchaseFromSalesWizard({
       {
         key: "remark",
         title: "备注",
-        render: (_, row, ri) => (
+        render: (_, row) => (
           <Input
             value={row.remark}
-            onChange={(e) => updateLine(gi, ri, { remark: e.target.value })}
+            disabled={locked}
+            style={lockedFieldStyle}
+            onChange={(e) =>
+              updateLine(gi, row.materialId, { remark: e.target.value })
+            }
             placeholder="可选"
           />
         ),
@@ -688,34 +899,6 @@ export function PurchaseFromSalesWizard({
     [makeSplitGroupColumns, splitGroupColKeys, splitGroupColWidths],
   );
 
-  const bomRefAllColumns = useMemo(
-    (): ColumnsType<BomLine> => [
-      {
-        key: "code",
-        title: "物料",
-        width: 90,
-        ellipsis: true,
-        render: (_, r) => r.code,
-      },
-      { key: "usageQty", title: "用量", width: 56, render: (_, r) => r.usageQty },
-      { key: "needQty", title: "需求", width: 56, render: (_, r) => r.needQty },
-    ],
-    [],
-  );
-
-  const bomRefColumns = useMemo(() => {
-    const visible = bomRefAllColumns.filter(
-      (col) =>
-        typeof col.key === "string" && bomRefColKeys.includes(String(col.key)),
-    );
-    return attachResizeWizardCols(
-      visible,
-      bomRefColWidths,
-      setBomRefColWidths,
-      DEFAULT_BOM_SIDEBAR_WIDTH,
-    );
-  }, [bomRefAllColumns, bomRefColKeys, bomRefColWidths]);
-
   const bomByProductForView = useMemo(() => {
     if (!split) return [];
     return split.bomByProduct.map((bp) => {
@@ -734,6 +917,71 @@ export function PurchaseFromSalesWizard({
     });
   }, [split, actualDemandByProductId]);
 
+  const orderedQtyByMaterial = split?.orderedQtyByMaterial ?? {};
+
+  const materialFullyOrdered = useMemo(() => {
+    const need = new Map<string, number>();
+    for (const bp of bomByProductForView) {
+      for (const bl of bp.bomLines) {
+        need.set(
+          bl.materialId,
+          (need.get(bl.materialId) ?? 0) + bl.needQty,
+        );
+      }
+    }
+    const set = new Set<string>();
+    for (const [mid, n] of need) {
+      if (n > 0 && (orderedQtyByMaterial[mid] ?? 0) >= n) {
+        set.add(mid);
+      }
+    }
+    return set;
+  }, [bomByProductForView, orderedQtyByMaterial]);
+
+  const bomRefAllColumns = useMemo((): ColumnsType<BomLine> => {
+    const grayStyle = { color: ALREADY_ORDERED_GRAY };
+    const wrap = (node: ReactNode, r: BomLine) =>
+      materialFullyOrdered.has(r.materialId) ? (
+        <span style={grayStyle}>{node}</span>
+      ) : (
+        node
+      );
+    return [
+      {
+        key: "code",
+        title: "物料",
+        width: 90,
+        ellipsis: true,
+        render: (_, r) => wrap(r.code, r),
+      },
+      {
+        key: "usageQty",
+        title: "用量",
+        width: 56,
+        render: (_, r) => wrap(r.usageQty, r),
+      },
+      {
+        key: "needQty",
+        title: "需求",
+        width: 56,
+        render: (_, r) => wrap(r.needQty, r),
+      },
+    ];
+  }, [materialFullyOrdered]);
+
+  const bomRefColumns = useMemo(() => {
+    const visible = bomRefAllColumns.filter(
+      (col) =>
+        typeof col.key === "string" && bomRefColKeys.includes(String(col.key)),
+    );
+    return attachResizeWizardCols(
+      visible,
+      bomRefColWidths,
+      setBomRefColWidths,
+      DEFAULT_BOM_SIDEBAR_WIDTH,
+    );
+  }, [bomRefAllColumns, bomRefColKeys, bomRefColWidths]);
+
   const positiveQtyGroups = useMemo(
     () => groupsWithPositiveQuantityLines(groups),
     [groups],
@@ -742,6 +990,51 @@ export function PurchaseFromSalesWizard({
     () => isAllLineQuantitiesZero(groups),
     [groups],
   );
+
+  const openUnifiedPreview = useCallback(async () => {
+    if (!split) return;
+    if (positiveQtyGroups.length === 0) {
+      message.warning(
+        "没有可采购的明细：数量 0 表示不采购。请至少保留一条数量大于 0 的物料。",
+      );
+      return;
+    }
+    const needConfirm = groups.filter((g) =>
+      g.lines.some((l) => shouldShowPurchaseLine(l)),
+    );
+    const unconfirmed = needConfirm.filter((g) => !g.confirmed);
+    if (unconfirmed.length > 0) {
+      message.warning(
+        `请先对各供应商点「确认」：${unconfirmed.map((g) => g.supplier.name).join("、")}`,
+      );
+      return;
+    }
+    try {
+      const reminderPayload = await fetchJson<{
+        list: PendingChangeReminder[];
+      }>("/api/customer-change-reminders/match", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          salesOrderId: split.salesOrder.id,
+          channel: "purchase",
+        }),
+      });
+      const proceed = await confirmPurchaseChannelReminders(
+        modal,
+        reminderPayload.list ?? [],
+      );
+      if (!proceed) return;
+    } catch (e) {
+      message.error(
+        e instanceof Error ? e.message : "加载客户变更提醒失败",
+      );
+      return;
+    }
+    setPreviewSupplierId(positiveQtyGroups[0]?.supplierId);
+    setPreviewOpen(true);
+  }, [groups, message, modal, positiveQtyGroups, split]);
 
   const submitNoPurchaseRequired = useCallback(() => {
     if (!split || !allQuantitiesAreZero) return;
@@ -804,6 +1097,12 @@ export function PurchaseFromSalesWizard({
           })),
         }),
       });
+      savePurchaseWizardDraft({
+        salesOrderId: split.salesOrder.id,
+        actualDemandByProductId,
+        suppliers: {},
+        updatedAt: new Date().toISOString(),
+      });
       message.success("采购订单已生成");
       setPreviewOpen(false);
       onClose();
@@ -838,13 +1137,26 @@ export function PurchaseFromSalesWizard({
 
   const setPreviewExtraFees = useCallback(
     (fees: PurchaseExtraFeeRow[]) => {
-      if (!previewActiveSupplierId) return;
+      if (!previewActiveSupplierId || !split) return;
       setExtraFeesBySupplierId((prev) => ({
         ...prev,
         [previewActiveSupplierId]: fees,
       }));
+      const g = groups.find((x) => x.supplierId === previewActiveSupplierId);
+      if (g?.confirmed) {
+        upsertWizardSupplierDraft(
+          split.salesOrder.id,
+          previewActiveSupplierId,
+          {
+            confirmed: true,
+            lines: groupToLineDrafts(g.lines),
+            extraFees: fees,
+          },
+          actualDemandByProductId,
+        );
+      }
     },
-    [previewActiveSupplierId],
+    [previewActiveSupplierId, split, groups, actualDemandByProductId],
   );
 
   /** 预览合同交货日与正式生成采购单时相同规则（创建日 + 供应商交货天数） */
@@ -917,7 +1229,7 @@ export function PurchaseFromSalesWizard({
             size="middle"
           >
             <Typography.Text type="secondary">
-              仅列出尚未确认出货的销售订单；若本单从销售已生成的采购单均已收料确认，则不再出现。系统将按 BOM
+              列出尚未出货且仍需采购的销售订单：从未下过采购、或删除/作废部分采购单后尚有未覆盖物料、或存在已取消单需补开。进入后仅显示待采明细（已删单按 BOM 缺口，已取消单按原单明细）。
               汇总物料并按供应商拆成多张采购单。下拉项为：客户名称 · 客户机型 · 订单编号。
             </Typography.Text>
             <Select
@@ -970,17 +1282,28 @@ export function PurchaseFromSalesWizard({
                   options={WIZARD_GROUP_COL_OPTIONS}
                 />
               </div>
-              {groups.map((g, gi) => (
+              {groups.map((g, gi) => {
+                const visibleLines = g.lines.filter(shouldShowPurchaseLine);
+                if (visibleLines.length === 0) return null;
+                return (
                 <div key={g.supplierId} style={{ marginBottom: 20 }}>
                   <Typography.Text strong>
                     {g.supplier.code} {g.supplier.name}
+                    {g.redoCancelledOrderNos?.length ? (
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12, marginLeft: 8, fontWeight: 400 }}
+                      >
+                        （补开：{g.redoCancelledOrderNos.join("、")}）
+                      </Typography.Text>
+                    ) : null}
                   </Typography.Text>
                   <Table<EditableLine>
                     size="small"
                     style={{ marginTop: 8 }}
                     pagination={false}
                     rowKey={(r) => r.materialId}
-                    dataSource={g.lines}
+                    dataSource={visibleLines}
                     columns={getSplitGroupColumnsForTable(gi)}
                     scroll={{ x: "max-content" }}
                     tableLayout="fixed"
@@ -988,8 +1311,34 @@ export function PurchaseFromSalesWizard({
                       header: { cell: ResizableTableTitle },
                     }}
                   />
+                  <div
+                    style={{
+                      marginTop: 8,
+                      display: "flex",
+                      justifyContent: "flex-end",
+                    }}
+                  >
+                    <Space size={4}>
+                      <Button
+                        size="small"
+                        type="primary"
+                        disabled={g.confirmed}
+                        onClick={() => confirmSupplierGroup(gi)}
+                      >
+                        确认
+                      </Button>
+                      <Button
+                        size="small"
+                        disabled={!g.confirmed}
+                        onClick={() => modifySupplierGroup(gi)}
+                      >
+                        修改
+                      </Button>
+                    </Space>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
               <Space style={{ marginTop: 8 }} wrap>
                 <Button onClick={() => setStep(0)}>上一步</Button>
                 {allQuantitiesAreZero && (
@@ -1003,39 +1352,7 @@ export function PurchaseFromSalesWizard({
                 )}
                 <Button
                   type={allQuantitiesAreZero ? "default" : "primary"}
-                  onClick={async () => {
-                    if (positiveQtyGroups.length === 0) {
-                      message.warning(
-                        "没有可采购的明细：数量 0 表示不采购。请至少保留一条数量大于 0 的物料。",
-                      );
-                      return;
-                    }
-                    try {
-                      const reminderPayload = await fetchJson<{
-                        list: PendingChangeReminder[];
-                      }>("/api/customer-change-reminders/match", {
-                        method: "POST",
-                        credentials: "include",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          salesOrderId: split.salesOrder.id,
-                          channel: "purchase",
-                        }),
-                      });
-                      const proceed = await confirmPurchaseChannelReminders(
-                        modal,
-                        reminderPayload.list ?? [],
-                      );
-                      if (!proceed) return;
-                    } catch (e) {
-                      message.error(
-                        e instanceof Error ? e.message : "加载客户变更提醒失败",
-                      );
-                      return;
-                    }
-                    setPreviewSupplierId(positiveQtyGroups[0]?.supplierId);
-                    setPreviewOpen(true);
-                  }}
+                  onClick={() => void openUnifiedPreview()}
                 >
                   确认生成预览
                 </Button>
@@ -1081,23 +1398,32 @@ export function PurchaseFromSalesWizard({
                         <Typography.Text type="secondary">
                           现有商品库存数：<strong>{Math.trunc(Number(bp.productStockQty || 0))}</strong>
                         </Typography.Text>
-                        <Typography.Text type="secondary">实际需求商品数：</Typography.Text>
-                        <InputNumber
-                          min={0}
-                          precision={0}
-                          value={bp.demandQty}
-                          onChange={(v) => {
-                            const n =
-                              v == null
-                                ? 0
-                                : Math.max(0, Math.min(999999999, Math.round(Number(v))));
-                            setActualDemandByProductId((prev) => {
-                              const next = { ...prev, [bp.productId]: n };
-                              applyActualDemandToGroups(next);
-                              return next;
-                            });
-                          }}
-                        />
+                        {split.splitMode === "full_bom" ? (
+                          <>
+                            <Typography.Text type="secondary">
+                              实际需求商品数：
+                            </Typography.Text>
+                            <InputNumber
+                              min={0}
+                              precision={0}
+                              value={bp.demandQty}
+                              onChange={(v) => {
+                                const n =
+                                  v == null
+                                    ? 0
+                                    : Math.max(
+                                        0,
+                                        Math.min(999999999, Math.round(Number(v))),
+                                      );
+                                setActualDemandByProductId((prev) => {
+                                  const next = { ...prev, [bp.productId]: n };
+                                  applyActualDemandToGroups(next);
+                                  return next;
+                                });
+                              }}
+                            />
+                          </>
+                        ) : null}
                       </Space>
                     </Space>
                     <Table<BomLine>

@@ -138,7 +138,13 @@ type OrderProfitRow = {
 };
 
 type OrderProfitPayload = {
+  queryKind: "order" | "product";
   orderNo: string;
+  product: {
+    id: string;
+    model: string;
+    customerMaterialCode: string;
+  } | null;
   operationCostRate: number;
   orderCount: number;
   customers: { id: string; code: string; name: string }[];
@@ -153,6 +159,11 @@ type OrderProfitPayload = {
     profitRate: number;
     purchaseExtraFeeAmount: number;
   };
+};
+
+type ProductProfitOption = {
+  value: string;
+  label: string;
 };
 
 const money = (n: number) =>
@@ -173,6 +184,12 @@ function StatisticsTab() {
   const [mainDrill, setMainDrill] = useState<DrillResponse | null>(null);
   const [mainDrillLoading, setMainDrillLoading] = useState(false);
   const [profitOrderNo, setProfitOrderNo] = useState("");
+  const [profitProductKeyword, setProfitProductKeyword] = useState("");
+  const [profitProductId, setProfitProductId] = useState<string | null>(null);
+  const [profitProductOptions, setProfitProductOptions] = useState<ProductProfitOption[]>(
+    [],
+  );
+  const [profitProductSearching, setProfitProductSearching] = useState(false);
   const [profitLoading, setProfitLoading] = useState(false);
   const [profitData, setProfitData] = useState<OrderProfitPayload | null>(null);
 
@@ -334,6 +351,50 @@ function StatisticsTab() {
       setProfitLoading(false);
     }
   }, [message, profitOrderNo]);
+
+  const searchProfitProductOptions = useCallback(
+    async (keyword: string) => {
+      const q = keyword.trim();
+      if (!q) {
+        setProfitProductOptions([]);
+        return;
+      }
+      setProfitProductSearching(true);
+      try {
+        const res = await fetchJson<{ options: ProductProfitOption[] }>(
+          `/api/stats/order-profit/product-options?q=${encodeURIComponent(q)}`,
+          { credentials: "include" },
+        );
+        setProfitProductOptions(res.options ?? []);
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "加载商品选项失败");
+        setProfitProductOptions([]);
+      } finally {
+        setProfitProductSearching(false);
+      }
+    },
+    [message],
+  );
+
+  const queryProductProfit = useCallback(async () => {
+    if (!profitProductId) {
+      message.warning("请先从下拉结果中选择商品");
+      return;
+    }
+    setProfitLoading(true);
+    try {
+      const res = await fetchJson<OrderProfitPayload>(
+        `/api/stats/order-profit?productId=${encodeURIComponent(profitProductId)}`,
+        { credentials: "include" },
+      );
+      setProfitData(res);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "查询商品利润失败");
+      setProfitData(null);
+    } finally {
+      setProfitLoading(false);
+    }
+  }, [message, profitProductId]);
 
   const orderProfitColumns: ColumnsType<OrderProfitRow> = [
     { title: "物料编号", dataIndex: "customerMaterialCode", width: 140, ellipsis: true },
@@ -811,35 +872,82 @@ function StatisticsTab() {
           />
 
           <Typography.Title level={5} style={{ margin: "16px 0 0" }}>
-            五、订单利润查询
+            五、利润查询
           </Typography.Title>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
             口径：销售金额（未税）、BOM 物料单价均先按客户/供应商含税设置折成未税（客户 ÷1.13、供应商 ÷1.1）；订单金额（含税）为录入价折合含税（未税客户 ×1.13）。基础成本（未税）=
             BOM材料成本 × 用量 + 加工成本 + 关联采购单附加费；运营成本（未税）= 销售金额（未税）× 8%；利润（未税）=
-            销售金额（未税）− 基础成本（未税）− 运营成本（未税）。
+            销售金额（未税）− 基础成本（未税）− 运营成本（未税）。商品查询为
+            <strong>单件测算</strong>，与是否有订单无关。
           </Typography.Paragraph>
-          <Space wrap style={{ marginBottom: 8 }}>
-            <Input
-              allowClear
-              placeholder="请输入销售订单号"
-              value={profitOrderNo}
-              onChange={(e) => setProfitOrderNo(e.target.value)}
-              onPressEnter={() => void queryOrderProfit()}
-              style={{ width: 280 }}
-            />
-            <Button type="primary" loading={profitLoading} onClick={() => void queryOrderProfit()}>
-              查询
-            </Button>
+          <Space
+            wrap
+            size="large"
+            align="center"
+            style={{ marginBottom: 8, width: "100%" }}
+          >
+            <Space wrap align="center">
+              <Typography.Text style={{ minWidth: 96 }}>订单查询</Typography.Text>
+              <Input
+                allowClear
+                placeholder="请输入销售订单号"
+                value={profitOrderNo}
+                onChange={(e) => setProfitOrderNo(e.target.value)}
+                onPressEnter={() => void queryOrderProfit()}
+                style={{ width: 280 }}
+              />
+              <Button type="primary" loading={profitLoading} onClick={() => void queryOrderProfit()}>
+                查询订单利润
+              </Button>
+            </Space>
+            <Divider type="vertical" style={{ height: 24, margin: "0 4px" }} />
+            <Space wrap align="center">
+              <Typography.Text style={{ minWidth: 96 }}>商品查询</Typography.Text>
+              <AutoComplete
+                allowClear
+                placeholder="请输入商品型号并选择"
+                value={profitProductKeyword}
+                options={profitProductOptions}
+                onSearch={(v) => void searchProfitProductOptions(v)}
+                onChange={(v) => {
+                  setProfitProductKeyword(v);
+                  setProfitProductId(null);
+                }}
+                onSelect={(value, option) => {
+                  setProfitProductId(String(value));
+                  setProfitProductKeyword(String(option.label ?? ""));
+                }}
+                notFoundContent={profitProductSearching ? "搜索中..." : "无匹配商品"}
+                style={{ width: 360 }}
+              />
+              <Button type="primary" loading={profitLoading} onClick={() => void queryProductProfit()}>
+                查询商品利润
+              </Button>
+            </Space>
           </Space>
           {profitData ? (
             <>
               <Typography.Paragraph style={{ marginBottom: 8 }}>
-                订单号：<strong>{profitData.orderNo}</strong>
+                {profitData.queryKind === "product" ? (
+                  <>
+                    商品：<strong>{profitData.product?.model || "—"}</strong>
+                    {profitData.product?.customerMaterialCode
+                      ? `（${profitData.product.customerMaterialCode}）`
+                      : ""}
+                    {"（单件利润测算）"}
+                  </>
+                ) : (
+                  <>
+                    订单号：<strong>{profitData.orderNo}</strong>
+                  </>
+                )}
                 {profitData.customers.length > 0
                   ? `（客户：${profitData.customers.map((c) => `${c.code} ${c.name}`).join("、")}）`
                   : ""}
                 {profitData.orderCount > 1
-                  ? `（匹配到 ${profitData.orderCount} 张同号订单，已合并统计）`
+                  ? profitData.queryKind === "product"
+                    ? ""
+                    : `（匹配到 ${profitData.orderCount} 张同号订单，已合并统计）`
                   : ""}
                 {profitData.summary.purchaseExtraFeeAmount > 0
                   ? ` · 已扣减关联采购单附加费 ${money(profitData.summary.purchaseExtraFeeAmount)}`
@@ -1205,7 +1313,7 @@ function ReconcileTabContent({
       交货数量: "" as unknown as number,
       [unitKey]: "" as unknown as number,
       [amountKey]: totalAmount,
-      附加费用: totalExtraFeeAmount,
+      附加费用: totalExtraFeeAmount as any,
       备注: "",
     });
     const ws = XLSX.utils.json_to_sheet(exportRows);

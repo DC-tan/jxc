@@ -1,10 +1,13 @@
-import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
+import { allocateMaterialCode } from "@/lib/materialCodeAllocation";
+import { resolveMaterialNaming } from "@/lib/materialCreateNaming";
+import { resolveMaterialPurchaseChannelByKindName } from "@/lib/material-purchase-channel";
 import {
   MATERIAL_IMPORT_HEADERS,
+  MATERIAL_IMPORT_OPTIONAL_HEADER,
   mapHeaderRow,
   matchPresetKindId,
   normalizeHeaderKey,
@@ -51,13 +54,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "请上传 Excel 文件" }, { status: 400 });
   }
 
-  const supplierList = await prisma.supplier.findMany({
-    select: { id: true, code: true, name: true, shortName: true },
-  });
+  const [supplierList, kindList, presetNames] = await Promise.all([
+    prisma.supplier.findMany({
+      select: { id: true, code: true, name: true, shortName: true },
+    }),
+    prisma.materialPresetKind.findMany({
+      select: { id: true, name: true, namingMode: true },
+    }),
+    prisma.materialPresetName.findMany({
+      select: { id: true, name: true, namePrefix: true },
+    }),
+  ]);
 
-  const kindList = await prisma.materialPresetKind.findMany({
-    select: { id: true, name: true },
-  });
+  const kindById = new Map(kindList.map((k) => [k.id, k]));
 
   const buf = Buffer.from(await file.arrayBuffer());
   let wb: XLSX.WorkBook;
@@ -98,14 +107,17 @@ export async function POST(req: Request) {
 
   const parsed: {
     excelRow: number;
-    name: string;
+    materialName: string;
     kindId: string;
+    allocNamePrefix: string;
+    sequencePadLength: number;
     partDescription: string | null;
     brand: string | null;
     unit: string;
     unitPrice: string;
     inspectionNotes: string | null;
     supplierId: string;
+    purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   }[] = [];
 
   const validationErrors: RowErr[] = [];
@@ -118,6 +130,9 @@ export async function POST(req: Request) {
     const excelRow = i + 1;
     const name = String(cell(row, colMap, "物料名称") ?? "").trim();
     const kindRaw = cell(row, colMap, "物料种类");
+    const namePrefixRaw = String(
+      cell(row, colMap, MATERIAL_IMPORT_OPTIONAL_HEADER) ?? "",
+    ).trim();
     const partDescription = String(
       cell(row, colMap, "部件描述") ?? "",
     ).trim();
@@ -167,16 +182,32 @@ export async function POST(req: Request) {
       continue;
     }
 
+    const kind = kindById.get(kindId);
+    if (!kind) continue;
+
+    const naming = resolveMaterialNaming(
+      kind,
+      { materialName: name, customNamePrefix: namePrefixRaw },
+      presetNames,
+    );
+    if (!naming.ok) {
+      validationErrors.push({ row: excelRow, message: naming.error });
+      continue;
+    }
+
     parsed.push({
       excelRow,
-      name,
+      materialName: naming.materialName,
       kindId,
+      allocNamePrefix: naming.allocNamePrefix,
+      sequencePadLength: naming.sequencePadLength,
       partDescription: partDescription || null,
       brand: brand || null,
       unit,
       unitPrice: String(up),
       inspectionNotes: inspectionNotes || null,
       supplierId,
+      purchaseChannel: resolveMaterialPurchaseChannelByKindName(kind.name),
     });
   }
 
@@ -194,22 +225,32 @@ export async function POST(req: Request) {
   let created = 0;
 
   for (const p of parsed) {
-    const code = `IMP-${randomUUID().replace(/-/g, "").slice(0, 16)}`;
     try {
-      await prisma.material.create({
-        data: {
-          code,
-          name: p.name,
+      await prisma.$transaction(async (tx) => {
+        const alloc = await allocateMaterialCode(tx, {
           kindId: p.kindId,
-          kind: null,
-          partDescription: p.partDescription,
-          brand: p.brand,
-          unit: p.unit,
-          unitPrice: p.unitPrice,
-          supplierId: p.supplierId,
-          inspectionNotes: p.inspectionNotes,
-          sampleImageUrls: [],
-        },
+          namePrefix: p.allocNamePrefix,
+          sequencePadLength: p.sequencePadLength,
+        });
+        if (!alloc.ok) {
+          throw new Error(alloc.error);
+        }
+        await tx.material.create({
+          data: {
+            code: alloc.code,
+            name: p.materialName,
+            kindId: p.kindId,
+            kind: null,
+            purchaseChannel: p.purchaseChannel,
+            partDescription: p.partDescription,
+            brand: p.brand,
+            unit: p.unit,
+            unitPrice: p.unitPrice,
+            supplierId: p.supplierId,
+            inspectionNotes: p.inspectionNotes,
+            sampleImageUrls: [],
+          },
+        });
       });
       created++;
     } catch (e) {

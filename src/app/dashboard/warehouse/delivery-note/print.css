@@ -65,7 +65,7 @@
 
   html,
   body {
-    height: auto !important;
+    height: 100% !important;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
@@ -75,12 +75,20 @@
    */
   body.delivery-slip-print-mode {
     background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
   body.delivery-slip-print-mode .ant-layout,
   body.delivery-slip-print-mode .ant-layout .ant-layout {
     min-height: 0 !important;
     background: #fff !important;
+  }
+
+  /* DashboardShell 主区内联 margin-left:220（侧栏预留）需在打印时清零 */
+  body.delivery-slip-print-mode .ant-layout > .ant-layout {
+    margin-left: 0 !important;
+    width: 100% !important;
   }
 
   body.delivery-slip-print-mode .ant-layout-sider,
@@ -113,6 +121,10 @@
 
   body.delivery-slip-print-mode .warehouse-delivery-slip-print-scope .ant-card-body {
     padding: 0 !important;
+    min-height: 100vh !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: flex-start !important;
   }
 
   /* 仅保留送货单版心区域：隐藏工具条、加载、错误提示等兄弟节点 */
@@ -134,29 +146,34 @@
   }
 
   .delivery-note-print-area-wrap {
-    display: block !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: flex-start !important;
     width: 100% !important;
     max-width: 100% !important;
+    min-height: 0 !important;
     overflow: hidden;
     box-sizing: border-box;
   }
 
   .delivery-note-print-root {
-    max-width: 100% !important;
+    display: inline-block !important;
+    width: auto !important;
+    max-width: none !important;
     border: none !important;
     box-shadow: none !important;
-    margin: 0 !important;
+    margin: 0 auto !important;
     box-sizing: border-box;
   }
 
   /* 单页优先：不超出可印区 */
   .delivery-note-print-root.delivery-note-a5-landscape {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-height: 0;
+    width: auto !important;
+    max-width: none !important;
+    min-height: 0 !important;
     page-break-inside: avoid;
     break-inside: avoid;
-    zoom: 0.92;
+    zoom: 1;
     overflow: hidden;
   }
 }

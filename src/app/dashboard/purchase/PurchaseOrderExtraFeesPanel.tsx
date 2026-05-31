@@ -10,8 +10,13 @@ import {
   useState,
 } from "react";
 import { fetchJson } from "@/lib/fetch-json";
+import {
+  ensureExtraFeeRowId,
+  ensureExtraFeeRowIds,
+  type PurchaseExtraFeeRow,
+} from "@/lib/purchase-extra-fees";
 
-export type PurchaseExtraFeeRow = { id?: string; amount: number; purpose: string };
+export type { PurchaseExtraFeeRow };
 
 export type PurchaseOrderExtraFeesPanelHandle = {
   openAddFee: () => void;
@@ -53,10 +58,17 @@ export const PurchaseOrderExtraFeesPanel = forwardRef<
   const isDraft = !purchaseOrderId && isControlled;
   const fees = isControlled ? controlledFees : internalFees;
 
+  useEffect(() => {
+    if (!isControlled || !onFeesChange || !controlledFees?.length) return;
+    if (controlledFees.every((f) => f.id?.trim())) return;
+    onFeesChange(ensureExtraFeeRowIds(controlledFees));
+  }, [isControlled, controlledFees, onFeesChange]);
+
   const setFees = useCallback(
     (next: PurchaseExtraFeeRow[]) => {
-      if (onFeesChange) onFeesChange(next);
-      if (!isControlled) setInternalFees(next);
+      const normalized = ensureExtraFeeRowIds(next);
+      if (onFeesChange) onFeesChange(normalized);
+      if (!isControlled) setInternalFees(normalized);
     },
     [isControlled, onFeesChange],
   );
@@ -142,7 +154,10 @@ export const PurchaseOrderExtraFeesPanel = forwardRef<
     } catch {
       return;
     }
-    const next = [...fees, { amount: v.amount, purpose: v.purpose.trim() }];
+    const next = [
+      ...fees,
+      ensureExtraFeeRowId({ amount: v.amount, purpose: v.purpose.trim() }),
+    ];
     if (isDraft) {
       setFees(next);
       setFeeModalOpen(false);
@@ -156,8 +171,8 @@ export const PurchaseOrderExtraFeesPanel = forwardRef<
     }
   };
 
-  const removeFee = async (index: number) => {
-    const next = fees.filter((_, i) => i !== index);
+  const removeFee = async (feeId: string) => {
+    const next = fees.filter((f) => f.id !== feeId);
     if (isDraft) {
       setFees(next);
       return;
@@ -183,13 +198,13 @@ export const PurchaseOrderExtraFeesPanel = forwardRef<
       title: "操作",
       key: "op",
       width: 72,
-      render: (_, __, index) => (
+      render: (_, record) => (
         <Button
           type="link"
           danger
           size="small"
           disabled={feeSaving || disabled}
-          onClick={() => void removeFee(index)}
+          onClick={() => void removeFee(record.id!)}
         >
           删除
         </Button>
@@ -216,7 +231,7 @@ export const PurchaseOrderExtraFeesPanel = forwardRef<
         </Typography.Paragraph>
         <Table<PurchaseExtraFeeRow>
           size="small"
-          rowKey={(_, i) => String(i)}
+          rowKey={(record) => record.id!}
           loading={loading}
           columns={feeColumns}
           dataSource={fees}
@@ -232,6 +247,7 @@ export const PurchaseOrderExtraFeesPanel = forwardRef<
         onCancel={() => setFeeModalOpen(false)}
         onOk={() => void submitAddFee()}
         confirmLoading={feeSaving}
+        forceRender
         destroyOnHidden
       >
         <Form form={feeForm} layout="vertical">

@@ -1201,7 +1201,7 @@ export function WarehousePage() {
                             whiteSpace: "nowrap",
                           }}
                         >
-                          现库存 {r.stockQuantity} {r.unit}
+                          现库存 {(r as any).stockQuantity} {r.unit}
                         </span>
                       </li>
                     ))}

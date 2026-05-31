@@ -34,6 +34,7 @@ import { PurchaseFromSalesWizard } from "./PurchaseFromSalesWizard";
 
 const PURCHASE_TAB_PERM: Record<string, string> = {
   add: "tab.pur.add",
+  pcb: "tab.pur.pcb",
   pending: "tab.pur.open",
   query: "tab.pur.query",
   settings: "tab.pur.settings",
@@ -48,6 +49,7 @@ type MaterialOpt = {
   name: string;
   unit: string;
   unitPrice: string;
+  purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   supplier: { id: string; code: string; name: string };
 };
 
@@ -61,6 +63,7 @@ type PurchaseOrderRow = {
   orderNo: string;
   remark: string | null;
   status?: string;
+  purchaseChannel?: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   supplier: SupplierOpt;
   salesOrder?: {
     id: string;
@@ -84,6 +87,15 @@ type PoLine = {
   remark: string;
 };
 
+type PcbContractDraftRow = {
+  key: string;
+  contractNo: string;
+  materialId?: string;
+  quantity: number;
+  unitPrice: number;
+  deliveryDueAt: string | null;
+};
+
 type DetailLine = {
   id: string;
   quantity: string;
@@ -96,6 +108,7 @@ type DetailLine = {
     unit: string;
     unitPrice: string;
     partDescription: string | null;
+    purchaseChannel?: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   };
 };
 
@@ -136,6 +149,7 @@ type DetailPayload = {
   id: string;
   orderNo: string;
   status: string;
+  purchaseChannel?: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   remark: string | null;
   supplier: SupplierOpt & {
     shortName?: string | null;
@@ -166,6 +180,20 @@ function newLineKey(): string {
   return typeof crypto !== "undefined" && crypto.randomUUID
     ? crypto.randomUUID()
     : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function newPcbContractDraftRow(): PcbContractDraftRow {
+  return {
+    key:
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `pcb-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    contractNo: "",
+    materialId: undefined,
+    quantity: 1,
+    unitPrice: 0,
+    deliveryDueAt: null,
+  };
 }
 
 /** 当日 / 未交：仅有「要求交货时间」；收料前无实际交货日 */
@@ -623,6 +651,8 @@ export function PurchasePage() {
 
   const [todayRows, setTodayRows] = useState<PurchaseOrderRow[]>([]);
   const [loadingToday, setLoadingToday] = useState(false);
+  const [pcbRows, setPcbRows] = useState<PurchaseOrderRow[]>([]);
+  const [loadingPcb, setLoadingPcb] = useState(false);
 
   const [queryForm] = Form.useForm();
   const [queryRows, setQueryRows] = useState<PurchaseOrderRow[]>([]);
@@ -667,6 +697,13 @@ export function PurchasePage() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editingPoId, setEditingPoId] = useState<string | null>(null);
+  const [createChannel, setCreateChannel] = useState<
+    "STANDARD_PURCHASE" | "PROCESSING_CONTRACT"
+  >("STANDARD_PURCHASE");
+  const [pcbDraftRows, setPcbDraftRows] = useState<PcbContractDraftRow[]>([
+    newPcbContractDraftRow(),
+  ]);
+  const [pcbSavingRowKey, setPcbSavingRowKey] = useState<string | null>(null);
   const [createForm] = Form.useForm();
   const createSupplierId = Form.useWatch("supplierId", createForm);
   const createSupplierPriceIncludesTax = useMemo(() => {
@@ -729,16 +766,46 @@ export function PurchasePage() {
     }
   }, [message]);
 
+  const pcbMaterialOptions = useMemo(
+    () =>
+      (presets?.materials ?? []).filter(
+        (m) => m.purchaseChannel === "PROCESSING_CONTRACT",
+      ),
+    [presets],
+  );
+
+  const updatePcbDraftRow = useCallback(
+    (rowKey: string, patch: Partial<PcbContractDraftRow>) => {
+      setPcbDraftRows((prev) =>
+        prev.map((row) => (row.key === rowKey ? { ...row, ...patch } : row)),
+      );
+    },
+    [],
+  );
+
+  const addPcbDraftRow = useCallback(() => {
+    setPcbDraftRows((prev) => [...prev, newPcbContractDraftRow()]);
+  }, []);
+
+  const removePcbDraftRow = useCallback((rowKey: string) => {
+    setPcbDraftRows((prev) => {
+      const next = prev.filter((row) => row.key !== rowKey);
+      return next.length > 0 ? next : [newPcbContractDraftRow()];
+    });
+  }, []);
+
   const buildQuery = useCallback(
     (
       createdFrom: string,
       createdTo: string,
       v: Record<string, unknown>,
       mode: "default" | "pending" | "inQuery",
+      purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT" = "STANDARD_PURCHASE",
     ) => {
       const p = new URLSearchParams();
       p.set("createdFrom", createdFrom);
       p.set("createdTo", createdTo);
+      p.set("purchaseChannel", purchaseChannel);
       if (mode === "pending") p.set("pending", "1");
       if (mode === "inQuery") p.set("inQuery", "1");
       if (v.supplierId) p.set("supplierId", String(v.supplierId));
@@ -754,7 +821,13 @@ export function PurchasePage() {
       const start = dayjs().startOf("day").toISOString();
       const end = dayjs().endOf("day").toISOString();
       const data = await fetchJson<{ list: PurchaseOrderRow[] }>(
-        `/api/purchase-orders?${buildQuery(start, end, {}, "default")}`,
+        `/api/purchase-orders?${buildQuery(
+          start,
+          end,
+          {},
+          "default",
+          "STANDARD_PURCHASE",
+        )}`,
         { credentials: "include" },
       );
       setTodayRows(data.list ?? []);
@@ -772,7 +845,13 @@ export function PurchasePage() {
       const start = dayjs().subtract(365, "day").startOf("day").toISOString();
       const end = dayjs().endOf("day").toISOString();
       const data = await fetchJson<{ list: PurchaseOrderRow[] }>(
-        `/api/purchase-orders?${buildQuery(start, end, {}, "pending")}`,
+        `/api/purchase-orders?${buildQuery(
+          start,
+          end,
+          {},
+          "pending",
+          "STANDARD_PURCHASE",
+        )}`,
         { credentials: "include" },
       );
       setPendingRows(data.list ?? []);
@@ -797,7 +876,13 @@ export function PurchasePage() {
         const start = range[0].startOf("day").toISOString();
         const end = range[1].endOf("day").toISOString();
         const data = await fetchJson<{ list: PurchaseOrderRow[] }>(
-          `/api/purchase-orders?${buildQuery(start, end, v, "inQuery")}`,
+          `/api/purchase-orders?${buildQuery(
+            start,
+            end,
+            v,
+            "inQuery",
+            "STANDARD_PURCHASE",
+          )}`,
           { credentials: "include" },
         );
         setQueryRows(data.list ?? []);
@@ -809,6 +894,94 @@ export function PurchasePage() {
       }
     },
     [message, buildQuery],
+  );
+
+  const loadPcbPending = useCallback(async () => {
+    setLoadingPcb(true);
+    try {
+      const start = dayjs().subtract(365, "day").startOf("day").toISOString();
+      const end = dayjs().endOf("day").toISOString();
+      const data = await fetchJson<{ list: PurchaseOrderRow[] }>(
+        `/api/purchase-orders?${buildQuery(
+          start,
+          end,
+          {},
+          "pending",
+          "PROCESSING_CONTRACT",
+        )}`,
+        { credentials: "include" },
+      );
+      setPcbRows(data.list ?? []);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "加载失败");
+      setPcbRows([]);
+    } finally {
+      setLoadingPcb(false);
+    }
+  }, [message, buildQuery]);
+
+  const savePcbDraftRow = useCallback(
+    async (row: PcbContractDraftRow) => {
+      const contractNo = row.contractNo.trim();
+      if (!contractNo) {
+        message.warning("请填写合同号");
+        return;
+      }
+      if (!row.materialId) {
+        message.warning("请选择物料名称");
+        return;
+      }
+      if (!Number.isFinite(row.quantity) || row.quantity <= 0) {
+        message.warning("数量须大于 0");
+        return;
+      }
+      if (!Number.isFinite(row.unitPrice) || row.unitPrice < 0) {
+        message.warning("单价须为非负数");
+        return;
+      }
+      if (!row.deliveryDueAt) {
+        message.warning("请选择交货日期");
+        return;
+      }
+      const material = pcbMaterialOptions.find((m) => m.id === row.materialId);
+      if (!material) {
+        message.warning("物料不存在或不是 PCB 加工合同物料");
+        return;
+      }
+
+      setPcbSavingRowKey(row.key);
+      try {
+        await fetchJson("/api/purchase-orders", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            supplierId: material.supplier.id,
+            remark: `合同号:${contractNo}`,
+            deliveryDueAt: row.deliveryDueAt,
+            lines: [
+              {
+                materialId: material.id,
+                quantity: Math.trunc(row.quantity),
+                unitPrice: row.unitPrice,
+              },
+            ],
+          }),
+        });
+        message.success("PCB 加工合同已保存");
+        await loadPcbPending();
+        setPcbDraftRows((prev) =>
+          prev.map((item) =>
+            item.key === row.key ? newPcbContractDraftRow() : item,
+          ),
+        );
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "保存失败");
+      } finally {
+        setPcbSavingRowKey(null);
+      }
+    },
+    [message, pcbMaterialOptions, loadPcbPending],
   );
 
   useEffect(() => {
@@ -868,6 +1041,10 @@ export function PurchasePage() {
   }, [tab, loadPendingPurchase]);
 
   useEffect(() => {
+    if (tab === "pcb") void loadPcbPending();
+  }, [tab, loadPcbPending]);
+
+  useEffect(() => {
     if (tab !== "query") return;
     const range: [dayjs.Dayjs, dayjs.Dayjs] = [
       dayjs().subtract(7, "day").startOf("day"),
@@ -877,7 +1054,10 @@ export function PurchasePage() {
     void loadQueryOrders({ dateRange: range });
   }, [tab, loadQueryOrders, queryForm]);
 
-  const openCreate = () => {
+  const openCreate = (
+    mode: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT" = "STANDARD_PURCHASE",
+  ) => {
+    setCreateChannel(mode);
     setEditingPoId(null);
     createForm.resetFields();
     setPoLines([]);
@@ -895,6 +1075,7 @@ export function PurchasePage() {
         const d = await fetchJson<DetailPayload>(`/api/purchase-orders/${r.id}`, {
           credentials: "include",
         });
+        setCreateChannel(d.purchaseChannel ?? "STANDARD_PURCHASE");
         createForm.setFieldsValue({
           supplierId: d.supplier.id,
           remark: d.remark ?? "",
@@ -920,11 +1101,12 @@ export function PurchasePage() {
   const reloadListsAfterMutation = useCallback(async () => {
     await loadTodayOrders();
     await loadPendingPurchase();
+    await loadPcbPending();
     if (tab === "query") {
       const vals = queryForm.getFieldsValue() as Record<string, unknown>;
       void loadQueryOrders(vals);
     }
-  }, [loadTodayOrders, loadPendingPurchase, loadQueryOrders, queryForm, tab]);
+  }, [loadTodayOrders, loadPendingPurchase, loadPcbPending, loadQueryOrders, queryForm, tab]);
 
   const submitCreate = async () => {
     let v: Awaited<ReturnType<typeof createForm.validateFields>>;
@@ -940,6 +1122,20 @@ export function PurchasePage() {
     }
     if (filled.some((l) => !l.quantity || l.quantity <= 0)) {
       message.error("每行数量须大于 0");
+      return;
+    }
+    const materialById = new Map((presets?.materials ?? []).map((m) => [m.id, m] as const));
+    const hasCrossChannel = filled.some((l) => {
+      const material = l.materialId ? materialById.get(l.materialId) : undefined;
+      if (!material) return false;
+      return material.purchaseChannel !== createChannel;
+    });
+    if (hasCrossChannel) {
+      message.error(
+        createChannel === "PROCESSING_CONTRACT"
+          ? "PCB采购合同中不能选择常规采购物料"
+          : "常规采购单中不能选择PCB加工合同物料",
+      );
       return;
     }
     setSubmitting(true);
@@ -1444,9 +1640,129 @@ export function PurchasePage() {
     );
   }, [detailLineAllColumns, detailLineColKeys, detailLineColWidths]);
 
+  const pcbDraftColumns = useMemo<ColumnsType<PcbContractDraftRow>>(
+    () => [
+      {
+        key: "contractNo",
+        title: "合同号",
+        width: 220,
+        render: (_: unknown, row) => (
+          <Input
+            placeholder="请输入合同号"
+            value={row.contractNo}
+            onChange={(e) =>
+              updatePcbDraftRow(row.key, { contractNo: e.target.value })
+            }
+          />
+        ),
+      },
+      {
+        key: "materialId",
+        title: "物料名称",
+        width: 340,
+        render: (_: unknown, row) => (
+          <Select
+            showSearch
+            style={{ width: "100%" }}
+            placeholder="选择 PCB 物料"
+            optionFilterProp="label"
+            value={row.materialId}
+            options={pcbMaterialOptions.map((m) => ({
+              value: m.id,
+              label: `${m.code} ${m.name}`,
+            }))}
+            onChange={(value) => {
+              const picked = pcbMaterialOptions.find((m) => m.id === value);
+              updatePcbDraftRow(row.key, {
+                materialId: value,
+                unitPrice: picked ? Number(picked.unitPrice) : row.unitPrice,
+              });
+            }}
+          />
+        ),
+      },
+      {
+        key: "quantity",
+        title: "数量",
+        width: 120,
+        render: (_: unknown, row) => (
+          <InputNumber
+            min={1}
+            precision={0}
+            style={{ width: "100%" }}
+            value={row.quantity}
+            onChange={(value) =>
+              updatePcbDraftRow(row.key, { quantity: Number(value ?? 1) })
+            }
+          />
+        ),
+      },
+      {
+        key: "unitPrice",
+        title: "单价",
+        width: 140,
+        render: (_: unknown, row) => (
+          <InputNumber
+            min={0}
+            precision={4}
+            step={0.0001}
+            style={{ width: "100%" }}
+            value={row.unitPrice}
+            onChange={(value) =>
+              updatePcbDraftRow(row.key, { unitPrice: Number(value ?? 0) })
+            }
+          />
+        ),
+      },
+      {
+        key: "deliveryDueAt",
+        title: "交货日期",
+        width: 170,
+        render: (_: unknown, row) => (
+          <DatePicker
+            style={{ width: "100%" }}
+            value={row.deliveryDueAt ? dayjs(row.deliveryDueAt) : null}
+            onChange={(value) =>
+              updatePcbDraftRow(row.key, {
+                deliveryDueAt: value ? value.endOf("day").toISOString() : null,
+              })
+            }
+          />
+        ),
+      },
+      {
+        key: "op",
+        title: "操作",
+        width: 150,
+        render: (_: unknown, row) => (
+          <Space size={4}>
+            <Button
+              type="primary"
+              size="small"
+              loading={pcbSavingRowKey === row.key}
+              onClick={() => void savePcbDraftRow(row)}
+            >
+              保存
+            </Button>
+            <Button size="small" danger onClick={() => removePcbDraftRow(row.key)}>
+              删除
+            </Button>
+          </Space>
+        ),
+      },
+    ],
+    [
+      pcbMaterialOptions,
+      pcbSavingRowKey,
+      removePcbDraftRow,
+      savePcbDraftRow,
+      updatePcbDraftRow,
+    ],
+  );
+
   const visiblePurchaseTabKeys = useMemo(
     () =>
-      (["add", "pending", "query", "settings"] as const).filter((k) =>
+      (["add", "pcb", "pending", "query", "settings"] as const).filter((k) =>
         allowed([PURCHASE_TAB_PERM[k]]),
       ),
     [allowed],
@@ -1479,6 +1795,7 @@ export function PurchasePage() {
           setTab(k);
           if (
             k === "add" ||
+            k === "pcb" ||
             k === "query" ||
             k === "pending" ||
             k === "settings"
@@ -1501,7 +1818,10 @@ export function PurchasePage() {
                   >
                     从销售订单新建
                   </Button>
-                  <Button onClick={openCreate} disabled={loadingPresets}>
+                  <Button
+                    onClick={() => openCreate("STANDARD_PURCHASE")}
+                    disabled={loadingPresets}
+                  >
                     手动录入采购单
                   </Button>
                 </Space>
@@ -1583,6 +1903,75 @@ export function PurchasePage() {
                   loading={loadingPending}
                   columns={pendingListColumns}
                   dataSource={pendingRows}
+                  pagination={{ pageSize: 10 }}
+                  scroll={{ x: "max-content" }}
+                  tableLayout="fixed"
+                  components={{
+                    header: { cell: ResizableTableTitle },
+                  }}
+                />
+              </Space>
+            ),
+          },
+          {
+            key: "pcb",
+            label: "PCB采购",
+            children: (
+              <Space direction="vertical" size="large" style={{ width: "100%" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    width: "100%",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    录入PCB加工合同
+                  </Typography.Title>
+                  <Button type="dashed" onClick={addPcbDraftRow}>
+                    添加一行
+                  </Button>
+                </div>
+                <Table<PcbContractDraftRow>
+                  rowKey="key"
+                  size="small"
+                  pagination={false}
+                  columns={pcbDraftColumns}
+                  dataSource={pcbDraftRows}
+                  scroll={{ x: "max-content" }}
+                />
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    width: "100%",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    待收PCB加工合同
+                  </Typography.Title>
+                  <HelpTip
+                    text={
+                      <>
+                        此处用于录入 PCB
+                        加工合同，并在到料后执行「确定收料」入库；仅展示采购渠道为
+                        <strong>PROCESSING_CONTRACT</strong>
+                        的待收订单。
+                      </>
+                    }
+                  />
+                </div>
+                <Table<PurchaseOrderRow>
+                  rowKey="id"
+                  loading={loadingPcb}
+                  columns={pendingListColumns}
+                  dataSource={pcbRows}
                   pagination={{ pageSize: 10 }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
@@ -1718,7 +2107,13 @@ export function PurchasePage() {
       />
 
       <Modal
-        title={editingPoId ? "修改采购订单" : "手动录入采购订单"}
+        title={
+          editingPoId
+            ? "修改采购订单"
+            : createChannel === "PROCESSING_CONTRACT"
+              ? "录入PCB加工合同"
+              : "手动录入采购订单"
+        }
         open={createOpen}
         onCancel={() => {
           setCreateOpen(false);
@@ -1752,7 +2147,9 @@ export function PurchasePage() {
         <PoLinesEditor
           lines={poLines}
           setLines={setPoLines}
-          materials={presets?.materials ?? []}
+          materials={(presets?.materials ?? []).filter(
+            (m) => m.purchaseChannel === createChannel,
+          )}
           priceIncludesTax={createSupplierPriceIncludesTax}
         />
       </Modal>
