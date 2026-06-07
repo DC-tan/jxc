@@ -950,9 +950,9 @@ export function PurchaseFromSalesWizard({
       {
         key: "code",
         title: "物料",
-        width: 90,
+        width: 120,
         ellipsis: true,
-        render: (_, r) => wrap(r.code, r),
+        render: (_, r) => wrap(r.name, r),
       },
       {
         key: "usageQty",

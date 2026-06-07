@@ -116,6 +116,36 @@ function cellForColumn(
   }
 }
 
+function cellForExtraFeeColumn(
+  col: VisualColumn,
+  fee: PurchaseExtraFeeRow,
+  feeIndex: number,
+): ReactNode {
+  const amount = Number(fee.amount);
+  const amountText = Number.isFinite(amount) ? amount.toFixed(4) : "0.0000";
+  const purpose = fee.purpose?.trim() || "附加费用";
+  switch (col.id) {
+    case "c1":
+      return `附${feeIndex + 1}`;
+    case "c2":
+      return "附加费用";
+    case "c3":
+      return purpose;
+    case "c4":
+      return "—";
+    case "c5":
+      return "—";
+    case "c6":
+      return "—";
+    case "c7":
+      return amountText;
+    case "c8":
+      return purpose;
+    default:
+      return "—";
+  }
+}
+
 function isVisualBlockId(id: string): id is VisualBlockId {
   return (VISUAL_BLOCK_IDS as readonly string[]).includes(id);
 }
@@ -139,7 +169,12 @@ export function PurchaseVisualContractPreview({
   extraFees?: PurchaseExtraFeeRow[];
 }) {
   const t = visual.texts;
-  const total = lines.reduce((s, l) => s + l.quantity * l.unitPriceNum, 0);
+  const productTotal = lines.reduce((s, l) => s + l.quantity * l.unitPriceNum, 0);
+  const extraFeeTotal = extraFees.reduce((s, f) => {
+    const n = Number(f.amount);
+    return s + (Number.isFinite(n) ? n : 0);
+  }, 0);
+  const total = productTotal + extraFeeTotal;
   const deliveryDisplay = deliveryDueAtIso
     ? dayjs(deliveryDueAtIso).format("YYYY年MM月DD日")
     : "";
@@ -303,6 +338,15 @@ export function PurchaseVisualContractPreview({
                     ))}
                   </tr>
                 ))}
+                {extraFees.map((fee, i) => (
+                  <tr key={fee.id ?? `extra-fee-${i}`}>
+                    {cols.map((c) => (
+                      <td key={c.id} style={{ ...cell, textAlign: columnAlign(c.id) }}>
+                        {cellForExtraFeeColumn(c, fee, i)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
                 {totalRow}
                 <tr>
                   <td style={{ ...cell, fontWeight: 600 }} colSpan={n}>
@@ -311,20 +355,6 @@ export function PurchaseVisualContractPreview({
                 </tr>
               </tbody>
             </table>
-            {extraFees.length > 0 ? (
-              <div style={{ marginTop: 10, fontSize: 13 }}>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>附加费用</div>
-                {extraFees.map((f, i) => (
-                  <div key={f.id ?? i} style={{ lineHeight: 1.6 }}>
-                    {Number(f.amount).toLocaleString("zh-CN", {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 4,
-                    })}
-                    （{f.purpose}）
-                  </div>
-                ))}
-              </div>
-            ) : null}
           </div>
         );
       }

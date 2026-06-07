@@ -4,6 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
 import { PURCHASE_EXTRA_FEES_LOCKED_MSG } from "@/lib/purchase-extra-fees";
+import {
+  buildPurchaseSparePartDescription,
+  PURCHASE_SPARE_PART_DESC_PREFIX,
+} from "@/lib/purchase-receipt";
 
 const lineSchema = z.object({
   materialId: z.string().min(1),
@@ -25,12 +29,17 @@ const patchExtraFeesOnlySchema = z.object({
 const confirmReceiptLineSchema = z.object({
   lineId: z.string().min(1),
   receivedQty: z.number().int().min(0),
+  spareQty: z.number().int().min(0).optional(),
 });
 
 const patchConfirmSchema = z.object({
   confirmReceipt: z.literal(true),
   /** 若省略则按原逻辑整单一次收满；若提供则须覆盖全部明细行，可分批收料 */
   lines: z.array(confirmReceiptLineSchema).optional(),
+});
+
+const patchCloseSchema = z.object({
+  closeOrder: z.literal(true),
 });
 
 function toDecimal(v: unknown, fallback = "0"): string {
@@ -47,7 +56,7 @@ function toPositiveInt(v: unknown, fallback = 1): number {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
   const auth = await requirePermission("purchase.view");
@@ -56,6 +65,9 @@ export async function GET(
   }
 
   const { id } = await ctx.params;
+  const { searchParams } = new URL(req.url);
+  const includePreviewHistoricalLines = searchParams.get("forPreview") === "1";
+  const includeReceiptHistoricalLines = searchParams.get("forReceipt") === "1";
 
   try {
     const row = await prisma.purchaseOrder.findUnique({
@@ -95,6 +107,7 @@ export async function GET(
                 unit: true,
                 unitPrice: true,
                 partDescription: true,
+                inspectionNotes: true,
                 purchaseChannel: true,
               },
             },
@@ -109,7 +122,17 @@ export async function GET(
     }
 
     const receiptBatches = await prisma.materialInbound.findMany({
-      where: { purchaseOrderNo: row.orderNo },
+      where: {
+        purchaseOrderNo: row.orderNo,
+        OR: [
+          { partDescription: null },
+          {
+            NOT: {
+              partDescription: { startsWith: PURCHASE_SPARE_PART_DESC_PREFIX },
+            },
+          },
+        ],
+      },
       select: {
         materialId: true,
         quantity: true,
@@ -130,6 +153,7 @@ export async function GET(
         unit: string;
         unitPrice: string;
         partDescription: string | null;
+        inspectionNotes: string | null;
         purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
       };
     };
@@ -145,8 +169,11 @@ export async function GET(
       },
     }));
 
-    /** 分批收满后明细行已从库中删除，合同/预览需按入库流水还原数量与物料 */
-    if (linesPayload.length === 0) {
+    if (includePreviewHistoricalLines || includeReceiptHistoricalLines) {
+      /**
+       * 分批收满后对应明细行会被删除。为保证“订单预览”始终反映下单全量内容，
+       * 或“确认收料”弹窗可看到全量行，这里补齐“已入库但当前明细中不存在”的物料行（syn-*）。
+       */
       const receivedByMaterial = new Map<string, number>();
       for (const b of receiptBatches) {
         if (b.quantity <= 0) continue;
@@ -156,25 +183,30 @@ export async function GET(
         );
       }
       if (receivedByMaterial.size > 0) {
-        const matIds = [...receivedByMaterial.keys()];
-        const mats = await prisma.material.findMany({
-          where: { id: { in: matIds } },
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            unit: true,
-            unitPrice: true,
-            partDescription: true,
-            purchaseChannel: true,
-          },
-        });
-        mats.sort((a, b) => a.code.localeCompare(b.code, "zh-Hans-CN"));
-        linesPayload = mats.map((m) => {
-          const q = receivedByMaterial.get(m.id) ?? 0;
-          return {
+        const existingMaterialIds = new Set(linesPayload.map((l) => l.material.id));
+        const missingMaterialIds = [...receivedByMaterial.keys()].filter(
+          (mid) => !existingMaterialIds.has(mid),
+        );
+        if (missingMaterialIds.length > 0) {
+          const mats = await prisma.material.findMany({
+            where: { id: { in: missingMaterialIds } },
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              unit: true,
+              unitPrice: true,
+              partDescription: true,
+              inspectionNotes: true,
+              purchaseChannel: true,
+            },
+          });
+          mats.sort((a, b) => a.code.localeCompare(b.code, "zh-Hans-CN"));
+          const synLines: LineOut[] = mats.map((m) => ({
             id: `syn-${m.id}`,
-            quantity: String(q),
+            quantity: includePreviewHistoricalLines
+              ? String(receivedByMaterial.get(m.id) ?? 0)
+              : "0",
             unitPrice: m.unitPrice.toString(),
             remark: null,
             material: {
@@ -184,10 +216,12 @@ export async function GET(
               unit: m.unit,
               unitPrice: m.unitPrice.toString(),
               partDescription: m.partDescription,
+              inspectionNotes: m.inspectionNotes,
               purchaseChannel: m.purchaseChannel,
             },
-          };
-        });
+          }));
+          linesPayload = [...linesPayload, ...synLines];
+        }
       }
     }
 
@@ -253,12 +287,6 @@ export async function PATCH(
   const confirmTry = patchConfirmSchema.safeParse(json);
   if (confirmTry.success) {
     const authReceive = await requirePermission("purchase.receive");
-    if (!authReceive.ok) {
-      return NextResponse.json(
-        { error: authReceive.message },
-        { status: authReceive.status },
-      );
-    }
     try {
       const po = await prisma.purchaseOrder.findUnique({
         where: { id },
@@ -272,6 +300,17 @@ export async function PATCH(
           { error: "仅待收料状态的采购单可确认收料" },
           { status: 400 },
         );
+      }
+      if (!authReceive.ok) {
+        const authPcbTab = await requirePermission("tab.pur.pcb");
+        const canByPcbTab =
+          authPcbTab.ok && po.purchaseChannel === "PROCESSING_CONTRACT";
+        if (!canByPcbTab) {
+          return NextResponse.json(
+            { error: authReceive.message },
+            { status: authReceive.status },
+          );
+        }
       }
       if (po.lines.length === 0) {
         return NextResponse.json(
@@ -344,6 +383,20 @@ export async function PATCH(
           );
         }
         if (row.receivedQty > 0) anyPositive = true;
+        if (row.spareQty !== undefined) {
+          if (row.spareQty < 0) {
+            return NextResponse.json(
+              { error: "备品数不能为负数" },
+              { status: 400 },
+            );
+          }
+          if (row.spareQty > 0 && row.receivedQty < line.quantity) {
+            return NextResponse.json(
+              { error: "仅当本次收料等于待收数量时可填写备品数" },
+              { status: 400 },
+            );
+          }
+        }
       }
       if (!anyPositive) {
         return NextResponse.json(
@@ -374,6 +427,19 @@ export async function PATCH(
                 operatorUserId,
               },
             });
+            const spareQty = Math.max(0, Math.trunc(row.spareQty ?? 0));
+            if (spareQty > 0) {
+              await tx.materialInbound.create({
+                data: {
+                  materialId: line.materialId,
+                  quantity: spareQty,
+                  receivedAt,
+                  purchaseOrderNo: po.orderNo,
+                  partDescription: buildPurchaseSparePartDescription(po.orderNo),
+                  operatorUserId,
+                },
+              });
+            }
           }
           if (row.receivedQty === line.quantity) {
             await tx.purchaseOrderLine.delete({ where: { id: line.id } });
@@ -417,6 +483,70 @@ export async function PATCH(
     }
   }
 
+  const closeTry = patchCloseSchema.safeParse(json);
+  if (closeTry.success) {
+    const authEdit = await requirePermission("purchase.edit");
+    try {
+      const po = await prisma.purchaseOrder.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          orderNo: true,
+          actualDeliveredAt: true,
+          purchaseChannel: true,
+        },
+      });
+      if (!po) {
+        return NextResponse.json({ error: "采购订单不存在" }, { status: 404 });
+      }
+      if (po.status !== "PENDING_RECEIPT") {
+        return NextResponse.json(
+          { error: "仅待收料状态的采购单可结单" },
+          { status: 400 },
+        );
+      }
+      if (!authEdit.ok) {
+        const authPcbTab = await requirePermission("tab.pur.pcb");
+        const canByPcbTab =
+          authPcbTab.ok && po.purchaseChannel === "PROCESSING_CONTRACT";
+        if (!canByPcbTab) {
+          return NextResponse.json(
+            { error: authEdit.message },
+            { status: authEdit.status },
+          );
+        }
+      }
+      const receiptCount = await prisma.materialInbound.count({
+        where: { purchaseOrderNo: po.orderNo, quantity: { gt: 0 } },
+      });
+      if (receiptCount <= 0) {
+        return NextResponse.json({ error: "无收料记录不可结单" }, { status: 400 });
+      }
+      const latestReceipt = await prisma.materialInbound.aggregate({
+        where: { purchaseOrderNo: po.orderNo, quantity: { gt: 0 } },
+        _max: { receivedAt: true },
+      });
+      await prisma.purchaseOrder.update({
+        where: { id },
+        data: {
+          status: "CLOSED",
+          actualDeliveredAt:
+            po.actualDeliveredAt ??
+            latestReceipt._max.receivedAt ??
+            new Date(),
+        },
+      });
+      return NextResponse.json({ ok: true, closed: true });
+    } catch (e) {
+      console.error("[PATCH close /api/purchase-orders/[id]]", e);
+      return NextResponse.json(
+        { error: e instanceof Error ? e.message : "结单失败" },
+        { status: 500 },
+      );
+    }
+  }
+
   const extraOnlyTry = patchExtraFeesOnlySchema.safeParse(json);
   if (
     extraOnlyTry.success &&
@@ -429,9 +559,6 @@ export async function PATCH(
   }
 
   const authEdit = await requirePermission("purchase.edit");
-  if (!authEdit.ok) {
-    return NextResponse.json({ error: authEdit.message }, { status: authEdit.status });
-  }
 
   const parsed = patchUpdateSchema.safeParse(json);
   if (!parsed.success) {
@@ -499,14 +626,40 @@ export async function PATCH(
   try {
     const existing = await prisma.purchaseOrder.findUnique({
       where: { id },
-      select: { id: true, status: true, createdAt: true },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        orderNo: true,
+        purchaseChannel: true,
+      },
     });
     if (!existing) {
       return NextResponse.json({ error: "采购订单不存在" }, { status: 404 });
     }
+    if (!authEdit.ok) {
+      const authPcbTab = await requirePermission("tab.pur.pcb");
+      const canByPcbTab =
+        authPcbTab.ok && existing.purchaseChannel === "PROCESSING_CONTRACT";
+      if (!canByPcbTab) {
+        return NextResponse.json(
+          { error: authEdit.message },
+          { status: authEdit.status },
+        );
+      }
+    }
     if (existing.status !== "PENDING_RECEIPT" && existing.status !== "CONFIRMED") {
       return NextResponse.json(
         { error: "仅待收料或已收料状态的采购单可修改" },
+        { status: 400 },
+      );
+    }
+    const receiptCount = await prisma.materialInbound.count({
+      where: { purchaseOrderNo: existing.orderNo, quantity: { gt: 0 } },
+    });
+    if (receiptCount > 0) {
+      return NextResponse.json(
+        { error: "该采购单已有收料记录，不可修改" },
         { status: 400 },
       );
     }
@@ -552,9 +705,9 @@ export async function DELETE(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requirePermission("purchase.delete");
-  if (!auth.ok) {
-    return NextResponse.json({ error: auth.message }, { status: auth.status });
+  const authView = await requirePermission("purchase.view");
+  if (!authView.ok) {
+    return NextResponse.json({ error: authView.message }, { status: authView.status });
   }
 
   const { id } = await ctx.params;
@@ -562,14 +715,35 @@ export async function DELETE(
   try {
     const row = await prisma.purchaseOrder.findUnique({
       where: { id },
-      select: { id: true, status: true, orderNo: true },
+      select: { id: true, status: true, orderNo: true, purchaseChannel: true },
     });
     if (!row) {
       return NextResponse.json({ error: "采购订单不存在" }, { status: 404 });
     }
+    const authDelete = await requirePermission("purchase.delete");
+    if (!authDelete.ok) {
+      const authPcbTab = await requirePermission("tab.pur.pcb");
+      const canByPcbTab =
+        authPcbTab.ok && row.purchaseChannel === "PROCESSING_CONTRACT";
+      if (!canByPcbTab) {
+        return NextResponse.json(
+          { error: authDelete.message },
+          { status: authDelete.status },
+        );
+      }
+    }
     if (row.status !== "PENDING_RECEIPT" && row.status !== "CONFIRMED") {
       return NextResponse.json(
         { error: "仅待收料或已收料状态的采购单可删除" },
+        { status: 400 },
+      );
+    }
+    const receiptCount = await prisma.materialInbound.count({
+      where: { purchaseOrderNo: row.orderNo, quantity: { gt: 0 } },
+    });
+    if (receiptCount > 0) {
+      return NextResponse.json(
+        { error: "该采购单已有收料记录，不可删除" },
         { status: 400 },
       );
     }

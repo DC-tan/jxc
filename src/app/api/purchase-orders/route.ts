@@ -106,9 +106,10 @@ export async function GET(req: Request) {
     const orderIds = list.map((p) => p.id);
     const orderNos = list.map((p) => p.orderNo);
     const lineCountByOrderId = new Map<string, number>();
+    const hasReceiptByOrderNo = new Set<string>();
 
     if (orderIds.length > 0) {
-      const [lineRows, inboundRows] = await Promise.all([
+      const [lineRows, inboundRows, receiptRows] = await Promise.all([
         prisma.purchaseOrderLine.findMany({
           where: { purchaseOrderId: { in: orderIds } },
           select: { purchaseOrderId: true, materialId: true },
@@ -116,6 +117,11 @@ export async function GET(req: Request) {
         prisma.materialInbound.findMany({
           where: { purchaseOrderNo: { in: orderNos } },
           select: { purchaseOrderNo: true, materialId: true },
+        }),
+        prisma.materialInbound.groupBy({
+          by: ["purchaseOrderNo"],
+          where: { purchaseOrderNo: { in: orderNos }, quantity: { gt: 0 } },
+          _count: { _all: true },
         }),
       ]);
 
@@ -129,6 +135,9 @@ export async function GET(req: Request) {
       }
 
       const orderIdByOrderNo = new Map(list.map((p) => [p.orderNo, p.id]));
+      for (const r of receiptRows) {
+        if (r.purchaseOrderNo) hasReceiptByOrderNo.add(r.purchaseOrderNo);
+      }
       for (const row of inboundRows) {
         // 修复：跳过 purchaseOrderNo 为 null 的行
         if (!row.purchaseOrderNo) continue;
@@ -152,6 +161,10 @@ export async function GET(req: Request) {
         id: p.id,
         orderNo: p.orderNo,
         status: p.status,
+        canEdit: !hasReceiptByOrderNo.has(p.orderNo),
+        canDelete: !hasReceiptByOrderNo.has(p.orderNo),
+        canClose:
+          p.status === "PENDING_RECEIPT" && hasReceiptByOrderNo.has(p.orderNo),
         remark: p.remark,
         supplier: p.supplier,
         salesOrder: p.salesOrder,

@@ -8,6 +8,7 @@ import type {
 } from "@/lib/delivery-note-print-template";
 
 const dyn: CSSProperties = { color: "#d40000" };
+const LIVE_FONT_DELTA_PX = 2;
 
 function SlipInlineEditable({
   value,
@@ -144,7 +145,7 @@ const cell: CSSProperties = {
 const cellLive: CSSProperties = {
   ...cell,
   padding: "2px 4px",
-  fontSize: 11,
+  fontSize: 11 + LIVE_FONT_DELTA_PX,
   lineHeight: 1.2,
 };
 
@@ -168,7 +169,7 @@ function liveCellByLineCount(lineCount: number): CSSProperties {
     return {
       ...cellLive,
       padding: "8px 6px",
-      fontSize: 12,
+      fontSize: 12 + LIVE_FONT_DELTA_PX,
       lineHeight: 1.45,
     };
   }
@@ -176,7 +177,7 @@ function liveCellByLineCount(lineCount: number): CSSProperties {
     return {
       ...cellLive,
       padding: "6px 5px",
-      fontSize: 11.5,
+      fontSize: 11.5 + LIVE_FONT_DELTA_PX,
       lineHeight: 1.35,
     };
   }
@@ -184,7 +185,7 @@ function liveCellByLineCount(lineCount: number): CSSProperties {
     return {
       ...cellLive,
       padding: "4px 4px",
-      fontSize: 11,
+      fontSize: 11 + LIVE_FONT_DELTA_PX,
       lineHeight: 1.28,
     };
   }
@@ -216,7 +217,7 @@ export function DeliveryNoteTemplatePreview({
   const slipHeader = (
     <>
       <div style={{ textAlign: "center", marginBottom: liveSlip ? 2 : 6 }}>
-        <div style={{ fontSize: liveSlip ? 15 : 18, fontWeight: 600 }}>
+        <div style={{ fontSize: liveSlip ? 15 + LIVE_FONT_DELTA_PX : 18, fontWeight: 600 }}>
           <SlipInlineEditable
             templateEditMode={edit}
             value={cfg.companyNameCn}
@@ -224,7 +225,7 @@ export function DeliveryNoteTemplatePreview({
             style={{ fontSize: "inherit", fontWeight: 600 }}
           />
         </div>
-        <div style={{ fontSize: liveSlip ? 10 : 13, marginTop: liveSlip ? 1 : 4 }}>
+        <div style={{ fontSize: liveSlip ? 10 + LIVE_FONT_DELTA_PX : 13, marginTop: liveSlip ? 1 : 4 }}>
           <SlipInlineEditable
             templateEditMode={edit}
             value={cfg.companyNameEn}
@@ -237,7 +238,7 @@ export function DeliveryNoteTemplatePreview({
       <div
         style={{
           textAlign: "center",
-          fontSize: liveSlip ? 17 : 20,
+          fontSize: liveSlip ? 17 + LIVE_FONT_DELTA_PX : 20,
           fontWeight: 700,
           letterSpacing: liveSlip ? 3 : 8,
           margin: liveSlip ? "4px 0 6px" : "10px 0 14px",
@@ -449,7 +450,7 @@ export function DeliveryNoteTemplatePreview({
             margin: 0,
             paddingLeft: liveSlip ? 14 : 20,
             lineHeight: liveSlip ? 1.25 : 1.5,
-            fontSize: liveSlip ? 10.5 : 13,
+            fontSize: liveSlip ? 10.5 + LIVE_FONT_DELTA_PX : 13,
           }}
         >
           {cfg.specialNoticeItems.map((t, idx) => (
@@ -513,7 +514,7 @@ export function DeliveryNoteTemplatePreview({
           marginTop: liveSlip ? 0 : 14,
           paddingTop: liveSlip ? 3 : 8,
           borderTop: "1px solid #eee",
-          fontSize: liveSlip ? 12 : 14,
+          fontSize: liveSlip ? 12 + LIVE_FONT_DELTA_PX : 14,
           flexShrink: 0,
         }}
       >
@@ -562,7 +563,7 @@ export function DeliveryNoteTemplatePreview({
         <div
           style={{
             marginTop: liveSlip ? 4 : 12,
-            fontSize: liveSlip ? 10 : 13,
+            fontSize: liveSlip ? 10 + LIVE_FONT_DELTA_PX : 13,
             color: "#666",
             flexShrink: 0,
           }}
@@ -591,11 +592,11 @@ export function DeliveryNoteTemplatePreview({
       style={{
         ...(liveSlip ? {} : { maxWidth: w }),
         margin: "0 auto",
-        padding: liveSlip ? "4px 6px 5px" : "16px 18px 20px",
+        padding: liveSlip ? "4px 2px 5px" : "16px 18px 20px",
         background: "#fff",
         border: "1px solid #ddd",
         fontFamily: '"Microsoft YaHei", "SimHei", sans-serif',
-        fontSize: liveSlip ? 12 : 14,
+        fontSize: liveSlip ? 12 + LIVE_FONT_DELTA_PX : 14,
         lineHeight: liveSlip ? 1.25 : undefined,
         color: "#111",
         boxSizing: "border-box",

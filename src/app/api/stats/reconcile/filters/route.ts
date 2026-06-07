@@ -15,11 +15,11 @@ export async function GET() {
     const [suppliers, customers, materials] = await Promise.all([
       prisma.supplier.findMany({
         orderBy: { name: "asc" },
-        select: { id: true, code: true, name: true, priceIncludesTax: true },
+        select: { id: true, code: true, name: true, shortName: true, priceIncludesTax: true },
       }),
       prisma.customer.findMany({
         orderBy: { name: "asc" },
-        select: { id: true, code: true, name: true, priceIncludesTax: true },
+        select: { id: true, code: true, name: true, shortName: true, priceIncludesTax: true },
       }),
       prisma.material.findMany({
         where: { isDeprecated: false },

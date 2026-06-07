@@ -2,6 +2,7 @@
 
 import {
   DeleteOutlined,
+  EyeOutlined,
   FileExcelOutlined,
   InboxOutlined,
   PlusOutlined,
@@ -285,7 +286,7 @@ function HelpTip({ text }: { text: string }) {
   );
 }
 
-type CustomerOpt = { id: string; code: string; name: string };
+type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
 type UnitOpt = { id: string; name: string; isDefault: boolean; sortOrder: number };
 
 type ProductPresetBundle = {
@@ -523,7 +524,7 @@ function ProductBomTable({
   const [bomPickerLoading, setBomPickerLoading] = useState(false);
   const [bomPickerSelectedKeys, setBomPickerSelectedKeys] = useState<Key[]>([]);
   const [bomPickerSuppliers, setBomPickerSuppliers] = useState<
-    { id: string; code: string; name: string }[]
+    { id: string; code: string; name: string; shortName?: string | null }[]
   >([]);
   const [bomPickerSuppliersLoading, setBomPickerSuppliersLoading] = useState(false);
   const [bomEditorColWidths, setBomEditorColWidths] = useState<Record<string, number>>({});
@@ -531,7 +532,9 @@ function ProductBomTable({
   const loadBomPickerSuppliers = useCallback(async () => {
     setBomPickerSuppliersLoading(true);
     try {
-      const data = await fetchJson<{ list: { id: string; code: string; name: string }[] }>(
+      const data = await fetchJson<{
+        list: { id: string; code: string; name: string; shortName?: string | null }[];
+      }>(
         "/api/suppliers",
         { credentials: "include" },
       );
@@ -979,11 +982,12 @@ function ProductBomTable({
               placeholder="全部"
               showSearch
               loading={bomPickerSuppliersLoading}
-              optionFilterProp="label"
+              optionFilterProp="searchText"
               style={{ width: 200 }}
               options={bomPickerSuppliers.map((s) => ({
                 value: s.id,
                 label: `${s.name}${s.code ? `（${s.code}）` : ""}`,
+                searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
               }))}
             />
           </Form.Item>
@@ -1555,6 +1559,20 @@ export function ProductsPage() {
     });
     return data.url;
   };
+
+  const previewImageInNewTab = useCallback(
+    (url?: string) => {
+      if (!url) {
+        message.warning("请先上传图片");
+        return;
+      }
+      const normalized = /^https?:\/\//i.test(url)
+        ? url
+        : `${window.location.origin}${url.startsWith("/") ? "" : "/"}${url}`;
+      window.open(normalized, "_blank", "noopener,noreferrer");
+    },
+    [message],
+  );
 
   const addUploadProps: UploadProps = useMemo(
     () => ({
@@ -2520,10 +2538,11 @@ export function ProductsPage() {
               placeholder="全部"
               style={{ width: 180 }}
               showSearch
-              optionFilterProp="label"
+              optionFilterProp="searchText"
               options={(presets?.customers ?? []).map((c) => ({
                 value: c.id,
                 label: `${c.code} ${c.name}`,
+                searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
               }))}
             />
           </Form.Item>
@@ -2872,10 +2891,11 @@ export function ProductsPage() {
                 <Select
                   placeholder="选择客户"
                   showSearch
-                  optionFilterProp="label"
+                  optionFilterProp="searchText"
                   options={(presets?.customers ?? []).map((c) => ({
                     value: c.id,
                     label: `${c.code} ${c.name}`,
+                    searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                   }))}
                 />
               </Form.Item>
@@ -3001,14 +3021,23 @@ export function ProductsPage() {
             />
           )}
           <Form.Item label="商品图片（JPEG / BMP，最多 3 张）">
-            <Upload {...addUploadProps}>
-              {sampleUrls.length >= 3 ? null : (
-                <div>
-                  <UploadOutlined />
-                  <div style={{ marginTop: 8 }}>上传</div>
-                </div>
-              )}
-            </Upload>
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <Upload {...addUploadProps}>
+                {sampleUrls.length >= 3 ? null : (
+                  <div>
+                    <UploadOutlined />
+                    <div style={{ marginTop: 8 }}>上传</div>
+                  </div>
+                )}
+              </Upload>
+              <Button
+                icon={<EyeOutlined />}
+                onClick={() => previewImageInNewTab(sampleUrls[sampleUrls.length - 1])}
+                disabled={sampleUrls.length === 0}
+              >
+                预览
+              </Button>
+            </Space>
           </Form.Item>
         </Form>
       </Modal>
@@ -3078,10 +3107,11 @@ export function ProductsPage() {
               >
                 <Select
                   showSearch
-                  optionFilterProp="label"
+                  optionFilterProp="searchText"
                   options={(presets?.customers ?? []).map((c) => ({
                     value: c.id,
                     label: `${c.code} ${c.name}`,
+                    searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                   }))}
                 />
               </Form.Item>
@@ -3202,14 +3232,23 @@ export function ProductsPage() {
             />
           )}
           <Form.Item label="商品图片（最多 3 张）">
-            <Upload {...editUploadProps}>
-              {editSamples.length >= 3 ? null : (
-                <div>
-                  <UploadOutlined />
-                  <div style={{ marginTop: 8 }}>上传</div>
-                </div>
-              )}
-            </Upload>
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <Upload {...editUploadProps}>
+                {editSamples.length >= 3 ? null : (
+                  <div>
+                    <UploadOutlined />
+                    <div style={{ marginTop: 8 }}>上传</div>
+                  </div>
+                )}
+              </Upload>
+              <Button
+                icon={<EyeOutlined />}
+                onClick={() => previewImageInNewTab(editSamples[editSamples.length - 1])}
+                disabled={editSamples.length === 0}
+              >
+                预览
+              </Button>
+            </Space>
           </Form.Item>
         </Form>
       </Modal>

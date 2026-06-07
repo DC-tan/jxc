@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
+import {
+  getMaterialInboundTotalsByIds,
+  MATERIAL_STOCK_EXCLUDED_PART_DESC_PREFIXES,
+} from "@/lib/materialStock";
 
 function parseSampleUrls(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -70,6 +74,18 @@ export async function queryMaterialInventoryList(
   }
 
   const inboundConditions: Prisma.MaterialInboundWhereInput[] = [];
+  const effectiveInboundCondition: Prisma.MaterialInboundWhereInput = {
+    OR: [
+      { partDescription: null },
+      {
+        NOT: {
+          OR: MATERIAL_STOCK_EXCLUDED_PART_DESC_PREFIXES.map((prefix) => ({
+            partDescription: { startsWith: prefix },
+          })),
+        },
+      },
+    ],
+  };
   if (fromDate || toDate) {
     inboundConditions.push({
       receivedAt: {
@@ -102,10 +118,14 @@ export async function queryMaterialInventoryList(
     ...(inboundConditions.length
       ? {
           inbounds: {
-            some:
-              inboundConditions.length === 1
-                ? inboundConditions[0]
-                : { AND: inboundConditions },
+            some: {
+              AND: [
+                effectiveInboundCondition,
+                ...(inboundConditions.length === 1
+                  ? [inboundConditions[0]]
+                  : inboundConditions),
+              ],
+            },
           },
         }
       : {}),
@@ -119,6 +139,7 @@ export async function queryMaterialInventoryList(
       customer: { select: { id: true, code: true, name: true } },
       presetKind: { select: { id: true, name: true, prefix: true } },
       inbounds: {
+        where: effectiveInboundCondition,
         select: {
           quantity: true,
           receivedAt: true,
@@ -130,13 +151,17 @@ export async function queryMaterialInventoryList(
       },
     },
   });
+  const totalQtyByMaterialId = await getMaterialInboundTotalsByIds(
+    prisma,
+    list.map((m) => m.id),
+  );
 
   const minN = stockMin !== null && stockMin !== "" ? Number(stockMin) : undefined;
   const maxN = stockMax !== null && stockMax !== "" ? Number(stockMax) : undefined;
 
   return list
     .map((m) => {
-      const totalQty = m.inbounds.reduce((s, i) => s + Number(i.quantity), 0);
+      const totalQty = totalQtyByMaterialId.get(m.id) ?? 0;
       const lastPositive = m.inbounds.find((i) => Number(i.quantity) > 0);
       const lastReceivedAt = lastPositive?.receivedAt ?? null;
       return {

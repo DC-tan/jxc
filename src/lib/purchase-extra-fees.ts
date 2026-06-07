@@ -14,12 +14,20 @@ export type PurchaseExtraFeeRow = PurchaseExtraFeeInput & {
 };
 
 /** 表格 rowKey / 删除定位用；草稿行无服务端 id 时生成客户端 id */
+function buildClientRowId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") {
+    return `client-${c.randomUUID()}`;
+  }
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function ensureExtraFeeRowId(
   row: PurchaseExtraFeeRow,
 ): PurchaseExtraFeeRow & { id: string } {
   const id = row.id?.trim();
   if (id) return { ...row, id };
-  return { ...row, id: `client-${crypto.randomUUID()}` };
+  return { ...row, id: buildClientRowId() };
 }
 
 export function ensureExtraFeeRowIds(

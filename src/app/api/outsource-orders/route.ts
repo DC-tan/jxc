@@ -4,9 +4,18 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { allocateOutsourceOrderNo } from "@/lib/outsource-order-number";
-import { computeOutsourceLinesFromBom } from "@/lib/outsource-lines";
+import {
+  computeOutsourceLinesFromBom,
+  allocateOutsourceMaterialSend,
+  defaultOutsourceWarehouseSend,
+} from "@/lib/outsource-lines";
 import { getMaterialInboundTotalsByIds } from "@/lib/materialStock";
 import { productBomForOutsource } from "@/lib/product-bom-scope";
+import {
+  closedPoolQtyMap,
+  consumeClosedPool,
+  loadClosedOutsourcePoolLines,
+} from "@/lib/outsource-material-stock-pool";
 
 const lineInSchema = z.object({
   materialId: z.string().min(1),
@@ -16,7 +25,7 @@ const lineInSchema = z.object({
 const postSchema = z.object({
   productId: z.string().min(1),
   productQty: z.union([z.number(), z.string()]),
-  supplierId: z.string().optional().nullable(),
+  supplierId: z.string().min(1, "请选择加工方"),
   remark: z.string().optional().nullable(),
   lines: z.array(lineInSchema).optional(),
 });
@@ -27,9 +36,10 @@ function toPositiveInt(v: unknown, fallback = 1): number {
   return n;
 }
 
-function toPositiveLineQty(v: unknown): number {
+/** 外发数量 = 本次从仓库实发数 */
+function toWarehouseSendQty(v: unknown): number {
   const n = Math.trunc(Number(v));
-  if (!Number.isFinite(n) || n < 1) return 1;
+  if (!Number.isFinite(n) || n < 0) return 0;
   return n;
 }
 
@@ -44,6 +54,7 @@ export async function GET(req: Request) {
   const keyword = searchParams.get("keyword")?.trim() ?? "";
   const from = searchParams.get("from")?.trim();
   const to = searchParams.get("to")?.trim();
+  const supplierId = searchParams.get("supplierId")?.trim();
 
   const where: Prisma.OutsourceOrderWhereInput = {};
   if (status === "OPEN" || status === "CLOSED" || status === "CANCELLED") {
@@ -78,6 +89,9 @@ export async function GET(req: Request) {
       where.createdAt = createdAt;
     }
   }
+  if (supplierId) {
+    where.supplierId = supplierId;
+  }
 
   try {
     const rows = await prisma.outsourceOrder.findMany({
@@ -108,10 +122,11 @@ export async function GET(req: Request) {
       },
     });
 
+    const orderIds = rows.map((r) => r.id);
     const orderNos = rows
       .map((r) => r.orderNo?.trim())
       .filter((x): x is string => Boolean(x));
-    const [materialReceived, productInbounded, recoveryInbounded] = await Promise.all([
+    const [materialReceived, productInbounded, recoveryByOrderNo, recoveryByOrderId] = await Promise.all([
       prisma.materialInbound.groupBy({
         by: ["purchaseOrderNo"],
         where: {
@@ -136,16 +151,31 @@ export async function GET(req: Request) {
         },
         _count: { _all: true },
       }),
+      prisma.outsourceRecoveryInbound.groupBy({
+        by: ["outsourceOrderId"],
+        where: {
+          outsourceOrderId: { in: orderIds },
+          quantity: { gt: 0 },
+        },
+        _count: { _all: true },
+      }),
     ]);
     const hasPositiveInboundByOrderNo = new Set<string>();
+    const hasRecoveryByOrderNo = new Set<string>();
+    const hasRecoveryByOrderId = new Set<string>();
     for (const g of materialReceived) {
       if (g.purchaseOrderNo) hasPositiveInboundByOrderNo.add(g.purchaseOrderNo);
     }
     for (const g of productInbounded) {
       if (g.purchaseOrderNo) hasPositiveInboundByOrderNo.add(g.purchaseOrderNo);
+      if (g.purchaseOrderNo) hasRecoveryByOrderNo.add(g.purchaseOrderNo);
     }
-    for (const g of recoveryInbounded) {
+    for (const g of recoveryByOrderNo) {
       if (g.outsourceOrderNo) hasPositiveInboundByOrderNo.add(g.outsourceOrderNo);
+      if (g.outsourceOrderNo) hasRecoveryByOrderNo.add(g.outsourceOrderNo);
+    }
+    for (const g of recoveryByOrderId) {
+      if (g.outsourceOrderId) hasRecoveryByOrderId.add(g.outsourceOrderId);
     }
 
     return NextResponse.json({
@@ -159,7 +189,12 @@ export async function GET(req: Request) {
         createdAt: r.createdAt.toISOString(),
         updatedAt: r.updatedAt.toISOString(),
         canCancel:
-          r.status === "OPEN" && !hasPositiveInboundByOrderNo.has(r.orderNo),
+          r.status === "OPEN" &&
+          !hasPositiveInboundByOrderNo.has(r.orderNo) &&
+          !hasRecoveryByOrderId.has(r.id),
+        canClose:
+          r.status === "OPEN" &&
+          (hasRecoveryByOrderNo.has(r.orderNo) || hasRecoveryByOrderId.has(r.id)),
         supplier: r.supplier,
         product: r.product,
         lines: r.lines.map((l) => ({
@@ -202,16 +237,17 @@ export async function POST(req: Request) {
   const { productId, remark } = parsed.data;
   const productQty = toPositiveInt(parsed.data.productQty, 1);
   const supplierIdRaw = parsed.data.supplierId?.trim();
-  const supplierId = supplierIdRaw && supplierIdRaw.length > 0 ? supplierIdRaw : null;
+  if (!supplierIdRaw) {
+    return NextResponse.json({ error: "请选择加工方" }, { status: 400 });
+  }
+  const supplierId = supplierIdRaw;
 
-  if (supplierId) {
-    const sup = await prisma.supplier.findUnique({
-      where: { id: supplierId },
-      select: { id: true },
-    });
-    if (!sup) {
-      return NextResponse.json({ error: "供应商不存在" }, { status: 400 });
-    }
+  const sup = await prisma.supplier.findUnique({
+    where: { id: supplierId },
+    select: { id: true },
+  });
+  if (!sup) {
+    return NextResponse.json({ error: "供应商不存在" }, { status: 400 });
   }
 
   const product = await prisma.product.findUnique({
@@ -247,6 +283,16 @@ export async function POST(req: Request) {
   }
 
   const bomSet = new Set(outsourceBom.map((m) => m.materialId));
+  const bomNeedLines = computeOutsourceLinesFromBom(
+    outsourceBom.map((m) => ({
+      materialId: m.materialId,
+      usageQty: m.usageQty.toString(),
+    })),
+    productQty,
+  );
+  const bomNeedByMaterial = new Map(
+    bomNeedLines.map((l) => [l.materialId, l.quantity]),
+  );
   let lineInputs: { materialId: string; quantity: number; sortOrder: number }[];
 
   if (parsed.data.lines?.length) {
@@ -266,7 +312,7 @@ export async function POST(req: Request) {
       seen.add(row.materialId);
       lineInputs.push({
         materialId: row.materialId,
-        quantity: toPositiveLineQty(row.quantity),
+        quantity: toWarehouseSendQty(row.quantity),
         sortOrder: lineInputs.length,
       });
     }
@@ -277,46 +323,96 @@ export async function POST(req: Request) {
       );
     }
   } else {
-    lineInputs = computeOutsourceLinesFromBom(
-      outsourceBom.map((m) => ({
-        materialId: m.materialId,
-        usageQty: m.usageQty.toString(),
-      })),
-      productQty,
-    );
-  }
-
-  const stockMap = await getMaterialInboundTotalsByIds(
-    prisma,
-    lineInputs.map((l) => l.materialId),
-  );
-  const shortageLines = lineInputs.filter(
-    (l) => l.quantity > (stockMap.get(l.materialId) ?? 0),
-  );
-  if (shortageLines.length > 0) {
-    const matMeta = await prisma.material.findMany({
-      where: { id: { in: shortageLines.map((l) => l.materialId) } },
-      select: { id: true, code: true, name: true },
-    });
-    const metaById = new Map(matMeta.map((m) => [m.id, m]));
-    const parts = shortageLines.map((l) => {
-      const m = metaById.get(l.materialId);
-      const have = stockMap.get(l.materialId) ?? 0;
-      return `${m?.code ?? l.materialId}（${m?.name ?? "—"}）需 ${l.quantity}，库存 ${have}`;
-    });
-    return NextResponse.json(
-      {
-        error: `物料库存不足，无法生成外发单：${parts.join("；")}`,
-      },
-      { status: 400 },
-    );
+    lineInputs = bomNeedLines;
   }
 
   const receivedAt = new Date();
 
   try {
     const created = await prisma.$transaction(async (tx) => {
+      const materialIds = lineInputs.map((l) => l.materialId);
+      const closedPoolLines = await loadClosedOutsourcePoolLines(
+        tx,
+        supplierId,
+        materialIds,
+      );
+      const closedPoolMap = closedPoolQtyMap(closedPoolLines);
+      if (!parsed.data.lines?.length) {
+        lineInputs = lineInputs.map((l) => {
+          const bomNeed = bomNeedByMaterial.get(l.materialId) ?? 0;
+          return {
+            ...l,
+            quantity: defaultOutsourceWarehouseSend(
+              bomNeed,
+              closedPoolMap.get(l.materialId) ?? 0,
+            ),
+          };
+        });
+      }
+      const consumeFromClosed = new Map<string, number>();
+      const deductFromWarehouse = new Map<string, number>();
+      const materialShortage: { materialId: string; bomNeed: number; poolUse: number; send: number }[] = [];
+      for (const l of lineInputs) {
+        const bomNeed = bomNeedByMaterial.get(l.materialId) ?? 0;
+        const closedAvail = closedPoolMap.get(l.materialId) ?? 0;
+        const { poolUse, warehouseSend, totalAtProcessor } =
+          allocateOutsourceMaterialSend(l.quantity, bomNeed, closedAvail);
+        if (totalAtProcessor < bomNeed) {
+          materialShortage.push({
+            materialId: l.materialId,
+            bomNeed,
+            poolUse,
+            send: warehouseSend,
+          });
+          continue;
+        }
+        if (poolUse > 0) consumeFromClosed.set(l.materialId, poolUse);
+        if (warehouseSend > 0) deductFromWarehouse.set(l.materialId, warehouseSend);
+      }
+      if (materialShortage.length > 0) {
+        const matMeta = await tx.material.findMany({
+          where: { id: { in: materialShortage.map((s) => s.materialId) } },
+          select: { id: true, code: true, name: true },
+        });
+        const metaById = new Map(matMeta.map((m) => [m.id, m]));
+        const parts = materialShortage.map((s) => {
+          const m = metaById.get(s.materialId);
+          return `${m?.code ?? s.materialId}（${m?.name ?? "—"}）本套需 ${s.bomNeed}，外发库存可扣 ${s.poolUse}，实发 ${s.send}，合计不足`;
+        });
+        throw new Error(`外发用料不足，无法生成外发单：${parts.join("；")}`);
+      }
+
+      const stockMap = await getMaterialInboundTotalsByIds(tx, materialIds);
+      const shortageLines = lineInputs.filter((l) => {
+        const need = deductFromWarehouse.get(l.materialId) ?? 0;
+        return need > (stockMap.get(l.materialId) ?? 0);
+      });
+      if (shortageLines.length > 0) {
+        const matMeta = await tx.material.findMany({
+          where: { id: { in: shortageLines.map((l) => l.materialId) } },
+          select: { id: true, code: true, name: true },
+        });
+        const metaById = new Map(matMeta.map((m) => [m.id, m]));
+        const parts = shortageLines.map((l) => {
+          const m = metaById.get(l.materialId);
+          const need = deductFromWarehouse.get(l.materialId) ?? 0;
+          const have = stockMap.get(l.materialId) ?? 0;
+          return `${m?.code ?? l.materialId}（${m?.name ?? "—"}）需扣 ${need}，库存 ${have}`;
+        });
+        throw new Error(`物料库存不足，无法生成外发单：${parts.join("；")}`);
+      }
+
       const orderNo = await allocateOutsourceOrderNo(tx, receivedAt, supplierId);
+      /** 行数量 = 外发库存抵扣 + 仓库实发（在外总量） */
+      const lineQtyAtProcessor = (materialId: string, userWarehouseQty: number) => {
+        const bomNeed = bomNeedByMaterial.get(materialId) ?? 0;
+        const closedAvail = closedPoolMap.get(materialId) ?? 0;
+        return allocateOutsourceMaterialSend(
+          userWarehouseQty,
+          bomNeed,
+          closedAvail,
+        ).totalAtProcessor;
+      };
       const order = await tx.outsourceOrder.create({
         data: {
           orderNo,
@@ -328,7 +424,9 @@ export async function POST(req: Request) {
           lines: {
             create: lineInputs.map((l) => ({
               materialId: l.materialId,
-              quantity: l.quantity,
+              quantity: lineQtyAtProcessor(l.materialId, l.quantity),
+              /** 仓库实发数（外发单预览/打印用） */
+              issuedQuantity: l.quantity,
               sortOrder: l.sortOrder,
             })),
           },
@@ -357,17 +455,22 @@ export async function POST(req: Request) {
         },
       });
 
+      await consumeClosedPool(tx, closedPoolLines, consumeFromClosed);
+
       // 与「物料库存」一致：`MaterialInbound.quantity` 汇总；负数量表示外发出库扣减
-      await tx.materialInbound.createMany({
-        data: lineInputs.map((l) => ({
+      const outboundRows = lineInputs
+        .map((l) => ({
           materialId: l.materialId,
-          quantity: -l.quantity,
+          quantity: -(deductFromWarehouse.get(l.materialId) ?? 0),
           receivedAt,
           purchaseOrderNo: order.orderNo,
           partDescription: `外发出库（${order.product.model}×${productQty}）`,
           operatorUserId: auth.user.id,
-        })),
-      });
+        }))
+        .filter((x) => x.quantity < 0);
+      if (outboundRows.length > 0) {
+        await tx.materialInbound.createMany({ data: outboundRows });
+      }
 
       return order;
     });
@@ -388,9 +491,10 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     console.error("[POST /api/outsource-orders]", e);
+    const msg = e instanceof Error ? e.message : "创建失败";
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "创建失败" },
-      { status: 500 },
+      { error: msg },
+      { status: msg.includes("库存不足") ? 400 : 500 },
     );
   }
 }

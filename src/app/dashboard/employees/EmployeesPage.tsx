@@ -577,7 +577,19 @@ function AdminPasswordSection() {
       }}
     >
       <Typography.Paragraph type="secondary" style={{ marginBottom: 16, fontSize: 13 }}>
-        独立入口「管理员登录」使用登录名 <Typography.Text code>admin</Typography.Text>
+        独立入口「管理员登录」使用登录名{" "}
+        <Typography.Text
+          style={{
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
+            background: "#f5f5f5",
+            border: "1px solid #d9d9d9",
+            borderRadius: 4,
+            padding: "0 6px",
+          }}
+        >
+          admin
+        </Typography.Text>
         与本页设置的密码。修改后请妥善保管；初始密码见部署说明或种子脚本默认值。
       </Typography.Paragraph>
       <Form form={form} layout="vertical" onFinish={() => void submit()} style={{ marginBottom: 0 }}>
@@ -816,17 +828,17 @@ function PermissionManagementTab() {
 
   return (
     <Tabs
-      defaultActiveKey="admin-password"
+      defaultActiveKey="matrix"
       items={[
-        {
-          key: "admin-password",
-          label: "管理员密码",
-          children: <AdminPasswordSection />,
-        },
         {
           key: "matrix",
           label: "权限矩阵",
           children: matrixTabContent,
+        },
+        {
+          key: "admin-password",
+          label: "管理员密码",
+          children: <AdminPasswordSection />,
         },
       ]}
     />

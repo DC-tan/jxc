@@ -14,3 +14,33 @@ export function computeOutsourceLinesFromBom(
     sortOrder: i,
   }));
 }
+
+/** 本套外发可从外发物料库存抵扣的数量 */
+export function outsourcePoolUseForNeed(
+  bomNeed: number,
+  outsourcePool: number,
+): number {
+  const need = Math.max(0, Math.trunc(bomNeed) || 0);
+  const pool = Math.max(0, Math.trunc(outsourcePool) || 0);
+  return Math.min(need, pool);
+}
+
+/** 新建外发单默认实发数 = 本套需求 − 外发库存可抵扣（库存充足时为 0） */
+export function defaultOutsourceWarehouseSend(
+  bomNeed: number,
+  outsourcePool: number,
+): number {
+  const need = Math.max(0, Math.trunc(bomNeed) || 0);
+  const poolUse = outsourcePoolUseForNeed(need, outsourcePool);
+  return Math.max(0, need - poolUse);
+}
+
+export function allocateOutsourceMaterialSend(
+  warehouseSend: number,
+  bomNeed: number,
+  outsourcePool: number,
+): { poolUse: number; warehouseSend: number; totalAtProcessor: number } {
+  const poolUse = outsourcePoolUseForNeed(bomNeed, outsourcePool);
+  const send = Math.max(0, Math.trunc(warehouseSend) || 0);
+  return { poolUse, warehouseSend: send, totalAtProcessor: poolUse + send };
+}

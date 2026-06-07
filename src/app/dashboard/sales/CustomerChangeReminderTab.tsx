@@ -6,7 +6,7 @@ import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 
-type CustomerOpt = { id: string; code: string; name: string };
+type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
 type ProductOpt = {
   id: string;
   customerId: string;
@@ -343,10 +343,11 @@ export function CustomerChangeReminderTab() {
             <Select
               showSearch
               placeholder="选择客户"
-              optionFilterProp="label"
+              optionFilterProp="searchText"
               options={presets.customers.map((c) => ({
                 value: c.id,
                 label: `${c.code} ${c.name}`,
+                searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
               }))}
             />
           </Form.Item>

@@ -138,9 +138,12 @@ export function PurchaseOrderContractPreviewModal({
     void (async () => {
       try {
         const [d, tpl] = await Promise.all([
-          fetchJson<ContractDetailPayload>(`/api/purchase-orders/${purchaseOrderId}`, {
-            credentials: "include",
-          }),
+          fetchJson<ContractDetailPayload>(
+            `/api/purchase-orders/${purchaseOrderId}?forPreview=1`,
+            {
+              credentials: "include",
+            },
+          ),
           fetchJson<{ config: Record<string, unknown> }>("/api/purchase-print-template", {
             credentials: "include",
           }),

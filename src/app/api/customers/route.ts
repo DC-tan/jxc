@@ -14,6 +14,7 @@ const bodySchema = z.object({
   mainProduct: z.string().optional().nullable(),
   quality: z.nativeEnum(CustomerQuality),
   priceIncludesTax: z.boolean().optional().default(false),
+  relatedCustomerIds: z.array(z.string().min(1)).optional().default([]),
 });
 
 export async function GET() {
@@ -22,8 +23,20 @@ export async function GET() {
     return NextResponse.json({ error: auth.message }, { status: auth.status });
   }
 
-  const list = await prisma.customer.findMany({ orderBy: { updatedAt: "desc" } });
-  return NextResponse.json({ list });
+  const list = await prisma.customer.findMany({
+    orderBy: { updatedAt: "desc" },
+    include: {
+      linkedCustomersAsSource: {
+        select: { relatedCustomerId: true },
+      },
+    },
+  });
+  return NextResponse.json({
+    list: list.map((c) => ({
+      ...c,
+      relatedCustomerIds: c.linkedCustomersAsSource.map((r) => r.relatedCustomerId),
+    })),
+  });
 }
 
 export async function POST(req: Request) {
@@ -55,6 +68,18 @@ export async function POST(req: Request) {
   }
 
   const d = parsed.data;
+  const relatedCustomerIds = Array.from(
+    new Set((d.relatedCustomerIds ?? []).map((x) => x.trim()).filter(Boolean)),
+  );
+  if (relatedCustomerIds.length > 0) {
+    const related = await prisma.customer.findMany({
+      where: { id: { in: relatedCustomerIds } },
+      select: { id: true },
+    });
+    if (related.length !== relatedCustomerIds.length) {
+      return NextResponse.json({ error: "存在无效的关联客户" }, { status: 400 });
+    }
+  }
   const row = await prisma.customer.create({
     data: {
       code: d.code.trim(),
@@ -66,6 +91,11 @@ export async function POST(req: Request) {
       mainProduct: d.mainProduct?.trim() || null,
       quality: d.quality,
       priceIncludesTax: d.priceIncludesTax,
+      linkedCustomersAsSource: {
+        create: relatedCustomerIds.map((relatedCustomerId) => ({
+          relatedCustomerId,
+        })),
+      },
     },
   });
   return NextResponse.json({ id: row.id });

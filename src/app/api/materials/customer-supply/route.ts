@@ -13,6 +13,22 @@ const createSchema = z.object({
   remark: z.string().optional().nullable(),
 });
 
+async function loadScopedCustomerIds(customerId?: string): Promise<string[] | null> {
+  if (!customerId) return null;
+  const relations = await prisma.customerRelation.findMany({
+    where: {
+      OR: [{ customerId }, { relatedCustomerId: customerId }],
+    },
+    select: { customerId: true, relatedCustomerId: true },
+  });
+  const ids = new Set<string>([customerId]);
+  for (const r of relations) {
+    ids.add(r.customerId);
+    ids.add(r.relatedCustomerId);
+  }
+  return Array.from(ids);
+}
+
 export async function GET(req: Request) {
   const auth = await requirePermission("material.view");
   if (!auth.ok) {
@@ -24,8 +40,13 @@ export async function GET(req: Request) {
   const materialId = searchParams.get("materialId")?.trim() || undefined;
   const keyword = searchParams.get("keyword")?.trim() || undefined;
 
+  const scopedCustomerIds = await loadScopedCustomerIds(customerId);
+
   const materials = await prisma.material.findMany({
-    where: { isCustomerSupplied: true },
+    where: {
+      isCustomerSupplied: true,
+      ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
+    },
     orderBy: [{ code: "asc" }],
     select: {
       id: true,
@@ -40,7 +61,7 @@ export async function GET(req: Request) {
   const suggestionWhere = {
     isCustomerSupplied: true as const,
     partDescription: { not: null },
-    ...(customerId ? { customerId } : {}),
+    ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
     ...(materialId ? { id: materialId } : {}),
   };
   const [materialDescRows, inboundDescRows] = await Promise.all([
@@ -54,7 +75,7 @@ export async function GET(req: Request) {
         partDescription: { not: null },
         material: {
           isCustomerSupplied: true,
-          ...(customerId ? { customerId } : {}),
+          ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
           ...(materialId ? { id: materialId } : {}),
         },
       },
@@ -92,7 +113,7 @@ export async function GET(req: Request) {
       entryType: "CUSTOMER_SUPPLY_RECEIPT",
       material: {
         isCustomerSupplied: true,
-        ...(customerId ? { customerId } : {}),
+        ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
       },
       ...(materialId ? { materialId } : {}),
       ...(keyword
@@ -198,6 +219,8 @@ export async function POST(req: Request) {
   if (!customer) {
     return NextResponse.json({ error: "客供客户不存在" }, { status: 400 });
   }
+  const scopedCustomerIdsForPost =
+    (await loadScopedCustomerIds(parsed.data.customerId)) ?? [parsed.data.customerId];
 
   const material = await prisma.material.findUnique({
     where: { id: parsed.data.materialId },
@@ -213,8 +236,11 @@ export async function POST(req: Request) {
   if (!material.isCustomerSupplied) {
     return NextResponse.json({ error: "所选物料不是客供料" }, { status: 400 });
   }
-  if (material.customerId !== parsed.data.customerId) {
-    return NextResponse.json({ error: "客供客户与物料不匹配" }, { status: 400 });
+  if (!material.customerId || !scopedCustomerIdsForPost.includes(material.customerId)) {
+    return NextResponse.json(
+      { error: "客供客户与物料不匹配（不在关联客户范围内）" },
+      { status: 400 },
+    );
   }
 
   let receivedAt = new Date();

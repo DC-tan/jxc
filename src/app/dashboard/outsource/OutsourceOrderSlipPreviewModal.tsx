@@ -45,7 +45,7 @@ type SlipDetailPayload = {
   };
   lines: {
     id: string;
-    /** 外发出单时数量（固定值，不受后续回收影响） */
+    /** 仓库实发数（外发单预览/打印用，不含外发库存抵扣） */
     issuedQuantity?: number;
     quantity: number;
     material: SlipDetailMaterial;
@@ -65,26 +65,12 @@ function kindLabel(m: SlipDetailMaterial): string {
   return "—";
 }
 
-function totalReturnedMaterialOnOrder(
-  batches: SlipDetailPayload["materialReturnBatches"] | undefined,
-  materialId: string,
-): number {
-  return (batches ?? [])
-    .filter((b) => b.materialId === materialId)
-    .reduce((s, b) => s + b.quantity, 0);
-}
-
-/** 预览用：外发物料「单上总数」= 当前待回收 + 已分批回收入库累计 */
-function originalOutsourceLineQty(
-  l: SlipDetailPayload["lines"][number],
-  batches: SlipDetailPayload["materialReturnBatches"] | undefined,
-): number {
-  if (typeof l.issuedQuantity === "number" && l.issuedQuantity > 0) {
-    return l.issuedQuantity;
+/** 外发单预览/打印：数量 = 仓库实发数（不含外发物料库存抵扣部分） */
+function slipLineWarehouseQty(l: SlipDetailPayload["lines"][number]): number {
+  if (typeof l.issuedQuantity === "number") {
+    return Math.max(0, l.issuedQuantity);
   }
-  const mid = l.material.id?.trim();
-  if (!mid) return l.quantity;
-  return l.quantity + totalReturnedMaterialOnOrder(batches, mid);
+  return 0;
 }
 
 function mapDetailToSlipLines(d: SlipDetailPayload): OutsourceSlipPreviewLine[] {
@@ -94,7 +80,7 @@ function mapDetailToSlipLines(d: SlipDetailPayload): OutsourceSlipPreviewLine[] 
     partDescription: l.material.partDescription?.trim() || "—",
     brand: l.material.brand?.trim() || "—",
     unit: l.material.unit,
-    quantity: originalOutsourceLineQty(l, d.materialReturnBatches),
+    quantity: slipLineWarehouseQty(l),
     remark: "",
   }));
 }

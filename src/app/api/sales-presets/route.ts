@@ -18,7 +18,7 @@ export async function GET() {
     const [customers, products] = await Promise.all([
       prisma.customer.findMany({
         orderBy: { code: "asc" },
-        select: { id: true, code: true, name: true },
+        select: { id: true, code: true, name: true, shortName: true },
       }),
       prisma.product.findMany({
         where: { isDeprecated: false },

@@ -147,6 +147,22 @@ model Customer {
   sampleOrders SampleOrder[]
   suppliedMaterials Material[]
   changeReminders CustomerChangeReminder[]
+  linkedCustomersAsSource CustomerRelation[] @relation("CustomerRelationSource")
+  linkedCustomersAsTarget CustomerRelation[] @relation("CustomerRelationTarget")
+}
+
+/// 客户关联：用于共享客供料可见范围（双向按关系读取）
+model CustomerRelation {
+  id                String   @id @default(cuid())
+  customerId        String
+  relatedCustomerId String
+  customer          Customer @relation("CustomerRelationSource", fields: [customerId], references: [id], onDelete: Cascade)
+  relatedCustomer   Customer @relation("CustomerRelationTarget", fields: [relatedCustomerId], references: [id], onDelete: Cascade)
+  createdAt         DateTime @default(now())
+
+  @@unique([customerId, relatedCustomerId])
+  @@index([customerId])
+  @@index([relatedCustomerId])
 }
 
 /// 样品记录状态
@@ -630,6 +646,9 @@ model OutsourceOrderLine {
   outsourceOrder    OutsourceOrder @relation(fields: [outsourceOrderId], references: [id], onDelete: Cascade)
   materialId        String
   material          Material       @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  /// 本单该物料外发总量（发料数）
+  issuedQuantity    Int            @default(0)
+  /// 当前仍在加工方的剩余量
   quantity          Int
   sortOrder         Int            @default(0)
 

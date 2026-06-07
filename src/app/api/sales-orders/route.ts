@@ -108,11 +108,30 @@ export async function GET(req: Request) {
       include: {
         customer: { select: { id: true, code: true, name: true } },
         _count: { select: { lines: true } },
+        ...(pending
+          ? {
+              lines: {
+                select: { quantity: true, quantityShipped: true },
+              },
+            }
+          : {}),
       },
     });
 
+    const normalizedList = pending
+      ? list.filter((o) => {
+          const lines = (o as typeof o & {
+            lines?: { quantity: number; quantityShipped: number }[];
+          }).lines;
+          const hasUnshippedLine = (lines ?? []).some(
+            (ln) => Math.max(0, ln.quantityShipped) < Math.max(0, ln.quantity),
+          );
+          return o.actualDeliveredAt == null || hasUnshippedLine;
+        })
+      : list;
+
     return NextResponse.json({
-      list: list.map((p) => ({
+      list: normalizedList.map((p) => ({
         id: p.id,
         customerOrderNo: p.customerOrderNo,
         customerModel: p.customerModel,

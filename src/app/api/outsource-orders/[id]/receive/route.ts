@@ -4,6 +4,11 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { ceilOutsourceMaterialQty } from "@/lib/outsource-lines";
 import { productBomForOutsource } from "@/lib/product-bom-scope";
+import {
+  computeOpenOrderOccupancy,
+  computeOutsourceLineRemaining,
+} from "@/lib/outsource-material-stock-balance";
+import { reconcileOutsourceOrderLineQuantities } from "@/lib/outsource-material-stock-query";
 
 function perSetMaterialNeedFromBom(usageQty: number): number {
   return ceilOutsourceMaterialQty(Number(usageQty) * 1);
@@ -28,17 +33,32 @@ function impliedProductSetsFromBatch(
   return min === Infinity ? 0 : min;
 }
 
+function maxSetsByMaterials(
+  lines: { id: string; materialId: string; quantity: number }[],
+  usagePerSetByMaterialId: Map<string, number>,
+): number {
+  let min = Infinity;
+  for (const ln of lines) {
+    const perSet = usagePerSetByMaterialId.get(ln.materialId) ?? 0;
+    if (perSet <= 0) continue;
+    min = Math.min(min, Math.floor(ln.quantity / perSet));
+  }
+  return min === Infinity ? 0 : min;
+}
+
 const receiveLineSchema = z.object({
   lineId: z.string().min(1),
   receivedQty: z.number().int().min(0),
 });
 
 const receiveBodySchema = z.object({
-  /** 若省略则默认每行按当前待回收数量足额回收（兼容旧客户端） */
+  /** 本次回收成品套数（推荐传入；省略则按 lines 折算） */
+  sets: z.number().int().min(1).optional(),
+  /** 兼容旧客户端：与 sets 二选一 */
   lines: z.array(receiveLineSchema).optional(),
 });
 
-/** 确认回收：纯外发登记成品入库；外发+自加工登记外发回收库；外发物料在建单时已扣库，回收时不再回冲物料库存 */
+/** 确认回收：登记成品入库，并按 BOM 扣减在外物料（发料数 − 累计回收套数×单套用量） */
 export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
@@ -90,56 +110,8 @@ export async function POST(
         { status: 400 },
       );
     }
-    const linesPendingReceive = order.lines.filter((l) => l.quantity > 0);
-    if (linesPendingReceive.length === 0) {
-      return NextResponse.json({ error: "外发单无明细" }, { status: 400 });
-    }
-
-    let linesInput = parsed.data.lines;
-    if (!linesInput || linesInput.length === 0) {
-      linesInput = order.lines.map((l) => ({
-        lineId: l.id,
-        receivedQty: l.quantity,
-      }));
-    }
 
     const lineById = new Map(order.lines.map((l) => [l.id, l]));
-    const idSet = new Set(order.lines.map((l) => l.id));
-    const gotIds = new Set(linesInput.map((x) => x.lineId));
-    if (gotIds.size !== linesInput.length) {
-      return NextResponse.json(
-        { error: "lines 中存在重复的 lineId" },
-        { status: 400 },
-      );
-    }
-    if (idSet.size !== gotIds.size || ![...idSet].every((lid) => gotIds.has(lid))) {
-      return NextResponse.json(
-        { error: "lines 须包含本单全部物料明细行" },
-        { status: 400 },
-      );
-    }
-
-    let anyPositive = false;
-    for (const row of linesInput) {
-      const line = lineById.get(row.lineId);
-      if (!line) {
-        return NextResponse.json({ error: "存在无效的明细行" }, { status: 400 });
-      }
-      if (row.receivedQty > line.quantity) {
-        return NextResponse.json(
-          { error: "本次回收数量不能超过该行待回收数量" },
-          { status: 400 },
-        );
-      }
-      if (row.receivedQty > 0) anyPositive = true;
-    }
-    if (!anyPositive) {
-      return NextResponse.json(
-        { error: "至少一行本次回收数量须大于 0" },
-        { status: 400 },
-      );
-    }
-
     const usagePerSetByMaterialId = new Map<string, number>();
     const obom = productBomForOutsource(
       order.product.processingMode,
@@ -163,44 +135,101 @@ export async function POST(
             _sum: { quantity: true },
           });
     const sumBefore0 = Number(sumBeforeCheck._sum.quantity ?? 0);
-    const inferred0 = impliedProductSetsFromBatch(
-      linesInput,
-      lineById,
-      usagePerSetByMaterialId,
-    );
-    if (inferred0 > Math.max(0, order.productQty - sumBefore0)) {
+
+    const warehouseRows0 = await prisma.materialInbound.groupBy({
+      by: ["materialId"],
+      where: { purchaseOrderNo: order.orderNo, quantity: { lt: 0 } },
+      _sum: { quantity: true },
+    });
+    const warehouse0 = new Map<string, number>();
+    for (const r of warehouseRows0) {
+      warehouse0.set(r.materialId, Math.abs(Number(r._sum.quantity ?? 0)));
+    }
+    const closeReturnRows0 = await prisma.materialInbound.groupBy({
+      by: ["materialId"],
+      where: {
+        purchaseOrderNo: order.orderNo,
+        quantity: { gt: 0 },
+        partDescription: { startsWith: "外发结单退回" },
+      },
+      _sum: { quantity: true },
+    });
+    const closeReturn0 = new Map<string, number>();
+    for (const r of closeReturnRows0) {
+      closeReturn0.set(r.materialId, Number(r._sum.quantity ?? 0));
+    }
+
+    const effectiveLines = order.lines.map((ln) => {
+      const perSet = usagePerSetByMaterialId.get(ln.materialId) ?? 0;
+      const totalRemaining = computeOutsourceLineRemaining({
+        orderStatus: "OPEN",
+        processingMode: order.product.processingMode,
+        orderNo: order.orderNo,
+        materialId: ln.materialId,
+        productQty: order.productQty,
+        issuedQuantity: ln.issuedQuantity,
+        storedQuantity: ln.quantity,
+        warehouseOutbound: warehouse0.get(ln.materialId) ?? 0,
+        recoveredSets: sumBefore0,
+        closeReturnQty: closeReturn0.get(ln.materialId) ?? 0,
+        perSet,
+      });
+      const occupancy = computeOpenOrderOccupancy({
+        productQty: order.productQty,
+        recoveredSets: sumBefore0,
+        perSet,
+        totalRemaining,
+      });
+      return { ...ln, quantity: occupancy };
+    });
+
+    if (
+      effectiveLines.every((l) => l.quantity <= 0) &&
+      sumBefore0 >= order.productQty
+    ) {
+      return NextResponse.json({ error: "外发单无待回收物料" }, { status: 400 });
+    }
+
+    let setsRequested = parsed.data.sets;
+    const linesInput = parsed.data.lines;
+    if (setsRequested == null) {
+      if (!linesInput || linesInput.length === 0) {
+        setsRequested = maxSetsByMaterials(effectiveLines, usagePerSetByMaterialId);
+      } else {
+        setsRequested = impliedProductSetsFromBatch(
+          linesInput,
+          lineById,
+          usagePerSetByMaterialId,
+        );
+      }
+    }
+    if (setsRequested <= 0) {
+      return NextResponse.json(
+        { error: "本次回收套数须大于 0" },
+        { status: 400 },
+      );
+    }
+
+    if (setsRequested > Math.max(0, order.productQty - sumBefore0)) {
       return NextResponse.json(
         { error: "数量超过外发数量" },
         { status: 400 },
       );
     }
 
+    const maxByMaterials = maxSetsByMaterials(
+      effectiveLines,
+      usagePerSetByMaterialId,
+    );
+    if (setsRequested > maxByMaterials) {
+      return NextResponse.json(
+        { error: `本次回收套数不能超过待收套数（${maxByMaterials} 套）` },
+        { status: 400 },
+      );
+    }
+
     const now = new Date();
     const fullyClosed = await prisma.$transaction(async (tx) => {
-      for (const row of linesInput) {
-        const line = await tx.outsourceOrderLine.findUnique({
-          where: { id: row.lineId },
-        });
-        if (!line || line.outsourceOrderId !== id) {
-          throw new Error("明细不存在或已变更");
-        }
-        if (row.receivedQty < 0 || row.receivedQty > line.quantity) {
-          throw new Error("回收数量无效");
-        }
-        if (row.receivedQty === line.quantity) {
-          /** 保留行（数量置 0），供关闭后外发单预览/打印与回收前一致，勿删行 */
-          await tx.outsourceOrderLine.update({
-            where: { id: line.id },
-            data: { quantity: 0 },
-          });
-        } else if (row.receivedQty > 0) {
-          await tx.outsourceOrderLine.update({
-            where: { id: line.id },
-            data: { quantity: line.quantity - row.receivedQty },
-          });
-        }
-      }
-
       const sumBefore =
         order.product.processingMode === "OUTSOURCE_INHOUSE"
           ? Number(
@@ -220,55 +249,80 @@ export async function POST(
               )._sum.quantity ?? 0,
             );
 
-      const inferred = impliedProductSetsFromBatch(
-        linesInput,
-        lineById,
-        usagePerSetByMaterialId,
-      );
       const setsBatch = Math.min(
-        inferred,
+        setsRequested,
         Math.max(0, order.productQty - sumBefore),
       );
+      if (setsBatch <= 0) {
+        throw new Error("本次无可回收套数");
+      }
 
       const modelRef = (order.product?.model ?? "").trim() || "—";
-      if (setsBatch > 0) {
-        if (order.product.processingMode === "OUTSOURCE_INHOUSE") {
-          await tx.outsourceRecoveryInbound.create({
-            data: {
-              productId: order.productId,
-              outsourceOrderId: id,
-              outsourceOrderNo: order.orderNo,
-              quantity: setsBatch,
-              receivedAt: now,
-              partDescription: `外发加工回收库入库（${modelRef}×${setsBatch}）`,
-              entryType: "RECOVERY",
-              operatorUserId: auth.user.id,
-            },
-          });
-        } else {
-          await tx.productInbound.create({
-            data: {
-              productId: order.productId,
-              quantity: setsBatch,
-              receivedAt: now,
-              purchaseOrderNo: order.orderNo,
-              partDescription: `外发加工回收入库（${modelRef}×${setsBatch}）`,
-              operatorUserId: auth.user.id,
-            },
-          });
-        }
+      if (order.product.processingMode === "OUTSOURCE_INHOUSE") {
+        await tx.outsourceRecoveryInbound.create({
+          data: {
+            productId: order.productId,
+            outsourceOrderId: id,
+            outsourceOrderNo: order.orderNo,
+            quantity: setsBatch,
+            receivedAt: now,
+            partDescription: `外发加工回收库入库（${modelRef}×${setsBatch}）`,
+            entryType: "RECOVERY",
+            operatorUserId: auth.user.id,
+          },
+        });
+      } else {
+        await tx.productInbound.create({
+          data: {
+            productId: order.productId,
+            quantity: setsBatch,
+            receivedAt: now,
+            purchaseOrderNo: order.orderNo,
+            partDescription: `外发加工回收入库（${modelRef}×${setsBatch}）`,
+            operatorUserId: auth.user.id,
+          },
+        });
+      }
+
+      const sumAfter =
+        order.product.processingMode === "OUTSOURCE_INHOUSE"
+          ? Number(
+              (
+                await tx.outsourceRecoveryInbound.aggregate({
+                  where: { outsourceOrderId: id },
+                  _sum: { quantity: true },
+                })
+              )._sum.quantity ?? 0,
+            )
+          : Number(
+              (
+                await tx.productInbound.aggregate({
+                  where: { purchaseOrderNo: order.orderNo },
+                  _sum: { quantity: true },
+                })
+              )._sum.quantity ?? 0,
+            );
+
+      for (const ln of order.lines) {
+        const perSet = usagePerSetByMaterialId.get(ln.materialId) ?? 0;
+        const batchConsume =
+          perSet > 0 ? perSet * setsBatch : 0;
+        const newQty = Math.max(0, ln.quantity - batchConsume);
+        await tx.outsourceOrderLine.update({
+          where: { id: ln.id },
+          data: { quantity: newQty },
+        });
       }
 
       const remaining = await tx.outsourceOrderLine.count({
         where: { outsourceOrderId: id, quantity: { gt: 0 } },
       });
-      if (remaining === 0) {
-        if (order.product.processingMode !== "OUTSOURCE_INHOUSE") {
-          const piSumAfter = await tx.productInbound.aggregate({
-            where: { purchaseOrderNo: order.orderNo },
-            _sum: { quantity: true },
-          });
-          const sumAfter = piSumAfter._sum.quantity ?? 0;
+
+      /** 物料行全部收完，或累计回收套数已达外发套数 → 默认结单 */
+      const shouldClose = remaining === 0 || sumAfter >= order.productQty;
+
+      if (shouldClose) {
+        if (remaining === 0 && order.product.processingMode !== "OUTSOURCE_INHOUSE") {
           const gap = order.productQty - sumAfter;
           if (gap > 0) {
             const model = (order.product?.model ?? "").trim() || "—";
@@ -291,6 +345,7 @@ export async function POST(
             receivedAt: now,
           },
         });
+        await reconcileOutsourceOrderLineQuantities(tx, id);
         return true;
       }
 

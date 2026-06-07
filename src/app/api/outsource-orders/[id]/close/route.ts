@@ -4,6 +4,11 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { ceilOutsourceMaterialQty } from "@/lib/outsource-lines";
 import { productBomForOutsource } from "@/lib/product-bom-scope";
+import { computeOutsourceLineRemaining } from "@/lib/outsource-material-stock-balance";
+import {
+  loadOutsourceStockContextMaps,
+  reconcileOutsourceOrderLineQuantities,
+} from "@/lib/outsource-material-stock-query";
 
 const closeLineSchema = z.object({
   lineId: z.string().min(1),
@@ -57,7 +62,12 @@ export async function POST(
         },
         lines: {
           orderBy: { sortOrder: "asc" },
-          select: { id: true, materialId: true, quantity: true },
+          select: {
+            id: true,
+            materialId: true,
+            quantity: true,
+            issuedQuantity: true,
+          },
         },
       },
     });
@@ -96,14 +106,63 @@ export async function POST(
       );
     }
 
+    const maps = await loadOutsourceStockContextMaps(
+      prisma,
+      [row.id],
+      [row.orderNo],
+    );
+    const recoveredSets =
+      row.product.processingMode === "OUTSOURCE_INHOUSE"
+        ? maps.recoverySetsByOrderId.get(row.id) ?? 0
+        : maps.productSetsByOrderNo.get(row.orderNo) ?? 0;
+    if (recoveredSets <= 0) {
+      return NextResponse.json({ error: "无回收记录不可结单" }, { status: 400 });
+    }
+
+    const warehouseByMaterial = new Map<string, number>();
+    for (const [key, qty] of maps.warehouseByOrderMaterial) {
+      if (key.startsWith(`${row.orderNo}::`)) {
+        warehouseByMaterial.set(key.slice(row.orderNo.length + 2), qty);
+      }
+    }
+    const closeReturnByMaterial = new Map<string, number>();
+    for (const [key, qty] of maps.closeReturnByOrderMaterial) {
+      if (key.startsWith(`${row.orderNo}::`)) {
+        closeReturnByMaterial.set(key.slice(row.orderNo.length + 2), qty);
+      }
+    }
+
+    const balancedQtyByLineId = new Map<string, number>();
+    for (const ln of row.lines) {
+      const perSet = perSetByMaterial.get(ln.materialId) ?? 0;
+      const balanced = computeOutsourceLineRemaining({
+        orderStatus: "OPEN",
+        processingMode: row.product.processingMode,
+        orderNo: row.orderNo,
+        materialId: ln.materialId,
+        productQty: row.productQty,
+        issuedQuantity: ln.issuedQuantity,
+        storedQuantity: ln.quantity,
+        warehouseOutbound: warehouseByMaterial.get(ln.materialId) ?? 0,
+        recoveredSets,
+        closeReturnQty: closeReturnByMaterial.get(ln.materialId) ?? 0,
+        perSet,
+      });
+      balancedQtyByLineId.set(ln.id, balanced);
+    }
+
+    const pendingProductSets = Math.max(0, row.productQty - recoveredSets);
     const lossSetCaps = row.lines
       .map((l) => {
         const perSet = perSetByMaterial.get(l.materialId) ?? 0;
+        const balanced = balancedQtyByLineId.get(l.id) ?? 0;
         if (perSet <= 0) return Number.POSITIVE_INFINITY;
-        return Math.floor(l.quantity / perSet);
+        return Math.floor(balanced / perSet);
       })
       .filter((n) => Number.isFinite(n));
-    const maxLossSets = lossSetCaps.length > 0 ? Math.min(...lossSetCaps) : 0;
+    const maxLossSetsByMaterial =
+      lossSetCaps.length > 0 ? Math.min(...lossSetCaps) : 0;
+    const maxLossSets = Math.min(pendingProductSets, maxLossSetsByMaterial);
     if (lossSets > maxLossSets) {
       return NextResponse.json(
         { error: `损耗套数不能超过可损耗上限（${maxLossSets} 套）` },
@@ -115,7 +174,8 @@ export async function POST(
       const perSet = perSetByMaterial.get(ln.materialId) ?? 0;
       const lossQty = perSet > 0 ? perSet * lossSets : 0;
       const returnQty = lineInputById.get(ln.id)?.returnQty ?? 0;
-      if (lossQty + returnQty > ln.quantity) {
+      const balanced = balancedQtyByLineId.get(ln.id) ?? 0;
+      if (lossQty + returnQty > balanced) {
         return NextResponse.json(
           { error: `${ln.id} 的损耗折算数量 + 退回数量不能超过当前在外数量` },
           { status: 400 },
@@ -133,13 +193,14 @@ export async function POST(
         const perSet = perSetByMaterial.get(ln.materialId) ?? 0;
         const lossQty = perSet > 0 ? perSet * lossSets : 0;
         const returnQty = lineInputById.get(ln.id)?.returnQty ?? 0;
-        const remaining = ln.quantity - lossQty - returnQty;
-        if (remaining !== ln.quantity) {
-          await tx.outsourceOrderLine.update({
-            where: { id: ln.id },
-            data: { quantity: remaining },
-          });
-        }
+        const balanced = balancedQtyByLineId.get(ln.id) ?? 0;
+        // 结单“退回数量”应回到外发物料库存（占用释放），不应从在外库存再扣减；
+        // 在外库存只扣损耗。
+        const remaining = Math.max(0, balanced - lossQty);
+        await tx.outsourceOrderLine.update({
+          where: { id: ln.id },
+          data: { quantity: remaining },
+        });
         if (returnQty > 0) {
           await tx.materialInbound.create({
             data: {
@@ -163,6 +224,8 @@ export async function POST(
         },
       });
     });
+
+    await reconcileOutsourceOrderLineQuantities(prisma, id);
 
     return NextResponse.json({ ok: true, lossSets, returnedQtyTotal, lossQtyTotal });
   } catch (e) {

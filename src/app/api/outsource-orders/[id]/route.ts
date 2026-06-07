@@ -8,6 +8,12 @@ import {
 } from "@/lib/product-bom-scope";
 import { computeOutsourceLinesFromBom } from "@/lib/outsource-lines";
 import { getMaterialInboundTotalsByIds } from "@/lib/materialStock";
+import {
+  closedPoolQtyMap,
+  consumeClosedPool,
+  loadClosedOutsourcePoolLines,
+  restoreClosedPool,
+} from "@/lib/outsource-material-stock-pool";
 
 const patchLineSchema = z.object({
   lineId: z.string().min(1),
@@ -27,10 +33,15 @@ function toPositiveInt(v: unknown, fallback: number): number {
   return n;
 }
 
-function toPositiveLineQty(v: unknown): number {
+function toNonNegativeLineQty(v: unknown): number {
   const n = Math.trunc(Number(v));
-  if (!Number.isFinite(n) || n < 1) return 1;
+  if (!Number.isFinite(n) || n < 0) return 0;
   return n;
+}
+
+function effectiveOutsourceDemand(userQty: number, bomNeed: number): number {
+  if (userQty <= 0) return Math.max(0, bomNeed);
+  return userQty;
 }
 
 /** 外发单详情（物料单预览 / 打印用） */
@@ -178,9 +189,11 @@ export async function GET(
     }[] = row.lines.map((l) => ({
       id: l.id,
       quantity: l.quantity,
+      // 编辑/打印优先使用单行已保存的实发数，确保与建单确认时一致；
+      // 仅历史脏数据（未迁移 issuedQuantity）再回退到流水还原值。
       issuedQuantity:
-        issuedByMaterialId.get(l.materialId) ??
-        l.quantity + (returnedByMaterialId.get(l.materialId) ?? 0),
+        Math.max(0, l.issuedQuantity) ||
+        (issuedByMaterialId.get(l.materialId) ?? 0),
       material: l.material,
     }));
 
@@ -223,7 +236,7 @@ export async function GET(
             rebuilt.push({
               id: `closed-bom-${b.materialId}`,
               quantity: 0,
-              issuedQuantity: issuedByMaterialId.get(b.materialId) ?? b.quantity,
+              issuedQuantity: issuedByMaterialId.get(b.materialId) ?? 0,
               material: m,
             });
           }
@@ -296,7 +309,14 @@ export async function DELETE(
   const { id } = await ctx.params;
 
   try {
-    const row = await prisma.outsourceOrder.findUnique({ where: { id } });
+    const row = await prisma.outsourceOrder.findUnique({
+      where: { id },
+      include: {
+        lines: {
+          select: { id: true, materialId: true, quantity: true, issuedQuantity: true },
+        },
+      },
+    });
     if (!row) {
       return NextResponse.json({ error: "外发单不存在" }, { status: 404 });
     }
@@ -323,6 +343,33 @@ export async function DELETE(
     }
 
     await prisma.$transaction(async (tx) => {
+      /**
+       * 取消按原路径回退：
+       * - 仓库实发部分：删除本单 materialInbound 负流水后自动回仓库库存
+       * - 外发库存池抵扣部分：回冲到同加工方可复用池行
+       */
+      const restoreByMaterial = new Map<string, number>();
+      for (const ln of row.lines) {
+        const issued = Math.max(0, Math.trunc(Number(ln.issuedQuantity) || 0));
+        const atProcessor = Math.max(0, Math.trunc(Number(ln.quantity) || 0));
+        const fromPool = Math.max(0, atProcessor - issued);
+        if (fromPool <= 0) continue;
+        restoreByMaterial.set(
+          ln.materialId,
+          (restoreByMaterial.get(ln.materialId) ?? 0) + fromPool,
+        );
+      }
+      if (restoreByMaterial.size > 0) {
+        const poolLines = await loadClosedOutsourcePoolLines(
+          tx,
+          row.supplierId,
+          [...restoreByMaterial.keys()],
+        );
+        const ownLineIds = new Set(row.lines.map((ln) => ln.id));
+        const restoreTargets = poolLines.filter((ln) => !ownLineIds.has(ln.id));
+        await restoreClosedPool(tx, restoreTargets, restoreByMaterial);
+      }
+
       await tx.materialInbound.deleteMany({
         where: { purchaseOrderNo: row.orderNo },
       });
@@ -373,6 +420,8 @@ export async function PATCH(
       { status: 400 },
     );
   }
+
+  return NextResponse.json({ error: "外发单修改功能已关闭" }, { status: 400 });
 
   const hasQtyPatch =
     parsed.data.productQty !== undefined ||
@@ -496,7 +545,7 @@ export async function PATCH(
         finalLines.push({
           lineId: ln.id,
           materialId: ln.materialId,
-          quantity: toPositiveLineQty(row.quantity),
+          quantity: toNonNegativeLineQty(row.quantity),
         });
       }
       if (idSet.size !== got.size || ![...idSet].every((lid) => got.has(lid))) {
@@ -531,39 +580,141 @@ export async function PATCH(
       }
     }
 
+    const bomNeedLines = computeOutsourceLinesFromBom(
+      bom.map((m) => ({
+        materialId: m.materialId,
+        usageQty: m.usageQty.toString(),
+      })),
+      newProductQty,
+    );
+    const bomNeedByMaterial = new Map(
+      bomNeedLines.map((l) => [l.materialId, l.quantity]),
+    );
+
     const model = (order.product?.model ?? "").trim() || "—";
     const receivedAt = new Date();
 
     await prisma.$transaction(async (tx) => {
-      await tx.materialInbound.deleteMany({
-        where: { purchaseOrderNo: order.orderNo, quantity: { lt: 0 } },
-      });
+      const finalSupplierId = supplierId !== undefined ? supplierId : order.supplierId;
+      const finalPoolSupplierId =
+        finalSupplierId === null ? undefined : finalSupplierId;
+      const materialIds = finalLines.map((l) => l.materialId);
+      const newQtyByMaterial = new Map<string, number>();
+      for (const l of finalLines) {
+        newQtyByMaterial.set(l.materialId, l.quantity);
+      }
+      const currentQtyByMaterial = new Map<string, number>();
+      for (const l of order.lines) {
+        currentQtyByMaterial.set(
+          l.materialId,
+          (currentQtyByMaterial.get(l.materialId) ?? 0) + l.quantity,
+        );
+      }
 
-      const stockMap = await getMaterialInboundTotalsByIds(
+      const currentNegativeRows = await tx.materialInbound.groupBy({
+        by: ["materialId"],
+        where: {
+          purchaseOrderNo: order.orderNo,
+          quantity: { lt: 0 },
+        },
+        _sum: { quantity: true },
+      });
+      const currentWarehouseByMaterial = new Map<string, number>();
+      for (const r of currentNegativeRows) {
+        currentWarehouseByMaterial.set(r.materialId, Math.abs(r._sum.quantity ?? 0));
+      }
+
+      const currentCarryByMaterial = new Map<string, number>();
+      for (const materialId of new Set([...materialIds, ...currentQtyByMaterial.keys()])) {
+        const curQty = currentQtyByMaterial.get(materialId) ?? 0;
+        const curWh = currentWarehouseByMaterial.get(materialId) ?? 0;
+        currentCarryByMaterial.set(materialId, Math.max(0, curQty - curWh));
+      }
+
+      const closedPoolLines = await loadClosedOutsourcePoolLines(
         tx,
-        finalLines.map((l) => l.materialId),
+        finalPoolSupplierId,
+        materialIds,
       );
-      const shortage = finalLines.filter(
-        (l) => l.quantity > (stockMap.get(l.materialId) ?? 0),
-      );
-      if (shortage.length > 0) {
+      const closedPoolMap = closedPoolQtyMap(closedPoolLines);
+      const consumeFromClosed = new Map<string, number>();
+      const restoreToClosed = new Map<string, number>();
+      const targetWarehouseByMaterial = new Map<string, number>();
+      const needExtraWarehouse = new Map<string, number>();
+      const poolShortage: { materialId: string; need: number; have: number }[] = [];
+
+      for (const materialId of materialIds) {
+        const userQty = newQtyByMaterial.get(materialId) ?? 0;
+        const bomNeed = bomNeedByMaterial.get(materialId) ?? 0;
+        const demand = effectiveOutsourceDemand(userQty, bomNeed);
+        const currentCarry = currentCarryByMaterial.get(materialId) ?? 0;
+        const closedAvail = closedPoolMap.get(materialId) ?? 0;
+        if (userQty <= 0 && demand > currentCarry + closedAvail) {
+          poolShortage.push({
+            materialId,
+            need: demand,
+            have: currentCarry + closedAvail,
+          });
+          continue;
+        }
+        const targetCarry = Math.min(demand, currentCarry + closedAvail);
+        const consumeQty = Math.max(0, targetCarry - currentCarry);
+        const restoreQty = Math.max(0, currentCarry - targetCarry);
+        const targetWh = Math.max(0, demand - targetCarry);
+        const currentWh = currentWarehouseByMaterial.get(materialId) ?? 0;
+        const extraWh = Math.max(0, targetWh - currentWh);
+        if (consumeQty > 0) consumeFromClosed.set(materialId, consumeQty);
+        if (restoreQty > 0) restoreToClosed.set(materialId, restoreQty);
+        targetWarehouseByMaterial.set(materialId, targetWh);
+        if (extraWh > 0) needExtraWarehouse.set(materialId, extraWh);
+      }
+
+      if (poolShortage.length > 0) {
         const mats = await tx.material.findMany({
-          where: { id: { in: shortage.map((s) => s.materialId) } },
+          where: { id: { in: poolShortage.map((s) => s.materialId) } },
           select: { id: true, code: true, name: true },
         });
         const meta = new Map(mats.map((m) => [m.id, m]));
-        const parts = shortage.map((s) => {
+        const parts = poolShortage.map((s) => {
           const m = meta.get(s.materialId);
-          const have = stockMap.get(s.materialId) ?? 0;
-          return `${m?.code ?? s.materialId}（${m?.name ?? "—"}）需 ${s.quantity}，库存 ${have}`;
+          return `${m?.code ?? s.materialId}（${m?.name ?? "—"}）需外发库存 ${s.need}，当前 ${s.have}`;
+        });
+        throw new Error(`外发库存不足：${parts.join("；")}`);
+      }
+
+      const stockMap = await getMaterialInboundTotalsByIds(tx, materialIds);
+      const shortage = materialIds.filter(
+        (materialId) =>
+          (needExtraWarehouse.get(materialId) ?? 0) > (stockMap.get(materialId) ?? 0),
+      );
+      if (shortage.length > 0) {
+        const mats = await tx.material.findMany({
+          where: { id: { in: shortage } },
+          select: { id: true, code: true, name: true },
+        });
+        const meta = new Map(mats.map((m) => [m.id, m]));
+        const parts = shortage.map((materialId) => {
+          const m = meta.get(materialId);
+          const need = needExtraWarehouse.get(materialId) ?? 0;
+          const have = stockMap.get(materialId) ?? 0;
+          return `${m?.code ?? materialId}（${m?.name ?? "—"}）需扣 ${need}，库存 ${have}`;
         });
         throw new Error(`物料库存不足：${parts.join("；")}`);
       }
 
+      await restoreClosedPool(tx, closedPoolLines, restoreToClosed);
+      await consumeClosedPool(tx, closedPoolLines, consumeFromClosed);
+
       for (const fl of finalLines) {
+        const bomNeed = bomNeedByMaterial.get(fl.materialId) ?? 0;
+        const demand = effectiveOutsourceDemand(
+          fl.quantity,
+          bomNeed,
+        );
+        const targetWh = targetWarehouseByMaterial.get(fl.materialId) ?? 0;
         await tx.outsourceOrderLine.update({
           where: { id: fl.lineId },
-          data: { quantity: fl.quantity },
+          data: { quantity: demand, issuedQuantity: targetWh },
         });
       }
 
@@ -576,16 +727,34 @@ export async function PATCH(
         },
       });
 
-      await tx.materialInbound.createMany({
-        data: finalLines.map((l) => ({
-          materialId: l.materialId,
-          quantity: -l.quantity,
+      const adjustRows: {
+        materialId: string;
+        quantity: number;
+        receivedAt: Date;
+        purchaseOrderNo: string;
+        partDescription: string;
+        operatorUserId: string;
+      }[] = [];
+      for (const materialId of materialIds) {
+        const targetWh = targetWarehouseByMaterial.get(materialId) ?? 0;
+        const currentWh = currentWarehouseByMaterial.get(materialId) ?? 0;
+        const delta = targetWh - currentWh;
+        if (delta === 0) continue;
+        adjustRows.push({
+          materialId,
+          quantity: delta > 0 ? -delta : Math.abs(delta),
           receivedAt,
           purchaseOrderNo: order.orderNo,
-          partDescription: `外发出库（${model}×${newProductQty}）`,
+          partDescription:
+            delta > 0
+              ? `外发出库调整（${model}×${newProductQty}）`
+              : `外发改单回库（${model}×${newProductQty}）`,
           operatorUserId: auth.user.id,
-        })),
-      });
+        });
+      }
+      if (adjustRows.length > 0) {
+        await tx.materialInbound.createMany({ data: adjustRows });
+      }
     });
 
     return NextResponse.json({ ok: true });

@@ -5,6 +5,7 @@ import { requirePermission } from "@/lib/api-auth";
 import { parseStatsRange, statsRangeQuerySchema } from "@/lib/stats-range";
 import { formatPurchaseExtraFeesColumn } from "@/lib/purchase-extra-fees";
 import { buildPurchaseReconcileLineMap } from "@/lib/purchase-reconcile-lines";
+import { PURCHASE_SPARE_PART_DESC_PREFIX } from "@/lib/purchase-receipt";
 import {
   attachRemarksToPurchaseReconcileRows,
   loadPurchaseReconcileRemarks,
@@ -133,6 +134,14 @@ export async function POST(req: Request) {
           receivedAt: { gte: from, lte: to },
           quantity: { gt: 0 },
           purchaseOrderNo: { not: null },
+          OR: [
+            { partDescription: null },
+            {
+              NOT: {
+                partDescription: { startsWith: PURCHASE_SPARE_PART_DESC_PREFIX },
+              },
+            },
+          ],
         },
         orderBy: { receivedAt: "asc" },
         take: 10000,

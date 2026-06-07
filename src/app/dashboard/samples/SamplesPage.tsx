@@ -40,7 +40,7 @@ const SAMPLE_TAB_PERM: Record<string, string> = {
   query: "tab.sample.query",
 };
 
-type CustomerOpt = { id: string; code: string; name: string };
+type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
 
 type SampleRow = {
   id: string;
@@ -201,6 +201,7 @@ export function SamplesPage() {
       customers.map((c) => ({
         value: c.id,
         label: `${c.code} ${c.name}`,
+        searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
       })),
     [customers],
   );
@@ -525,7 +526,7 @@ export function SamplesPage() {
           showSearch
           loading={loadingCustomers}
           options={customerOptions}
-          optionFilterProp="label"
+          optionFilterProp="searchText"
           placeholder="选择客户"
         />
       </Form.Item>
@@ -651,7 +652,7 @@ export function SamplesPage() {
                         showSearch
                         loading={loadingCustomers}
                         options={customerOptions}
-                        optionFilterProp="label"
+                        optionFilterProp="searchText"
                         placeholder="全部"
                         style={{ minWidth: 220 }}
                       />

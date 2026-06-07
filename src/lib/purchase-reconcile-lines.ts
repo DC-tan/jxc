@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { PURCHASE_SPARE_PART_DESC_PREFIX } from "@/lib/purchase-receipt";
 
 export type PurchaseReconcileMaterialInfo = {
   name: string;
@@ -42,7 +43,18 @@ export async function buildPurchaseReconcileLineMap(
   orderNo: string,
 ): Promise<Map<string, PurchaseReconcileLineSource>> {
   const allInbounds = await prisma.materialInbound.findMany({
-    where: { purchaseOrderNo: orderNo, quantity: { gt: 0 } },
+    where: {
+      purchaseOrderNo: orderNo,
+      quantity: { gt: 0 },
+      OR: [
+        { partDescription: null },
+        {
+          NOT: {
+            partDescription: { startsWith: PURCHASE_SPARE_PART_DESC_PREFIX },
+          },
+        },
+      ],
+    },
     select: { materialId: true, quantity: true },
   });
   const receivedByMaterial = sumReceivedByMaterial(allInbounds);

@@ -5,6 +5,10 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
 import { ensureCustomerSupplySupplier } from "@/lib/customer-supply";
+import {
+  getMaterialInboundTotalsByIds,
+  MATERIAL_STOCK_EXCLUDED_PART_DESC_PREFIXES,
+} from "@/lib/materialStock";
 
 function parseSampleUrls(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -78,6 +82,18 @@ export async function GET(
         supplier: true,
         customer: { select: { id: true, code: true, name: true } },
         inbounds: {
+          where: {
+            OR: [
+              { partDescription: null },
+              {
+                NOT: {
+                  OR: MATERIAL_STOCK_EXCLUDED_PART_DESC_PREFIXES.map((prefix) => ({
+                    partDescription: { startsWith: prefix },
+                  })),
+                },
+              },
+            ],
+          },
           orderBy: { receivedAt: "desc" },
           include: {
             operator: {
@@ -98,7 +114,8 @@ export async function GET(
       return NextResponse.json({ error: "物料不存在" }, { status: 404 });
     }
 
-    const totalQty = m.inbounds.reduce((s, i) => s + Number(i.quantity), 0);
+    const qtyMap = await getMaterialInboundTotalsByIds(prisma, [m.id]);
+    const totalQty = qtyMap.get(m.id) ?? 0;
     const kd = kindDisplay(m);
 
     return NextResponse.json({

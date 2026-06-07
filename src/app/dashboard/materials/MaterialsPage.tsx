@@ -2,6 +2,7 @@
 
 import {
   DownloadOutlined,
+  EyeOutlined,
   FileExcelOutlined,
   PlusOutlined,
   QuestionCircleOutlined,
@@ -54,8 +55,8 @@ const MATERIAL_TAB_PERM: Record<string, string> = {
   settings: "tab.mat.settings",
 };
 
-type SupplierOpt = { id: string; code: string; name: string };
-type CustomerOpt = { id: string; code: string; name: string };
+type SupplierOpt = { id: string; code: string; name: string; shortName?: string | null };
+type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
 
 type MaterialRow = {
   id: string;
@@ -690,6 +691,20 @@ export function MaterialsPage() {
     return data.url;
   };
 
+  const previewImageInNewTab = useCallback(
+    (url?: string) => {
+      if (!url) {
+        message.warning("请先上传图片");
+        return;
+      }
+      const normalized = /^https?:\/\//i.test(url)
+        ? url
+        : `${window.location.origin}${url.startsWith("/") ? "" : "/"}${url}`;
+      window.open(normalized, "_blank", "noopener,noreferrer");
+    },
+    [message],
+  );
+
   const addUploadProps: UploadProps = useMemo(
     () => ({
       listType: "picture-card",
@@ -1105,6 +1120,17 @@ export function MaterialsPage() {
         credentials: "include",
       });
       setDetail(data);
+      // 同步列表中的库存数量，避免详情刷新后列表仍显示旧值
+      setMaterials((prev) =>
+        prev.map((row) =>
+          row.id === data.id ? { ...row, totalQty: data.totalQty } : row,
+        ),
+      );
+      setInventory((prev) =>
+        prev.map((row) =>
+          row.id === data.id ? { ...row, totalQty: data.totalQty } : row,
+        ),
+      );
     } catch (e) {
       message.error(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -1742,11 +1768,12 @@ export function MaterialsPage() {
               placeholder="全部"
               showSearch
               loading={loadingSuppliers}
-              optionFilterProp="label"
+              optionFilterProp="searchText"
               style={{ width: 200 }}
               options={suppliers.map((s) => ({
                 value: s.id,
                 label: `${s.name}${s.code ? `（${s.code}）` : ""}`,
+                searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
               }))}
             />
           </Form.Item>
@@ -1956,11 +1983,12 @@ export function MaterialsPage() {
                       <Select
                         showSearch
                         placeholder="选择客户"
-                        optionFilterProp="label"
+                        optionFilterProp="searchText"
                         style={{ width: 220 }}
                         options={customers.map((c) => ({
                           value: c.id,
                           label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                          searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                         }))}
                         onChange={() => {
                           customerSupplyEntryForm.setFieldsValue({
@@ -2045,11 +2073,12 @@ export function MaterialsPage() {
                         allowClear
                         showSearch
                         placeholder="全部"
-                        optionFilterProp="label"
+                        optionFilterProp="searchText"
                         style={{ width: 220 }}
                         options={customers.map((c) => ({
                           value: c.id,
                           label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                          searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                         }))}
                       />
                     </Form.Item>
@@ -2450,11 +2479,12 @@ export function MaterialsPage() {
                       <Select
                         allowClear
                         showSearch
-                        optionFilterProp="label"
+                        optionFilterProp="searchText"
                         placeholder="选择关联客户（可选）"
                         options={customers.map((c) => ({
                           value: c.id,
                           label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                          searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                         }))}
                       />
                     </Form.Item>
@@ -2550,11 +2580,12 @@ export function MaterialsPage() {
                 >
                   <Select
                     showSearch
-                    optionFilterProp="label"
+                    optionFilterProp="searchText"
                     placeholder="选择客供客户"
                     options={customers.map((c) => ({
                       value: c.id,
                       label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                      searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                     }))}
                   />
                 </Form.Item>
@@ -2582,9 +2613,10 @@ export function MaterialsPage() {
                       options={suppliers.map((s) => ({
                         value: s.id,
                         label: `${s.code} ${s.name}`,
+                        searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                       }))}
                       showSearch
-                      optionFilterProp="label"
+                      optionFilterProp="searchText"
                     />
                   </Form.Item>
                 </Col>
@@ -2607,14 +2639,25 @@ export function MaterialsPage() {
             </Col>
             <Col span={24}>
               <Form.Item label="签样图片（JPEG / BMP，最多 3 张，点击缩略图可放大）">
-                <Upload {...addUploadProps}>
-                  {sampleUrls.length >= 3 ? null : (
-                    <div>
-                      <UploadOutlined />
-                      <div style={{ marginTop: 8 }}>上传</div>
-                    </div>
-                  )}
-                </Upload>
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  <Upload {...addUploadProps}>
+                    {sampleUrls.length >= 3 ? null : (
+                      <div>
+                        <UploadOutlined />
+                        <div style={{ marginTop: 8 }}>上传</div>
+                      </div>
+                    )}
+                  </Upload>
+                  <Button
+                    icon={<EyeOutlined />}
+                    onClick={() =>
+                      previewImageInNewTab(sampleUrls[sampleUrls.length - 1])
+                    }
+                    disabled={sampleUrls.length === 0}
+                  >
+                    预览
+                  </Button>
+                </Space>
               </Form.Item>
             </Col>
           </Row>
@@ -2735,11 +2778,12 @@ export function MaterialsPage() {
                       <Select
                         allowClear
                         showSearch
-                        optionFilterProp="label"
+                        optionFilterProp="searchText"
                         placeholder="选择关联客户（可选）"
                         options={customers.map((c) => ({
                           value: c.id,
                           label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                          searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                         }))}
                       />
                     </Form.Item>
@@ -2838,11 +2882,12 @@ export function MaterialsPage() {
                 >
                   <Select
                     showSearch
-                    optionFilterProp="label"
+                    optionFilterProp="searchText"
                     placeholder="选择客供客户"
                     options={customers.map((c) => ({
                       value: c.id,
                       label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                      searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                     }))}
                   />
                 </Form.Item>
@@ -2897,14 +2942,25 @@ export function MaterialsPage() {
             </Col>
             <Col span={24}>
               <Form.Item label="签样图片（最多 3 张，点击缩略图可放大）">
-                <Upload {...editUploadProps}>
-                  {editSamples.length >= 3 ? null : (
-                    <div>
-                      <UploadOutlined />
-                      <div style={{ marginTop: 8 }}>上传</div>
-                    </div>
-                  )}
-                </Upload>
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  <Upload {...editUploadProps}>
+                    {editSamples.length >= 3 ? null : (
+                      <div>
+                        <UploadOutlined />
+                        <div style={{ marginTop: 8 }}>上传</div>
+                      </div>
+                    )}
+                  </Upload>
+                  <Button
+                    icon={<EyeOutlined />}
+                    onClick={() =>
+                      previewImageInNewTab(editSamples[editSamples.length - 1])
+                    }
+                    disabled={editSamples.length === 0}
+                  >
+                    预览
+                  </Button>
+                </Space>
               </Form.Item>
             </Col>
           </Row>

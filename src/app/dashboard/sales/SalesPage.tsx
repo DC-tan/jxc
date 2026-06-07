@@ -48,7 +48,7 @@ const SALES_TAB_PERM: Record<string, string> = {
   reminder: "tab.sales.changeReminder",
 };
 
-type CustomerOpt = { id: string; code: string; name: string };
+type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
 
 type ProductOpt = {
   id: string;
@@ -1816,10 +1816,11 @@ export function SalesPage() {
                       placeholder="全部"
                       style={{ width: 200 }}
                       showSearch
-                      optionFilterProp="label"
+                      optionFilterProp="searchText"
                       options={(presets?.customers ?? []).map((c) => ({
                         value: c.id,
                         label: `${c.code} ${c.name}`,
+                        searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                       }))}
                     />
                   </Form.Item>
@@ -1929,10 +1930,11 @@ export function SalesPage() {
                 <Select
                   placeholder="选择客户"
                   showSearch
-                  optionFilterProp="label"
+                  optionFilterProp="searchText"
                   options={(presets?.customers ?? []).map((c) => ({
                     value: c.id,
                     label: `${c.code} ${c.name}`,
+                    searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                   }))}
                 />
               </Form.Item>

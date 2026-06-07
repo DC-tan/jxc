@@ -11,6 +11,18 @@ import {
  * 只创建缺失项，不覆盖管理员已调整过的 enabled 状态。
  */
 export async function ensurePermissionMatrixDefinitions() {
+  const currentTabCodes = PERMISSION_DEFINITIONS
+    .map((p) => p.code)
+    .filter((code) => code.startsWith("tab."));
+
+  // 清理已从代码中移除的历史 tab 权限定义，避免权限矩阵继续显示旧项。
+  await prisma.permissionDef.deleteMany({
+    where: {
+      code: { startsWith: "tab." },
+      NOT: { code: { in: currentTabCodes } },
+    },
+  });
+
   for (const p of PERMISSION_DEFINITIONS) {
     await prisma.permissionDef.upsert({
       where: { code: p.code },

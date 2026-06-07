@@ -3,6 +3,51 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { ceilOutsourceMaterialQty } from "@/lib/outsource-lines";
 import { productBomForOutsource } from "@/lib/product-bom-scope";
+import {
+  outsourceMaterialFlowDirection,
+  outsourceMaterialFlowQuantity,
+} from "@/lib/outsource-material-stock-history";
+
+type HistoryRow = {
+  id: string;
+  receivedAt: string;
+  orderNo: string;
+  quantity: number;
+  direction: "IN" | "OUT";
+  partDescription: string;
+  operatorName: string;
+};
+
+function buildRecycleConsumeFlow(input: {
+  id: string;
+  orderNo: string;
+  productSets: number;
+  receivedAt: Date;
+  partDescription: string;
+  perSet: number;
+  productLabel: string;
+  operatorName: string;
+}): HistoryRow | null {
+  const consumeQty = Math.max(
+    0,
+    Math.trunc(Number(input.productSets) || 0) * input.perSet,
+  );
+  if (consumeQty <= 0) return null;
+  const desc =
+    input.partDescription.trim() ||
+    `外发加工回收消耗（${input.productLabel}×${input.productSets}）`;
+  return {
+    id: input.id,
+    receivedAt: input.receivedAt.toISOString(),
+    orderNo: input.orderNo,
+    quantity: consumeQty,
+    direction: "OUT",
+    partDescription: desc.startsWith("外发加工回收消耗（")
+      ? desc
+      : `外发加工回收消耗（${input.productLabel}×${input.productSets}）`,
+    operatorName: input.operatorName,
+  };
+}
 
 export async function GET(req: Request) {
   const auth = await requirePermission("outsource.view");
@@ -50,7 +95,9 @@ export async function GET(req: Request) {
             purchaseOrderNo: { in: orderNos },
             OR: [
               { partDescription: { startsWith: "外发出库（" } },
+              { partDescription: { startsWith: "外发出库调整（" } },
               { partDescription: { startsWith: "外发结单退回（" } },
+              { partDescription: { startsWith: "外发结单损耗（" } },
             ],
           },
           {
@@ -66,7 +113,7 @@ export async function GET(req: Request) {
       take: 2000,
     });
 
-    const [orders, productFlows] = await Promise.all([
+    const [orders, productFlows, recoveryFlows] = await Promise.all([
       prisma.outsourceOrder.findMany({
         where: { orderNo: { in: orderNos } },
         select: {
@@ -99,6 +146,17 @@ export async function GET(req: Request) {
         },
         take: 2000,
       }),
+      prisma.outsourceRecoveryInbound.findMany({
+        where: {
+          outsourceOrderNo: { in: orderNos },
+          quantity: { gt: 0 },
+        },
+        orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }],
+        include: {
+          operator: { select: { id: true, name: true, loginName: true } },
+        },
+        take: 2000,
+      }),
     ]);
 
     const perSetByOrderNo = new Map<string, number>();
@@ -119,52 +177,64 @@ export async function GET(req: Request) {
       );
     }
 
-    const receiveConsumeFlows = productFlows
-      .map((p) => {
-        const orderNo = p.purchaseOrderNo?.trim() ?? "";
-        const perSet = perSetByOrderNo.get(orderNo);
-        if (!perSet) return null;
-        const consumeQty = Math.max(0, Math.trunc(Number(p.quantity) || 0) * perSet);
-        if (consumeQty <= 0) return null;
-        const productLabel = productLabelByOrderNo.get(orderNo) ?? "—";
-        return {
-          id: `recv-consume-${p.id}`,
-          receivedAt: p.receivedAt.toISOString(),
-          orderNo,
-          quantity: -consumeQty,
-          direction: "OUT" as const,
-          partDescription: `外发加工回收消耗（${productLabel}×${p.quantity}）`,
-          operatorName:
-            p.operator?.name?.trim() || p.operator?.loginName?.trim() || "",
-        };
-      })
-      .filter((x): x is NonNullable<typeof x> => x != null);
-
-    return NextResponse.json({
-      list: [
-        ...flows.map((f) => ({
-          ...(() => {
-            const desc = f.partDescription ?? "";
-            const absQty = Math.abs(f.quantity);
-            const isOutsourceIssue = desc.startsWith("外发出库（");
-            const qtyInOutsourceStock = isOutsourceIssue ? absQty : -absQty;
-            return {
-              quantity: qtyInOutsourceStock,
-              direction: qtyInOutsourceStock >= 0 ? ("IN" as const) : ("OUT" as const),
-            };
-          })(),
-          id: f.id,
-          receivedAt: f.receivedAt.toISOString(),
-          orderNo: f.purchaseOrderNo ?? "",
-          partDescription: f.partDescription ?? "",
-          operatorName:
-            f.operator?.name?.trim() || f.operator?.loginName?.trim() || "",
-        })),
-        ...receiveConsumeFlows,
-      ].sort(
-        (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime(),
-      ),
+    const materialFlowRows: HistoryRow[] = flows.map((f) => {
+      const desc = f.partDescription ?? "";
+      return {
+        id: f.id,
+        receivedAt: f.receivedAt.toISOString(),
+        orderNo: f.purchaseOrderNo ?? "",
+        quantity: outsourceMaterialFlowQuantity(f.quantity),
+        direction: outsourceMaterialFlowDirection(desc),
+        partDescription: desc,
+        operatorName:
+          f.operator?.name?.trim() || f.operator?.loginName?.trim() || "",
+      };
     });
+
+    const receiveConsumeFlows: HistoryRow[] = [
+      ...productFlows
+        .map((p) => {
+          const orderNo = p.purchaseOrderNo?.trim() ?? "";
+          const perSet = perSetByOrderNo.get(orderNo);
+          if (!perSet) return null;
+          return buildRecycleConsumeFlow({
+            id: `recv-consume-pi-${p.id}`,
+            orderNo,
+            productSets: p.quantity,
+            receivedAt: p.receivedAt,
+            partDescription: p.partDescription ?? "",
+            perSet,
+            productLabel: productLabelByOrderNo.get(orderNo) ?? "—",
+            operatorName:
+              p.operator?.name?.trim() || p.operator?.loginName?.trim() || "",
+          });
+        })
+        .filter((x): x is HistoryRow => x != null),
+      ...recoveryFlows
+        .map((p) => {
+          const orderNo = p.outsourceOrderNo?.trim() ?? "";
+          const perSet = perSetByOrderNo.get(orderNo);
+          if (!perSet) return null;
+          return buildRecycleConsumeFlow({
+            id: `recv-consume-ori-${p.id}`,
+            orderNo,
+            productSets: p.quantity,
+            receivedAt: p.receivedAt,
+            partDescription: p.partDescription ?? "",
+            perSet,
+            productLabel: productLabelByOrderNo.get(orderNo) ?? "—",
+            operatorName:
+              p.operator?.name?.trim() || p.operator?.loginName?.trim() || "",
+          });
+        })
+        .filter((x): x is HistoryRow => x != null),
+    ];
+
+    const list = [...materialFlowRows, ...receiveConsumeFlows].sort(
+      (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime(),
+    );
+
+    return NextResponse.json({ list });
   } catch (e) {
     console.error("[GET /api/outsource-material-stock/history]", e);
     return NextResponse.json(
@@ -173,4 +243,3 @@ export async function GET(req: Request) {
     );
   }
 }
-

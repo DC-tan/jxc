@@ -22,7 +22,7 @@ export async function GET(req: Request) {
     const [suppliers, materials] = await Promise.all([
       prisma.supplier.findMany({
         orderBy: { code: "asc" },
-        select: { id: true, code: true, name: true, priceIncludesTax: true },
+        select: { id: true, code: true, name: true, shortName: true, priceIncludesTax: true },
       }),
       prisma.material.findMany({
         where: {

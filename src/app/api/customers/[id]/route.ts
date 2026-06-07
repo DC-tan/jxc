@@ -15,6 +15,7 @@ const patchSchema = z.object({
   mainProduct: z.string().optional().nullable(),
   quality: z.nativeEnum(CustomerQuality).optional(),
   priceIncludesTax: z.boolean().optional(),
+  relatedCustomerIds: z.array(z.string().min(1)).optional(),
 });
 
 export async function PATCH(
@@ -57,6 +58,27 @@ export async function PATCH(
   if (raw.quality !== undefined) data.quality = raw.quality;
   if (raw.priceIncludesTax !== undefined)
     data.priceIncludesTax = raw.priceIncludesTax;
+  const relatedCustomerIds =
+    raw.relatedCustomerIds !== undefined
+      ? Array.from(
+          new Set(raw.relatedCustomerIds.map((x) => x.trim()).filter(Boolean)),
+        )
+      : undefined;
+  if (relatedCustomerIds?.includes(id)) {
+    return NextResponse.json(
+      { error: "关联客户不能选择当前客户本身" },
+      { status: 400 },
+    );
+  }
+  if (relatedCustomerIds) {
+    const related = await prisma.customer.findMany({
+      where: { id: { in: relatedCustomerIds } },
+      select: { id: true },
+    });
+    if (related.length !== relatedCustomerIds.length) {
+      return NextResponse.json({ error: "存在无效的关联客户" }, { status: 400 });
+    }
+  }
 
   if (typeof data.code === "string") {
     const dup = await prisma.customer.findFirst({
@@ -73,7 +95,19 @@ export async function PATCH(
 
   await prisma.customer.update({
     where: { id },
-    data: data as Prisma.CustomerUpdateInput,
+    data: {
+      ...(data as Prisma.CustomerUpdateInput),
+      ...(relatedCustomerIds !== undefined
+        ? {
+            linkedCustomersAsSource: {
+              deleteMany: {},
+              create: relatedCustomerIds.map((relatedCustomerId) => ({
+                relatedCustomerId,
+              })),
+            },
+          }
+        : {}),
+    },
   });
   return NextResponse.json({ ok: true });
 }

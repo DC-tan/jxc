@@ -7,6 +7,7 @@ import { allocateMaterialCode } from "@/lib/materialCodeAllocation";
 import { resolveMaterialNaming } from "@/lib/materialCreateNaming";
 import { MATERIAL_KIND_LABEL } from "@/lib/materialLabels";
 import { ensureCustomerSupplySupplier } from "@/lib/customer-supply";
+import { getMaterialInboundTotalsByIds } from "@/lib/materialStock";
 
 const createSchema = z.object({
   code: z.string().optional(),
@@ -94,16 +95,16 @@ export async function GET(req: Request) {
       include: {
         supplier: { select: { id: true, code: true, name: true } },
         customer: { select: { id: true, code: true, name: true } },
-        inbounds: { select: { quantity: true } },
         presetKind: { select: { id: true, name: true, prefix: true } },
       },
     });
+    const totalQtyByMaterialId = await getMaterialInboundTotalsByIds(
+      prisma,
+      list.map((m) => m.id),
+    );
 
     const rows = list.map((m) => {
-      const totalQty = m.inbounds.reduce(
-        (s, i) => s + Number(i.quantity),
-        0,
-      );
+      const totalQty = totalQtyByMaterialId.get(m.id) ?? 0;
       return {
         id: m.id,
         code: m.code,

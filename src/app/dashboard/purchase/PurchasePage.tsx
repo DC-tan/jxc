@@ -42,7 +42,13 @@ const PURCHASE_TAB_PERM: Record<string, string> = {
 import { PurchaseOrderContractPreviewModal } from "./PurchaseOrderContractPreviewModal";
 import { PurchaseTemplateVisualEditor } from "./PurchaseTemplateVisualEditor";
 
-type SupplierOpt = { id: string; code: string; name: string; priceIncludesTax: boolean };
+type SupplierOpt = {
+  id: string;
+  code: string;
+  name: string;
+  shortName?: string | null;
+  priceIncludesTax: boolean;
+};
 type MaterialOpt = {
   id: string;
   code: string;
@@ -58,11 +64,87 @@ type PurchasePresetBundle = {
   materials: MaterialOpt[];
 };
 
+type PendingChangeReminder = {
+  id: string;
+  productModel: string;
+  customerMaterialCode: string;
+  changeSummary: string;
+  proposedAt: string;
+  status: "ACTIVE" | "DONE" | "VOIDED";
+  salesConfirmCount: number;
+  purchaseConfirmCount: number;
+  purchaseLastConfirmedAt: string | null;
+  purchaseLastConfirmedByName: string | null;
+};
+
+async function confirmPurchaseChannelReminders(
+  modal: { confirm: (config: Parameters<typeof Modal.confirm>[0]) => void },
+  reminders: PendingChangeReminder[],
+) {
+  if (reminders.length === 0) return true;
+  return new Promise<boolean>((resolve) => {
+    modal.confirm({
+      title: `检测到 ${reminders.length} 条客户变更提醒`,
+      width: 760,
+      okText: "已确认本次变更，继续保存",
+      cancelText: "取消",
+      content: (
+        <Space
+          direction="vertical"
+          style={{ maxHeight: 420, overflowY: "auto", color: "#cf1322" }}
+        >
+          {reminders.map((r) => (
+            <div
+              key={r.id}
+              style={{ border: "1px solid #f0f0f0", borderRadius: 6, padding: 10 }}
+            >
+              <Typography.Text strong style={{ color: "#cf1322" }}>
+                采购提醒（{r.purchaseConfirmCount}/2）
+              </Typography.Text>
+              <br />
+              <Typography.Text style={{ color: "#cf1322" }}>
+                商品：{r.productModel?.trim() || "—"} / {r.customerMaterialCode?.trim() || "—"}
+              </Typography.Text>
+              <br />
+              <Typography.Text style={{ color: "#cf1322" }}>
+                变更：{r.changeSummary}
+              </Typography.Text>
+              <br />
+              <Typography.Text style={{ color: "#cf1322" }}>
+                提出：{new Date(r.proposedAt).toLocaleDateString("zh-CN")}
+                {r.purchaseLastConfirmedAt
+                  ? `；上次确认：${r.purchaseLastConfirmedByName ?? "—"} ${new Date(r.purchaseLastConfirmedAt).toLocaleString("zh-CN")}`
+                  : ""}
+              </Typography.Text>
+            </div>
+          ))}
+        </Space>
+      ),
+      onOk: async () => {
+        await fetchJson("/api/customer-change-reminders/ack", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ids: reminders.map((x) => x.id),
+            channel: "purchase",
+          }),
+        });
+        resolve(true);
+      },
+      onCancel: () => resolve(false),
+    });
+  });
+}
+
 type PurchaseOrderRow = {
   id: string;
   orderNo: string;
   remark: string | null;
   status?: string;
+  canEdit?: boolean;
+  canDelete?: boolean;
+  canClose?: boolean;
   purchaseChannel?: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   supplier: SupplierOpt;
   salesOrder?: {
@@ -108,6 +190,7 @@ type DetailLine = {
     unit: string;
     unitPrice: string;
     partDescription: string | null;
+    inspectionNotes?: string | null;
     purchaseChannel?: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
   };
 };
@@ -202,6 +285,7 @@ const PURCHASE_ORDER_COL_OPTIONS_UNDELIVERED: { label: string; value: string }[]
     { label: "采购单号", value: "orderNo" },
     { label: "供应商", value: "supplier" },
     { label: "关联销售单", value: "salesOrder" },
+    { label: "关联机型", value: "customerModel" },
     { label: "交货时间", value: "deliveryDueAt" },
     { label: "状态", value: "status" },
     { label: "行数", value: "lineCount" },
@@ -215,6 +299,7 @@ const PURCHASE_ORDER_COL_OPTIONS_QUERY: { label: string; value: string }[] = [
   { label: "采购单号", value: "orderNo" },
   { label: "供应商", value: "supplier" },
   { label: "关联销售单", value: "salesOrder" },
+  { label: "关联机型", value: "customerModel" },
   { label: "交货时间", value: "deliveryDueAt" },
   { label: "实际交货日期", value: "actualDeliveredAt" },
   { label: "状态", value: "status" },
@@ -281,6 +366,7 @@ const DEFAULT_PURCHASE_LIST_COL_WIDTH: Record<string, number> = {
   orderNo: 160,
   supplier: 180,
   salesOrder: 160,
+  customerModel: 140,
   deliveryDueAt: 120,
   actualDeliveredAt: 128,
   status: 88,
@@ -682,6 +768,7 @@ export function PurchasePage() {
 
   const [pendingRows, setPendingRows] = useState<PurchaseOrderRow[]>([]);
   const [loadingPending, setLoadingPending] = useState(false);
+  const [pendingSupplierId, setPendingSupplierId] = useState<string | undefined>(undefined);
   const [pendingPoListColKeys, setPendingPoListColKeys] = useState<string[]>(
     () =>
       loadPurchaseVisibleColKeys(
@@ -743,6 +830,9 @@ export function PurchasePage() {
   const [receiptQtyByLineId, setReceiptQtyByLineId] = useState<Record<string, number>>(
     {},
   );
+  const [receiptSpareQtyByLineId, setReceiptSpareQtyByLineId] = useState<
+    Record<string, number>
+  >({});
 
   const openPoContractPreview = useCallback((r: PurchaseOrderRow) => {
     setPoContractPreviewId(r.id);
@@ -800,12 +890,12 @@ export function PurchasePage() {
       createdTo: string,
       v: Record<string, unknown>,
       mode: "default" | "pending" | "inQuery",
-      purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT" = "STANDARD_PURCHASE",
+      purchaseChannel?: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT",
     ) => {
       const p = new URLSearchParams();
       p.set("createdFrom", createdFrom);
       p.set("createdTo", createdTo);
-      p.set("purchaseChannel", purchaseChannel);
+      if (purchaseChannel) p.set("purchaseChannel", purchaseChannel);
       if (mode === "pending") p.set("pending", "1");
       if (mode === "inQuery") p.set("inQuery", "1");
       if (v.supplierId) p.set("supplierId", String(v.supplierId));
@@ -848,7 +938,7 @@ export function PurchasePage() {
         `/api/purchase-orders?${buildQuery(
           start,
           end,
-          {},
+          pendingSupplierId ? { supplierId: pendingSupplierId } : {},
           "pending",
           "STANDARD_PURCHASE",
         )}`,
@@ -861,7 +951,7 @@ export function PurchasePage() {
     } finally {
       setLoadingPending(false);
     }
-  }, [message, buildQuery]);
+  }, [message, buildQuery, pendingSupplierId]);
 
   const loadQueryOrders = useCallback(
     async (v: Record<string, unknown>) => {
@@ -875,13 +965,19 @@ export function PurchasePage() {
         }
         const start = range[0].startOf("day").toISOString();
         const end = range[1].endOf("day").toISOString();
+        const purchaseChannelRaw = String(v.purchaseChannel ?? "").trim();
+        const purchaseChannel =
+          purchaseChannelRaw === "STANDARD_PURCHASE" ||
+          purchaseChannelRaw === "PROCESSING_CONTRACT"
+            ? purchaseChannelRaw
+            : undefined;
         const data = await fetchJson<{ list: PurchaseOrderRow[] }>(
           `/api/purchase-orders?${buildQuery(
             start,
             end,
             v,
             "inQuery",
-            "STANDARD_PURCHASE",
+            purchaseChannel,
           )}`,
           { credentials: "include" },
         );
@@ -948,6 +1044,29 @@ export function PurchasePage() {
         message.warning("物料不存在或不是 PCB 加工合同物料");
         return;
       }
+      try {
+        const reminderPayload = await fetchJson<{
+          list: PendingChangeReminder[];
+        }>("/api/customer-change-reminders/match", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            materialIds: [material.id],
+            channel: "purchase",
+          }),
+        });
+        const proceed = await confirmPurchaseChannelReminders(
+          modal,
+          reminderPayload.list ?? [],
+        );
+        if (!proceed) return;
+      } catch (e) {
+        message.error(
+          e instanceof Error ? e.message : "加载客户变更提醒失败",
+        );
+        return;
+      }
 
       setPcbSavingRowKey(row.key);
       try {
@@ -981,7 +1100,7 @@ export function PurchasePage() {
         setPcbSavingRowKey(null);
       }
     },
-    [message, pcbMaterialOptions, loadPcbPending],
+    [message, modal, pcbMaterialOptions, loadPcbPending],
   );
 
   useEffect(() => {
@@ -1138,6 +1257,33 @@ export function PurchasePage() {
       );
       return;
     }
+    if (!editingPoId && createChannel === "PROCESSING_CONTRACT") {
+      try {
+        const reminderPayload = await fetchJson<{
+          list: PendingChangeReminder[];
+        }>("/api/customer-change-reminders/match", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            materialIds: filled
+              .map((l) => l.materialId)
+              .filter((id): id is string => Boolean(id)),
+            channel: "purchase",
+          }),
+        });
+        const proceed = await confirmPurchaseChannelReminders(
+          modal,
+          reminderPayload.list ?? [],
+        );
+        if (!proceed) return;
+      } catch (e) {
+        message.error(
+          e instanceof Error ? e.message : "加载客户变更提醒失败",
+        );
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const body = {
@@ -1216,18 +1362,25 @@ export function PurchasePage() {
       setReceiptOrderNo(r.orderNo);
       setReceiptDetail(null);
       setReceiptQtyByLineId({});
+      setReceiptSpareQtyByLineId({});
       setReceiptOpen(true);
       setReceiptLoading(true);
       try {
-        const d = await fetchJson<DetailPayload>(`/api/purchase-orders/${r.id}`, {
-          credentials: "include",
-        });
+        const d = await fetchJson<DetailPayload>(
+          `/api/purchase-orders/${r.id}?forReceipt=1`,
+          {
+            credentials: "include",
+          },
+        );
         const qtys: Record<string, number> = {};
+        const spares: Record<string, number> = {};
         for (const line of d.lines) {
           qtys[line.id] = Math.round(Number(line.quantity));
+          spares[line.id] = 0;
         }
         setReceiptDetail(d);
         setReceiptQtyByLineId(qtys);
+        setReceiptSpareQtyByLineId(spares);
       } catch (e) {
         message.error(e instanceof Error ? e.message : "加载失败");
         setReceiptOpen(false);
@@ -1244,12 +1397,24 @@ export function PurchasePage() {
     if (!receiptDetail || !receiptOrderId) {
       return Promise.reject(new Error("未就绪"));
     }
+    const actionableLines = receiptDetail.lines.filter(
+      (l) => !l.id.startsWith("syn-"),
+    );
+    if (actionableLines.length === 0) {
+      message.warning("该采购单无可收料明细");
+      return Promise.reject(new Error("validation"));
+    }
     let anyPositive = false;
-    for (const l of receiptDetail.lines) {
+    for (const l of actionableLines) {
       const maxQ = Math.round(Number(l.quantity));
       const q = receiptQtyByLineId[l.id] ?? 0;
+      const spareQ = Math.max(0, Math.round(receiptSpareQtyByLineId[l.id] ?? 0));
       if (q < 0 || q > maxQ) {
         message.warning("本次收料数量须在 0 与待收数量之间");
+        return Promise.reject(new Error("validation"));
+      }
+      if (spareQ > 0 && q < maxQ) {
+        message.warning("仅当本次收料等于待收数量时可填写备品数");
         return Promise.reject(new Error("validation"));
       }
       if (q > 0) anyPositive = true;
@@ -1268,9 +1433,10 @@ export function PurchasePage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             confirmReceipt: true,
-            lines: receiptDetail.lines.map((l) => ({
+            lines: actionableLines.map((l) => ({
               lineId: l.id,
               receivedQty: receiptQtyByLineId[l.id] ?? 0,
+              spareQty: Math.max(0, Math.round(receiptSpareQtyByLineId[l.id] ?? 0)),
             })),
           }),
         },
@@ -1285,6 +1451,7 @@ export function PurchasePage() {
       setReceiptOrderNo(null);
       setReceiptDetail(null);
       setReceiptQtyByLineId({});
+      setReceiptSpareQtyByLineId({});
       await reloadListsAfterMutation();
     } catch (e) {
       message.error(e instanceof Error ? e.message : "收料失败");
@@ -1297,21 +1464,75 @@ export function PurchasePage() {
     receiptDetail,
     receiptOrderId,
     receiptQtyByLineId,
+    receiptSpareQtyByLineId,
     reloadListsAfterMutation,
   ]);
 
-  const renderMutableListOp = useCallback(
-    (_: unknown, r: PurchaseOrderRow) => {
+  const receiptInspectionNotes = useMemo(() => {
+    if (!receiptDetail) return [];
+    const lines: { lineId: string; text: string }[] = [];
+    const seen = new Set<string>();
+    for (const l of receiptDetail.lines) {
+      const note = l.material.inspectionNotes?.trim();
+      if (!note) continue;
+      const key = `${l.material.id}::${note}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push({
+        lineId: l.id,
+        text: `${l.material.name}：${note}`,
+      });
+    }
+    return lines;
+  }, [receiptDetail]);
+
+  const closeReceiptModal = useCallback(() => {
+    setReceiptOpen(false);
+    setReceiptOrderId(null);
+    setReceiptOrderNo(null);
+    setReceiptDetail(null);
+    setReceiptQtyByLineId({});
+    setReceiptSpareQtyByLineId({});
+  }, []);
+
+  const renderMutableListOpImpl = useCallback(
+    (
+      r: PurchaseOrderRow,
+      opts?: {
+        grantByPcbTab?: boolean;
+        deleteLabel?: string;
+        showDetailWhenReadonly?: boolean;
+      },
+    ) => {
+      const grantByPcbTab = opts?.grantByPcbTab === true;
       const isEditableStatus =
         r.status === "PENDING_RECEIPT" || r.status === "CONFIRMED";
-      const canEdit = isEditableStatus && allowed("purchase.edit");
-      const canDelete = isEditableStatus && allowed("purchase.delete");
+      const isPcbOrder = r.purchaseChannel === "PROCESSING_CONTRACT";
+      const hasEditPerm =
+        allowed("purchase.edit") || (grantByPcbTab && isPcbOrder && allowed("tab.pur.pcb"));
+      const hasDeletePerm =
+        allowed("purchase.delete") || (grantByPcbTab && isPcbOrder && allowed("tab.pur.pcb"));
+      const hasReceivePerm =
+        allowed("purchase.receive") || (grantByPcbTab && isPcbOrder && allowed("tab.pur.pcb"));
+      const canEdit =
+        isEditableStatus &&
+        hasEditPerm &&
+        r.canEdit !== false;
+      const canDelete =
+        isEditableStatus &&
+        hasDeletePerm &&
+        r.canDelete !== false;
+      const canClose =
+        r.status === "PENDING_RECEIPT" &&
+        hasEditPerm &&
+        r.canClose === true;
       const canConfirmReceipt =
-        r.status === "PENDING_RECEIPT" && allowed("purchase.receive");
-      const showDetail = !canEdit && !canDelete;
+        r.status === "PENDING_RECEIPT" &&
+        hasReceivePerm;
+      const showDetail = (opts?.showDetailWhenReadonly ?? true) && !canEdit && !canDelete && !canClose;
       return (
         <Space size={0} wrap>
-          {(canEdit || canDelete) && (
+          {(canEdit || canDelete || canClose) && (
             <>
               {canEdit ? (
                 <Button type="link" size="small" onClick={() => void openEdit(r)}>
@@ -1342,7 +1563,7 @@ export function PurchasePage() {
                     });
                   }}
                 >
-                  删除
+                  {opts?.deleteLabel ?? "删除"}
                 </Button>
               ) : null}
             </>
@@ -1356,6 +1577,33 @@ export function PurchasePage() {
               确定收料
             </Button>
           )}
+          {canClose ? (
+            <Button
+              type="link"
+              size="small"
+              danger
+              style={{ marginLeft: canConfirmReceipt ? 14 : 0 }}
+              onClick={() => {
+                modal.confirm({
+                  title: `确定结单采购单 ${r.orderNo}？`,
+                  content: "结单后该采购单将从未交列表移出。",
+                  okType: "primary",
+                  onOk: async () => {
+                    await fetchJson(`/api/purchase-orders/${r.id}`, {
+                      method: "PATCH",
+                      credentials: "include",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ closeOrder: true }),
+                    });
+                    message.success("已结单");
+                    await reloadListsAfterMutation();
+                  },
+                });
+              }}
+            >
+              结单
+            </Button>
+          ) : null}
           {showDetail && (
             <Button type="link" size="small" onClick={() => void openDetail(r.id)}>
               详情
@@ -1373,6 +1621,21 @@ export function PurchasePage() {
       openReceiptModal,
       reloadListsAfterMutation,
     ],
+  );
+
+  const renderMutableListOp = useCallback(
+    (_: unknown, r: PurchaseOrderRow) => renderMutableListOpImpl(r),
+    [renderMutableListOpImpl],
+  );
+
+  const renderPcbListOp = useCallback(
+    (_: unknown, r: PurchaseOrderRow) =>
+      renderMutableListOpImpl(r, {
+        grantByPcbTab: true,
+        deleteLabel: "取消",
+        showDetailWhenReadonly: false,
+      }),
+    [renderMutableListOpImpl],
   );
 
   const purchaseListColsQuery = useMemo(
@@ -1397,6 +1660,13 @@ export function PurchasePage() {
           ellipsis: true,
           render: (_: unknown, r: PurchaseOrderRow) =>
             r.salesOrder?.customerOrderNo?.trim() || "—",
+        },
+        {
+          key: "customerModel",
+          title: "关联机型",
+          ellipsis: true,
+          render: (_: unknown, r: PurchaseOrderRow) =>
+            r.salesOrder?.customerModel?.trim() || "—",
         },
         {
           key: "deliveryDueAt",
@@ -1508,6 +1778,17 @@ export function PurchasePage() {
     [renderMutableListOp],
   );
 
+  const pcbMutableOpCol = useMemo(
+    () =>
+      ({
+        key: "op",
+        title: "操作",
+        width: 240,
+        render: renderPcbListOp,
+      }) as ColumnsType<PurchaseOrderRow>[number],
+    [renderPcbListOp],
+  );
+
   const todayListColumns = useMemo(() => {
     const base = [...purchaseListColsUndelivered, mutableOpCol];
     const visible = base.filter(
@@ -1567,6 +1848,27 @@ export function PurchasePage() {
   }, [
     purchaseListColsUndelivered,
     mutableOpCol,
+    pendingPoListColKeys,
+    pendingPoListColWidths,
+  ]);
+
+  const pcbListColumns = useMemo(() => {
+    const base = [...purchaseListColsUndelivered, pcbMutableOpCol];
+    const visible = base.filter(
+      (col) =>
+        col.key === "op" ||
+        col.key === "orderPreview" ||
+        (typeof col.key === "string" && pendingPoListColKeys.includes(col.key)),
+    );
+    return attachResizePurchaseList(
+      visible,
+      pendingPoListColWidths,
+      setPendingPoListColWidths,
+      DEFAULT_PURCHASE_LIST_COL_WIDTH,
+    );
+  }, [
+    purchaseListColsUndelivered,
+    pcbMutableOpCol,
     pendingPoListColKeys,
     pendingPoListColWidths,
   ]);
@@ -1888,6 +2190,20 @@ export function PurchasePage() {
                     onChange={setPendingPoListColKeys}
                     options={PURCHASE_ORDER_COL_OPTIONS_UNDELIVERED}
                   />
+                  <Select
+                    allowClear
+                    showSearch
+                    placeholder="供应商（全部）"
+                    style={{ width: 220 }}
+                    value={pendingSupplierId}
+                    onChange={(v) => setPendingSupplierId(v)}
+                    optionFilterProp="searchText"
+                    options={(presets?.suppliers ?? []).map((s) => ({
+                      value: s.id,
+                      label: `${s.code} ${s.name}`,
+                      searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
+                    }))}
+                  />
                   <HelpTip
                     text={
                       <>
@@ -1970,7 +2286,7 @@ export function PurchasePage() {
                 <Table<PurchaseOrderRow>
                   rowKey="id"
                   loading={loadingPcb}
-                  columns={pendingListColumns}
+                  columns={pcbListColumns}
                   dataSource={pcbRows}
                   pagination={{ pageSize: 10 }}
                   scroll={{ x: "max-content" }}
@@ -2006,15 +2322,27 @@ export function PurchasePage() {
                       placeholder="全部"
                       style={{ width: 200 }}
                       showSearch
-                      optionFilterProp="label"
+                      optionFilterProp="searchText"
                       options={(presets?.suppliers ?? []).map((s) => ({
                         value: s.id,
                         label: `${s.code} ${s.name}`,
+                        searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                       }))}
                     />
                   </Form.Item>
                   <Form.Item name="orderNo" label="采购单号">
                     <Input allowClear placeholder="模糊" style={{ width: 160 }} />
+                  </Form.Item>
+                  <Form.Item name="purchaseChannel" label="采购渠道">
+                    <Select
+                      allowClear
+                      placeholder="全部"
+                      style={{ width: 180 }}
+                      options={[
+                        { value: "STANDARD_PURCHASE", label: "常规采购" },
+                        { value: "PROCESSING_CONTRACT", label: "PCB采购" },
+                      ]}
+                    />
                   </Form.Item>
                   <Form.Item>
                     <Button type="primary" htmlType="submit">
@@ -2032,6 +2360,7 @@ export function PurchasePage() {
                           dateRange: range,
                           supplierId: undefined,
                           orderNo: undefined,
+                          purchaseChannel: undefined,
                         });
                         void loadQueryOrders({
                           dateRange: range,
@@ -2133,10 +2462,11 @@ export function PurchasePage() {
             <Select
               placeholder="选择供应商"
               showSearch
-              optionFilterProp="label"
+              optionFilterProp="searchText"
               options={(presets?.suppliers ?? []).map((s) => ({
                 value: s.id,
                 label: `${s.code} ${s.name}`,
+                searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
               }))}
             />
           </Form.Item>
@@ -2278,16 +2608,64 @@ export function PurchasePage() {
           </Space>
         }
         open={receiptOpen}
-        onCancel={() => {
-          setReceiptOpen(false);
-          setReceiptOrderId(null);
-          setReceiptOrderNo(null);
-          setReceiptDetail(null);
-          setReceiptQtyByLineId({});
-        }}
-        okText="确认入库"
-        onOk={() => submitReceipt()}
-        confirmLoading={receiptSubmitting}
+        onCancel={closeReceiptModal}
+        footer={
+          <div style={{ width: "100%" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              <Button onClick={closeReceiptModal}>取消</Button>
+              <Button type="primary" loading={receiptSubmitting} onClick={() => void submitReceipt()}>
+                确认入库
+              </Button>
+            </div>
+            {receiptInspectionNotes.length > 0 ? (
+              <div
+                style={{
+                  marginTop: 10,
+                  borderRadius: 6,
+                  background: "#fffbe6",
+                  border: "1px solid #ffe58f",
+                  padding: "8px 10px",
+                  textAlign: "left",
+                }}
+              >
+                <Typography.Text strong style={{ fontSize: 18 }}>
+                  物料检料注意事项
+                </Typography.Text>
+                <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+                  {receiptInspectionNotes.map((n) => (
+                    <li key={n.lineId} style={{ fontSize: 18, lineHeight: 1.6 }}>
+                      {n.text}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 10,
+                  borderRadius: 6,
+                  background: "#fafafa",
+                  border: "1px dashed #d9d9d9",
+                  padding: "8px 10px",
+                  textAlign: "left",
+                }}
+              >
+                <Typography.Text strong style={{ fontSize: 18 }}>
+                  物料检料注意事项
+                </Typography.Text>
+                <div style={{ marginTop: 6, fontSize: 18, color: "#8c8c8c" }}>
+                  暂无注意事项
+                </div>
+              </div>
+            )}
+          </div>
+        }
         width={980}
         destroyOnHidden
       >
@@ -2380,12 +2758,14 @@ export function PurchasePage() {
                   width: 160,
                   render: (_, l) => {
                     const maxQ = Math.round(Number(l.quantity));
+                    const disabled = maxQ <= 0 || l.id.startsWith("syn-");
                     return (
                       <InputNumber
                         min={0}
                         max={maxQ}
                         precision={0}
                         style={{ width: "100%" }}
+                        disabled={disabled}
                         value={receiptQtyByLineId[l.id] ?? 0}
                         onChange={(v) => {
                           const n =
@@ -2396,6 +2776,41 @@ export function PurchasePage() {
                                   maxQ,
                                 );
                           setReceiptQtyByLineId((prev) => ({
+                            ...prev,
+                            [l.id]: n,
+                          }));
+                          if (n < maxQ) {
+                            setReceiptSpareQtyByLineId((prev) => ({
+                              ...prev,
+                              [l.id]: 0,
+                            }));
+                          }
+                        }}
+                      />
+                    );
+                  },
+                },
+                {
+                  title: "备品数",
+                  width: 120,
+                  render: (_, l) => {
+                    const maxQ = Math.round(Number(l.quantity));
+                    const receiveQ = receiptQtyByLineId[l.id] ?? 0;
+                    const canInputSpare =
+                      !l.id.startsWith("syn-") && maxQ > 0 && receiveQ >= maxQ;
+                    return (
+                      <InputNumber
+                        min={0}
+                        precision={0}
+                        style={{ width: "100%" }}
+                        disabled={!canInputSpare}
+                        value={receiptSpareQtyByLineId[l.id] ?? 0}
+                        onChange={(v) => {
+                          const n =
+                            v === null || v === undefined
+                              ? 0
+                              : Math.max(0, Math.round(Number(v)));
+                          setReceiptSpareQtyByLineId((prev) => ({
                             ...prev,
                             [l.id]: n,
                           }));

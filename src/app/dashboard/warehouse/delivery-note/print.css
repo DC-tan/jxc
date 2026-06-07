@@ -1,5 +1,5 @@
 /**
- * 正式送货单：版心宽度与 A5 横一致；高度随内容（紧凑样式在组件内），避免裁切
+ * 正式送货单：A5 横向，内容区按左右各 5mm 留白（不改纸张尺寸）
  */
 .delivery-note-print-area-wrap {
   overflow: visible;
@@ -7,8 +7,8 @@
 
 /* A5 横：根节点占满可印高度；内部三段 space-between 均分竖向留白 */
 .delivery-note-print-root.delivery-note-a5-landscape {
-  width: 210mm;
-  max-width: min(210mm, 100%);
+  width: calc(210mm - 10mm);
+  max-width: min(calc(210mm - 10mm), 100%);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -168,7 +168,7 @@
 
   /* 单页优先：不超出可印区 */
   .delivery-note-print-root.delivery-note-a5-landscape {
-    width: auto !important;
+    width: calc(210mm - 10mm) !important;
     max-width: none !important;
     min-height: 0 !important;
     page-break-inside: avoid;

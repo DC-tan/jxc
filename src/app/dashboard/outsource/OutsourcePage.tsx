@@ -28,11 +28,12 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
-import { inhouseMaterialRowsForProductSets } from "@/lib/inhouse-bom-display";
 import { formatOutsourceRecoveryMaterialCode } from "@/lib/outsource-recovery-display";
 import {
   ceilOutsourceMaterialQty,
   computeOutsourceLinesFromBom,
+  defaultOutsourceWarehouseSend,
+  outsourcePoolUseForNeed,
 } from "@/lib/outsource-lines";
 
 const OUTSOURCE_TAB_PERM: Record<string, string> = {
@@ -75,6 +76,7 @@ type EditableLine = {
   materialId: string;
   code: string;
   name: string;
+  partDescription?: string | null;
   unit: string;
   quantity: number;
 };
@@ -85,6 +87,7 @@ type EditOrderLine = {
   materialId: string;
   code: string;
   name: string;
+  partDescription?: string | null;
   unit: string;
   quantity: number;
 };
@@ -118,6 +121,24 @@ function HelpTip({ text }: { text: ReactNode }) {
   );
 }
 
+function outsourceLineStockError(
+  warehouseSend: number,
+  bomNeed: number,
+  materialStock: number,
+  outsourceStock: number,
+): string | null {
+  const poolUse = outsourcePoolUseForNeed(bomNeed, outsourceStock);
+  const send = Math.max(0, Math.trunc(warehouseSend) || 0);
+  const total = poolUse + send;
+  if (total < bomNeed) {
+    return `用料不足（本套需 ${bomNeed}，外发库存可扣 ${poolUse}，实发 ${send}）`;
+  }
+  if (send > materialStock) {
+    return `实发超出物料库存（库存 ${materialStock}）`;
+  }
+  return null;
+}
+
 type OutsourceOrderRow = {
   id: string;
   orderNo: string;
@@ -127,6 +148,7 @@ type OutsourceOrderRow = {
   receivedAt: string | null;
   createdAt: string;
   canCancel?: boolean;
+  canClose?: boolean;
   supplier: SupplierOpt | null;
   product: {
     id: string;
@@ -214,6 +236,7 @@ type OutsourceMaterialStockRow = {
   materialId: string;
   materialCode: string;
   materialName: string;
+  partDescription: string | null;
   unit: string;
   quantity: number;
   openQty: number;
@@ -266,6 +289,16 @@ type OutsourceRecoveryStockRow = {
   }[];
 };
 
+type OutsourceRecoveryHistoryRow = {
+  id: string;
+  receivedAt: string;
+  quantity: number;
+  direction: "IN" | "OUT";
+  orderNo: string;
+  partDescription: string;
+  operatorName: string;
+};
+
 function stockRowKey(r: Pick<OutsourceMaterialStockRow, "supplierId" | "materialId">): string {
   return `${r.supplierId ?? "NONE"}-${r.materialId}`;
 }
@@ -276,9 +309,11 @@ type CloseLineInput = {
   code: string;
   name: string;
   unit: string;
+  /** 当前外发单未回收占用数量（非总在外） */
   currentQty: number;
   /** 按损耗套数自动折算（只读） */
   lossBySets: number;
+  /** 自动计算：占用数量 - 损耗折算（只读） */
   returnQty: number;
 };
 
@@ -333,17 +368,29 @@ function perSetForLine(
   return ceilOutsourceMaterialQty(orig / detail.productQty);
 }
 
-/** 按各物料剩余量折算：尚可回收的成品套数（短板） */
+function closeOccupancyQty(
+  detail: OutsourceDetailPayload,
+  line: OutsourceDetailLine,
+  bomPerSet: Map<string, number>,
+): number {
+  const pendingSets = Math.max(0, detail.productQty - setsRecoveredSoFar(detail));
+  const perSet = perSetForLine(line, detail, bomPerSet);
+  return Math.max(0, Math.min(Math.max(0, line.quantity), perSet * pendingSets));
+}
+
+/** 按各物料占用量折算：尚可回收的成品套数（短板） */
 function setsPendingByMaterials(detail: OutsourceDetailPayload): number {
+  const recovered = setsRecoveredSoFar(detail);
+  const pendingByOrder = Math.max(0, detail.productQty - recovered);
   const bom = bomPerSetMap(detail.product.productMaterials);
-  let min = Infinity;
+  let min = pendingByOrder;
   for (const l of detail.lines) {
     const p = perSetForLine(l, detail, bom);
     if (p <= 0) continue;
-    const s = Math.floor(l.quantity / p);
-    min = Math.min(min, s);
+    const occ = Math.min(pendingByOrder * p, l.quantity);
+    min = Math.min(min, Math.floor(occ / p));
   }
-  return min === Infinity ? 0 : min;
+  return min;
 }
 
 /** 本单已按套入库的成品数量（与库存侧「外发单号」下成品正入库流水一致） */
@@ -412,6 +459,8 @@ export function OutsourcePage() {
   const [recoveryPoolDetailOpen, setRecoveryPoolDetailOpen] = useState(false);
   const [recoveryPoolDetailTarget, setRecoveryPoolDetailTarget] =
     useState<OutsourceRecoveryStockRow | null>(null);
+  const [recoveryHistoryLoading, setRecoveryHistoryLoading] = useState(false);
+  const [recoveryHistoryRows, setRecoveryHistoryRows] = useState<OutsourceRecoveryHistoryRow[]>([]);
   const recoveryKeywordRef = useRef("");
   const [closeOpen, setCloseOpen] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
@@ -437,7 +486,11 @@ export function OutsourcePage() {
   const [editStockByMaterial, setEditStockByMaterial] = useState<Record<string, number>>(
     {},
   );
+  const [editOutsourceStockByMaterial, setEditOutsourceStockByMaterial] = useState<
+    Record<string, number>
+  >({});
   const [editLoadingStock, setEditLoadingStock] = useState(false);
+  const [editLoadingOutsourceStock, setEditLoadingOutsourceStock] = useState(false);
   const [tab, setTab] = useState("add");
   const [form] = Form.useForm<{
     productQty: number;
@@ -466,28 +519,61 @@ export function OutsourcePage() {
   const [lines, setLines] = useState<EditableLine[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [stockByMaterial, setStockByMaterial] = useState<Record<string, number>>({});
+  const [outsourceStockByMaterial, setOutsourceStockByMaterial] = useState<
+    Record<string, number>
+  >({});
   const [loadingStock, setLoadingStock] = useState(false);
+  const [loadingOutsourceStock, setLoadingOutsourceStock] = useState(false);
+  const createLinesManualRef = useRef(false);
 
   const productQty = Form.useWatch("productQty", form) ?? 1;
+  const addSupplierId = Form.useWatch("supplierId", form) as string | undefined;
+  const editSupplierId = Form.useWatch("supplierId", editForm) as string | undefined;
+  const editProductQty = Form.useWatch("productQty", editForm) ?? 1;
+
+  const createBomNeedByMaterial = useMemo(() => {
+    if (!selectedProduct) return {} as Record<string, number>;
+    const qty = Math.max(1, Math.trunc(Number(productQty)) || 1);
+    return Object.fromEntries(
+      computeOutsourceLinesFromBom(
+        selectedProduct.bom.map((b) => ({
+          materialId: b.materialId,
+          usageQty: b.usageQty,
+        })),
+        qty,
+      ).map((r) => [r.materialId, r.quantity]),
+    );
+  }, [selectedProduct, productQty]);
+
+  const editBomNeedByMaterial = useMemo(() => {
+    const bom = editDetail?.product.productMaterials ?? [];
+    if (bom.length === 0) return {} as Record<string, number>;
+    const qty = Math.max(1, Math.trunc(Number(editProductQty)) || 1);
+    return Object.fromEntries(
+      computeOutsourceLinesFromBom(
+        bom.map((b) => ({
+          materialId: b.materialId,
+          usageQty: b.usageQty,
+        })),
+        qty,
+      ).map((r) => [r.materialId, r.quantity]),
+    );
+  }, [editDetail, editProductQty]);
 
   const hasStockShortage = useMemo(() => {
     if (lines.length === 0) return false;
-    return lines.some(
-      (l) => l.quantity > (stockByMaterial[l.materialId] ?? 0),
-    );
-  }, [lines, stockByMaterial]);
-
-  const inhouseCreateRows = useMemo(
-    () =>
-      selectedProduct?.processingMode === "OUTSOURCE_INHOUSE" &&
-      (selectedProduct.inhouseBom?.length ?? 0) > 0
-        ? inhouseMaterialRowsForProductSets(
-            selectedProduct.inhouseBom,
-            productQty,
-          )
-        : [],
-    [selectedProduct, productQty],
-  );
+    return lines.some((l) => {
+      const bomNeed = createBomNeedByMaterial[l.materialId] ?? 0;
+      return (
+        outsourceLineStockError(
+          l.quantity,
+          bomNeed,
+          stockByMaterial[l.materialId] ?? 0,
+          outsourceStockByMaterial[l.materialId] ?? 0,
+        ) != null
+      );
+    });
+  }, [lines, stockByMaterial, outsourceStockByMaterial, createBomNeedByMaterial]);
 
   const recycleCap = useMemo(() => {
     if (!recycleDetail) return 0;
@@ -560,11 +646,17 @@ export function OutsourcePage() {
     };
   }, []);
 
+  const createMaterialIdsKey = useMemo(() => {
+    if (!selectedProduct) return "";
+    return selectedProduct.bom.map((b) => b.materialId).join(",");
+  }, [selectedProduct]);
+
   useEffect(() => {
     if (!selectedProduct) {
       setLines([]);
       return;
     }
+    createLinesManualRef.current = false;
     const qty = Math.max(1, Math.trunc(Number(productQty)) || 1);
     const computed = computeOutsourceLinesFromBom(
       selectedProduct.bom.map((b) => ({
@@ -576,81 +668,146 @@ export function OutsourcePage() {
     setLines(
       computed.map((row) => {
         const b = selectedProduct.bom.find((x) => x.materialId === row.materialId)!;
+        const pool = outsourceStockByMaterial[row.materialId] ?? 0;
         return {
           materialId: row.materialId,
           code: b.material.code,
           name: b.material.name,
+          partDescription: b.material.partDescription ?? null,
           unit: b.material.unit,
-          quantity: row.quantity,
+          quantity: defaultOutsourceWarehouseSend(row.quantity, pool),
         };
       }),
     );
   }, [selectedProduct, productQty]);
 
   useEffect(() => {
-    if (lines.length === 0) {
+    createLinesManualRef.current = false;
+  }, [addSupplierId]);
+
+  useEffect(() => {
+    if (createLinesManualRef.current || !selectedProduct) return;
+    setLines((prev) => {
+      if (prev.length === 0) return prev;
+      let changed = false;
+      const next = prev.map((l) => {
+        const bomNeed = createBomNeedByMaterial[l.materialId] ?? 0;
+        const pool = outsourceStockByMaterial[l.materialId] ?? 0;
+        const quantity = defaultOutsourceWarehouseSend(bomNeed, pool);
+        if (quantity === l.quantity) return l;
+        changed = true;
+        return { ...l, quantity };
+      });
+      return changed ? next : prev;
+    });
+  }, [outsourceStockByMaterial, createBomNeedByMaterial, selectedProduct]);
+
+  useEffect(() => {
+    if (!createMaterialIdsKey) {
       setStockByMaterial({});
+      setOutsourceStockByMaterial({});
       setLoadingStock(false);
+      setLoadingOutsourceStock(false);
       return;
     }
     let cancelled = false;
-    const ids = lines.map((l) => l.materialId);
-    const sp = new URLSearchParams();
-    sp.set("ids", ids.join(","));
+    const ids = createMaterialIdsKey.split(",");
     setLoadingStock(true);
+    setLoadingOutsourceStock(true);
     void (async () => {
       try {
-        const data = await fetchJson<{ stocks: Record<string, number> }>(
-          `/api/materials/stock-by-ids?${sp.toString()}`,
+        const materialData = await fetchJson<{ stocks: Record<string, number> }>(
+          `/api/materials/stock-by-ids?ids=${encodeURIComponent(ids.join(","))}`,
           { credentials: "include" },
         );
-        if (!cancelled) setStockByMaterial(data.stocks ?? {});
+        let outsourceStocks: Record<string, number> = {};
+        if (addSupplierId?.trim()) {
+          const outsourceData = await fetchJson<{ stocks: Record<string, number> }>(
+            `/api/outsource-material-stock/closed-by-ids?ids=${encodeURIComponent(ids.join(","))}&supplierId=${encodeURIComponent(addSupplierId.trim())}`,
+            { credentials: "include" },
+          );
+          outsourceStocks = outsourceData.stocks ?? {};
+        }
+        if (!cancelled) {
+          setStockByMaterial(materialData.stocks ?? {});
+          setOutsourceStockByMaterial(outsourceStocks);
+        }
       } catch {
-        if (!cancelled) setStockByMaterial({});
+        if (!cancelled) {
+          setStockByMaterial({});
+          setOutsourceStockByMaterial({});
+        }
       } finally {
-        if (!cancelled) setLoadingStock(false);
+        if (!cancelled) {
+          setLoadingStock(false);
+          setLoadingOutsourceStock(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [lines]);
+  }, [createMaterialIdsKey, addSupplierId]);
 
   const editHasStockShortage = useMemo(() => {
     if (editLines.length === 0) return false;
-    return editLines.some(
-      (l) => l.quantity > (editStockByMaterial[l.materialId] ?? 0),
-    );
-  }, [editLines, editStockByMaterial]);
+    return editLines.some((l) => {
+      const bomNeed = editBomNeedByMaterial[l.materialId] ?? 0;
+      return (
+        outsourceLineStockError(
+          l.quantity,
+          bomNeed,
+          editStockByMaterial[l.materialId] ?? 0,
+          editOutsourceStockByMaterial[l.materialId] ?? 0,
+        ) != null
+      );
+    });
+  }, [editLines, editStockByMaterial, editOutsourceStockByMaterial, editBomNeedByMaterial]);
 
   useEffect(() => {
     if (!editOpen || editLocked || editViewOnly || editLines.length === 0) {
       setEditStockByMaterial({});
+      setEditOutsourceStockByMaterial({});
       setEditLoadingStock(false);
+      setEditLoadingOutsourceStock(false);
       return;
     }
     let cancelled = false;
     const ids = editLines.map((l) => l.materialId);
-    const sp = new URLSearchParams();
-    sp.set("ids", ids.join(","));
     setEditLoadingStock(true);
+    setEditLoadingOutsourceStock(true);
     void (async () => {
       try {
-        const data = await fetchJson<{ stocks: Record<string, number> }>(
-          `/api/materials/stock-by-ids?${sp.toString()}`,
-          { credentials: "include" },
-        );
-        if (!cancelled) setEditStockByMaterial(data.stocks ?? {});
+        const [materialData, outsourceData] = await Promise.all([
+          fetchJson<{ stocks: Record<string, number> }>(
+            `/api/materials/stock-by-ids?ids=${encodeURIComponent(ids.join(","))}`,
+            { credentials: "include" },
+          ),
+          fetchJson<{ stocks: Record<string, number> }>(
+            `/api/outsource-material-stock/closed-by-ids?ids=${encodeURIComponent(ids.join(","))}${editSupplierId?.trim() ? `&supplierId=${encodeURIComponent(editSupplierId.trim())}` : ""}`,
+            { credentials: "include" },
+          ),
+        ]);
+        if (!cancelled) {
+          setEditStockByMaterial(materialData.stocks ?? {});
+          setEditOutsourceStockByMaterial(outsourceData.stocks ?? {});
+        }
       } catch {
-        if (!cancelled) setEditStockByMaterial({});
+        if (!cancelled) {
+          setEditStockByMaterial({});
+          setEditOutsourceStockByMaterial({});
+        }
       } finally {
-        if (!cancelled) setEditLoadingStock(false);
+        if (!cancelled) {
+          setEditLoadingStock(false);
+          setEditLoadingOutsourceStock(false);
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [editOpen, editLocked, editViewOnly, editLines]);
+  }, [editOpen, editLocked, editViewOnly, editLines, editSupplierId]);
 
   const autoOptions = useMemo(
     () =>
@@ -670,6 +827,7 @@ export function OutsourcePage() {
   };
 
   const resetAddForm = () => {
+    createLinesManualRef.current = false;
     form.resetFields();
     form.setFieldsValue({ productQty: 1, supplierId: undefined });
     setSearchText("");
@@ -677,6 +835,7 @@ export function OutsourcePage() {
     setSelectedProduct(null);
     setLines([]);
     setStockByMaterial({});
+    setOutsourceStockByMaterial({});
   };
 
   const submitCreate = async () => {
@@ -688,15 +847,15 @@ export function OutsourcePage() {
       message.warning("该商品无 BOM 行");
       return;
     }
-    if (loadingStock) {
+    if (loadingStock || loadingOutsourceStock) {
       message.warning("正在校验库存，请稍候");
       return;
     }
     if (hasStockShortage) {
-      message.error("存在物料库存不足，请调减外发数量后再保存");
+      message.error("实发或外发库存不足以覆盖本套用量，请调整后再保存");
       return;
     }
-    let v: { productQty: number; remark?: string; supplierId?: string };
+    let v: { productQty: number; remark?: string; supplierId: string };
     try {
       v = await form.validateFields();
     } catch {
@@ -712,7 +871,7 @@ export function OutsourcePage() {
         body: JSON.stringify({
           productId: selectedProduct.id,
           productQty: productQtyN,
-          supplierId: v.supplierId?.trim() || undefined,
+          supplierId: v.supplierId.trim(),
           remark: v.remark?.trim() || undefined,
           lines: lines.map((l) => ({
             materialId: l.materialId,
@@ -787,6 +946,7 @@ export function OutsourcePage() {
     setEditViewOnly(false);
     editForm.resetFields();
     setEditStockByMaterial({});
+    setEditOutsourceStockByMaterial({});
   }, [editForm]);
 
   const applyOutsourceDetailToEditModal = useCallback(
@@ -808,8 +968,13 @@ export function OutsourcePage() {
           materialId: l.material.id,
           code: l.material.code,
           name: l.material.name,
+          partDescription: l.material.partDescription ?? null,
           unit: l.material.unit,
-          quantity: l.quantity,
+          // 编辑默认回填建单时确认的外发实发数（issuedQuantity）
+          quantity:
+            typeof l.issuedQuantity === "number" && Number.isFinite(l.issuedQuantity)
+              ? Math.max(0, Math.trunc(Number(l.issuedQuantity)))
+              : Math.max(0, Math.trunc(Number(l.quantity) || 0)),
         })),
       );
     },
@@ -891,12 +1056,12 @@ export function OutsourcePage() {
       return;
     }
     if (!editLocked) {
-      if (editLoadingStock) {
+      if (editLoadingStock || editLoadingOutsourceStock) {
         message.warning("正在校验库存，请稍候");
         return;
       }
       if (editHasStockShortage) {
-        message.error("存在物料外发数量大于当前库存，请调减后再保存");
+        message.error("可用库存不足（物料库存 + 外发库存），请调减后再保存");
         return;
       }
     }
@@ -948,6 +1113,7 @@ export function OutsourcePage() {
     editForm,
     editLines,
     editLoadingStock,
+    editLoadingOutsourceStock,
     editHasStockShortage,
     message,
     closeTodayEdit,
@@ -1062,10 +1228,29 @@ export function OutsourcePage() {
     setRecoveryAdjustOpen(true);
   }, []);
 
-  const openRecoveryPoolDetail = useCallback((row: OutsourceRecoveryStockRow) => {
-    setRecoveryPoolDetailTarget(row);
-    setRecoveryPoolDetailOpen(true);
-  }, []);
+  const openRecoveryPoolDetail = useCallback(
+    async (row: OutsourceRecoveryStockRow) => {
+      setRecoveryPoolDetailTarget(row);
+      setRecoveryHistoryRows([]);
+      setRecoveryPoolDetailOpen(true);
+      setRecoveryHistoryLoading(true);
+      try {
+        const p = new URLSearchParams();
+        p.set("productId", row.productId);
+        const data = await fetchJson<{ list: OutsourceRecoveryHistoryRow[] }>(
+          `/api/outsource-recovery-stock/history?${p.toString()}`,
+          { credentials: "include" },
+        );
+        setRecoveryHistoryRows(data.list ?? []);
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "加载出入库明细失败");
+        setRecoveryHistoryRows([]);
+      } finally {
+        setRecoveryHistoryLoading(false);
+      }
+    },
+    [message],
+  );
 
   const submitRecoveryAdjust = useCallback(async () => {
     if (!recoveryAdjustTarget) return;
@@ -1132,7 +1317,7 @@ export function OutsourcePage() {
         scrapQty: 0,
       }));
     if (candidates.length === 0) {
-      message.warning("请先勾选可退料行（已结单未退回数量需大于 0）");
+      message.warning("请先勾选可退料行（可退数量需大于 0）");
       return;
     }
     setStockReturnLines(candidates);
@@ -1247,10 +1432,10 @@ export function OutsourcePage() {
       return prev.map((x) => {
         const dLine = detail.lines.find((l) => l.id === x.lineId);
         if (!dLine) return x;
-        const perSet = perSetForLine(dLine, detail, bom);
-        const lossBySets = Math.max(0, perSet) * sets;
+        const perSet = Math.max(0, perSetForLine(dLine, detail, bom));
+        const lossBySets = perSet * sets;
         const maxReturn = Math.max(0, x.currentQty - lossBySets);
-        const returnQty = Math.min(Math.max(0, Math.trunc(Number(x.returnQty) || 0)), maxReturn);
+        const returnQty = maxReturn;
         return { ...x, lossBySets, returnQty };
       });
     },
@@ -1271,16 +1456,17 @@ export function OutsourcePage() {
           credentials: "include",
         });
         setCloseDetail(d);
+        const bom = bomPerSetMap(d.product.productMaterials);
         const base = d.lines.map((l) => ({
-            lineId: l.id,
-            materialId: l.material.id,
-            code: l.material.code,
-            name: l.material.name,
-            unit: l.material.unit,
-            currentQty: Math.max(0, Math.trunc(Number(l.quantity) || 0)),
-            lossBySets: 0,
-            returnQty: 0,
-          }));
+          lineId: l.id,
+          materialId: l.material.id,
+          code: l.material.code,
+          name: l.material.name,
+          unit: l.material.unit,
+          currentQty: closeOccupancyQty(d, l, bom),
+          lossBySets: 0,
+          returnQty: 0,
+        }));
         setCloseLines(applyLossSetsToCloseLines(d, 0, base));
       } catch (e) {
         message.error(e instanceof Error ? e.message : "加载结单明细失败");
@@ -1366,18 +1552,21 @@ export function OutsourcePage() {
   const [loadingQuery, setLoadingQuery] = useState(false);
   const [queryForm] = Form.useForm<{
     keyword?: string;
+    supplierId?: string;
     range?: [dayjs.Dayjs, dayjs.Dayjs];
   }>();
 
   const runQuery = async () => {
     const v = (await queryForm.validateFields().catch(() => ({}))) as {
       keyword?: string;
+      supplierId?: string;
       range?: [dayjs.Dayjs, dayjs.Dayjs];
     };
     const p = new URLSearchParams();
     /** 加工单查询仅收录已回收（CLOSED） */
     p.set("status", "CLOSED");
     if (v.keyword?.trim()) p.set("keyword", v.keyword.trim());
+    if (v.supplierId?.trim()) p.set("supplierId", v.supplierId.trim());
     const range = v.range as [dayjs.Dayjs, dayjs.Dayjs] | undefined;
     if (range?.[0]) p.set("from", range[0].startOf("day").toISOString());
     if (range?.[1]) p.set("to", range[1].endOf("day").toISOString());
@@ -1487,12 +1676,13 @@ export function OutsourcePage() {
           credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            sets,
             lines: linesPayload,
           }),
         },
       );
       if (res.fullyClosed) {
-        message.success("已全部回收；物料已回库，成品已按加工套数入库");
+        message.success("回收套数已达外发套数，外发单已自动结单");
       } else {
         message.success(
           "本次回收已入库物料；未回收数量仍保留在本单，可再次点击「确认回收」",
@@ -1636,7 +1826,7 @@ export function OutsourcePage() {
     width: 260,
     fixed: "right",
     render: (_, r) => {
-      const canModifyOrCancel = r.canCancel !== false;
+      const canCancel = r.canCancel !== false;
       return (
         <Space>
           <Button
@@ -1646,15 +1836,8 @@ export function OutsourcePage() {
           >
             确认回收
           </Button>
-          {canModifyOrCancel ? (
+          {canCancel ? (
             <>
-              <Button
-                type="link"
-                size="small"
-                onClick={() => void openTodayEdit(r)}
-              >
-                修改
-              </Button>
               <Button
                 type="link"
                 size="small"
@@ -1672,14 +1855,16 @@ export function OutsourcePage() {
               </Button>
             </>
           ) : null}
-          <Button
-            type="link"
-            size="small"
-            style={{ padding: 0, height: "auto" }}
-            onClick={() => void openCloseModal(r)}
-          >
-            结单
-          </Button>
+          {r.canClose ? (
+            <Button
+              type="link"
+              size="small"
+              style={{ padding: 0, height: "auto" }}
+              onClick={() => void openCloseModal(r)}
+            >
+              结单
+            </Button>
+          ) : null}
         </Space>
       );
     },
@@ -1708,6 +1893,7 @@ export function OutsourcePage() {
           materialId: row.materialId,
           code: src.material.code,
           name: src.material.name,
+          partDescription: src.material.partDescription ?? null,
           unit: src.material.unit,
           quantity: row.quantity,
         };
@@ -1725,19 +1911,11 @@ export function OutsourcePage() {
         if (r.status !== "OPEN") {
           return <Typography.Text type="secondary">—</Typography.Text>;
         }
-        const canModifyOrCancel = r.canCancel !== false;
+        const canCancel = r.canCancel !== false;
         return (
           <Space size={0} wrap>
-            {canModifyOrCancel ? (
+            {canCancel ? (
               <>
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ padding: 0, height: "auto" }}
-                  onClick={() => void openTodayEdit(r)}
-                >
-                  编辑
-                </Button>
                 <Button
                   type="link"
                   size="small"
@@ -1753,17 +1931,23 @@ export function OutsourcePage() {
         );
       },
     }),
-    [openTodayEdit, confirmCancelTodayOrder],
+    [confirmCancelTodayOrder],
   );
 
   const lineEditColumns: ColumnsType<EditableLine> = [
-    { title: "物料编号", dataIndex: "code", width: 120 },
+    { title: "物料编号", dataIndex: "code" },
     { title: "物料名称", dataIndex: "name", ellipsis: true },
-    { title: "单位", dataIndex: "unit", width: 64 },
     {
-      title: "可用库存",
-      key: "stock",
-      width: 96,
+      title: "部件描述",
+      dataIndex: "partDescription",
+      ellipsis: true,
+      render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
+    },
+    { title: "单位", dataIndex: "unit" },
+    {
+      title: "物料库存",
+      key: "materialStock",
+      width: 92,
       render: (_, row) =>
         loadingStock ? (
           <Typography.Text type="secondary">…</Typography.Text>
@@ -1772,34 +1956,65 @@ export function OutsourcePage() {
         ),
     },
     {
-      title: "外发数量",
+      title: "外发物料库存",
+      key: "outsourceStock",
+      width: 92,
+      render: (_, row) =>
+        loadingOutsourceStock ? (
+          <Typography.Text type="secondary">…</Typography.Text>
+        ) : !addSupplierId?.trim() ? (
+          <Typography.Text type="secondary">先选加工方</Typography.Text>
+        ) : (
+          <Typography.Text>{outsourceStockByMaterial[row.materialId] ?? 0}</Typography.Text>
+        ),
+    },
+    {
+      title: "外发数量（实发）",
       dataIndex: "quantity",
-      width: 140,
+      width: 132,
       render: (_, row, index) => {
-        const avail = stockByMaterial[row.materialId] ?? 0;
-        const over = !loadingStock && row.quantity > avail;
+        const bomNeed = createBomNeedByMaterial[row.materialId] ?? 0;
+        const availMaterial = stockByMaterial[row.materialId] ?? 0;
+        const availOutsource = outsourceStockByMaterial[row.materialId] ?? 0;
+        const poolUse = outsourcePoolUseForNeed(bomNeed, availOutsource);
+        const stockErr =
+          !loadingStock && !loadingOutsourceStock
+            ? outsourceLineStockError(
+                row.quantity,
+                bomNeed,
+                availMaterial,
+                availOutsource,
+              )
+            : null;
         return (
           <div>
             <InputNumber
-              min={1}
+              min={0}
               max={999999999}
               precision={0}
               value={row.quantity}
-              status={over ? "error" : undefined}
+              status={stockErr ? "error" : undefined}
               onChange={(v) => {
+                createLinesManualRef.current = true;
                 const n =
                   v === null || v === undefined
-                    ? 1
-                    : Math.max(1, Math.trunc(Number(v)));
+                    ? 0
+                    : Math.max(0, Math.trunc(Number(v)));
                 setLines((prev) =>
                   prev.map((l, i) => (i === index ? { ...l, quantity: n } : l)),
                 );
               }}
             />
-            {over ? (
+            {stockErr ? (
               <div>
                 <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                  超出库存（可用 {avail}）
+                  {stockErr}
+                </Typography.Text>
+              </div>
+            ) : !loadingStock && !loadingOutsourceStock ? (
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  本套需 {bomNeed}，外发库存可扣 {poolUse}
                 </Typography.Text>
               </div>
             ) : null}
@@ -1819,6 +2034,8 @@ export function OutsourcePage() {
       ),
     [allowed],
   );
+  const hasAddTab = visibleOutsourceTabKeys.includes("add");
+  const hasQueryTab = visibleOutsourceTabKeys.includes("query");
 
   useEffect(() => {
     if (tabPermLoading) return;
@@ -1831,6 +2048,8 @@ export function OutsourcePage() {
 
   return (
     <Card title="物料外发">
+      {!tabPermLoading && !hasAddTab ? <Form form={form} component={false} /> : null}
+      {!tabPermLoading && !hasQueryTab ? <Form form={queryForm} component={false} /> : null}
       {tabPermLoading ? (
         <div style={{ padding: 56, textAlign: "center" }}>
           <Spin size="large" />
@@ -1909,16 +2128,20 @@ export function OutsourcePage() {
                   </div>
                   {selectedProduct ? (
                     <>
-                      <Form.Item name="supplierId" label="加工方（供应商）">
+                      <Form.Item
+                        name="supplierId"
+                        label="加工方（供应商）"
+                        rules={[{ required: true, message: "请选择加工方" }]}
+                      >
                         <Select
-                          allowClear
-                          placeholder="可选；用于外发物料单抬头与单号规则"
+                          placeholder="必选；用于外发物料单抬头、单号规则及外发物料库存归属"
                           style={{ maxWidth: 480 }}
                           showSearch
-                          optionFilterProp="label"
+                          optionFilterProp="searchText"
                           options={suppliers.map((s) => ({
                             value: s.id,
                             label: formatSupplierSelectLabel(s),
+                            searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                           }))}
                         />
                       </Form.Item>
@@ -1937,9 +2160,13 @@ export function OutsourcePage() {
                       <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
                         已选：{productLabel(selectedProduct)}（单位：{selectedProduct.unit}）
                       </Typography.Text>
-                      {hasStockShortage && !loadingStock ? (
+                      <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+                        「外发数量」为本次从仓库实发的数量；默认 = 本套 BOM 用量 − 外发物料库存（库存够用则为
+                        0）。套数用料优先扣外发库存，可手动改实发数；保存时以外发数量为准。
+                      </Typography.Text>
+                      {hasStockShortage && !loadingStock && !loadingOutsourceStock ? (
                         <Typography.Paragraph type="danger" style={{ marginBottom: 8 }}>
-                          存在物料外发数量大于当前库存（与「物料信息 → 物料库存」一致），请调减后再保存；库存不足时无法生成外发单。
+                          存在物料不可用：外发库存可扣 + 实发须覆盖本套用量，且实发不得超过物料库存。
                         </Typography.Paragraph>
                       ) : null}
                       <Table<EditableLine>
@@ -1952,7 +2179,13 @@ export function OutsourcePage() {
                         onRow={(record) => ({
                           style:
                             !loadingStock &&
-                            record.quantity > (stockByMaterial[record.materialId] ?? 0)
+                            !loadingOutsourceStock &&
+                            outsourceLineStockError(
+                              record.quantity,
+                              createBomNeedByMaterial[record.materialId] ?? 0,
+                              stockByMaterial[record.materialId] ?? 0,
+                              outsourceStockByMaterial[record.materialId] ?? 0,
+                            )
                               ? { background: "#fff1f0" }
                               : undefined,
                         })}
@@ -1961,37 +2194,13 @@ export function OutsourcePage() {
                         <Button
                           type="primary"
                           loading={submitting}
-                          disabled={loadingStock || hasStockShortage}
+                          disabled={loadingStock || loadingOutsourceStock || hasStockShortage}
                           onClick={() => void submitCreate()}
                         >
                           保存外发单
                         </Button>
                         <Button onClick={resetAddForm}>清空</Button>
                       </Space>
-                      {inhouseCreateRows.length > 0 ? (
-                        <div style={{ marginTop: 12 }}>
-                          <Typography.Text
-                            type="danger"
-                            style={{ display: "block", lineHeight: 1.5 }}
-                          >
-                            自加工部分（不随本外发单发外协；厂内加工时需扣/备以下物料。数量按上表外发套数、与
-                            商品中「自加工物料」BOM 用量及取整规则计算）：
-                          </Typography.Text>
-                          <ul
-                            style={{
-                              margin: "8px 0 0 0",
-                              paddingLeft: 20,
-                              color: "#cf1322",
-                            }}
-                          >
-                            {inhouseCreateRows.map((r) => (
-                              <li key={`${r.label}`}>
-                                {r.label}：{r.quantity} {r.unit}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : null}
                     </>
                   ) : null}
                 </Space>
@@ -2020,11 +2229,26 @@ export function OutsourcePage() {
           {
             key: "query",
             label: "外发加工单查询",
+            forceRender: true,
             children: (
               <Space direction="vertical" size="middle" style={{ width: "100%" }}>
                 <Form form={queryForm} layout="inline" style={{ rowGap: 12 }}>
                   <Form.Item name="keyword" label="关键字">
                     <Input allowClear placeholder="单号 / 型号 / 物料编号 / 客户" style={{ width: 220 }} />
+                  </Form.Item>
+                  <Form.Item name="supplierId" label="加工方">
+                    <Select
+                      allowClear
+                      showSearch
+                      placeholder="全部加工方"
+                      style={{ width: 240 }}
+                      optionFilterProp="searchText"
+                      options={suppliers.map((s) => ({
+                        value: s.id,
+                        label: formatSupplierSelectLabel(s),
+                        searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
+                      }))}
+                    />
                   </Form.Item>
                   <Form.Item name="range" label="建单日期">
                     <DatePicker.RangePicker />
@@ -2084,9 +2308,10 @@ export function OutsourcePage() {
                       ...suppliers.map((s) => ({
                         value: s.id,
                         label: formatSupplierSelectLabel(s),
+                        searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                       })),
                     ]}
-                    optionFilterProp="label"
+                    optionFilterProp="searchText"
                     showSearch
                   />
                   <Select
@@ -2148,7 +2373,7 @@ export function OutsourcePage() {
                   <HelpTip
                     text={
                       <>
-                        统计口径：新建外发单计入在外库存；确认回收按消耗扣减。结单时可登记损耗与退回，损耗扣减在外库存，退回回写到物料库存。
+                        未回收单占用 = (外发套数 − 已回收套数) × BOM 单套用量；分批回收时随已回收套数减少。外发物料库存 = 在外总余量 − 未回收单占用（实发超出套数需求的部分，以及结单后释放的占用）。
                       </>
                     }
                   />
@@ -2179,10 +2404,15 @@ export function OutsourcePage() {
                     },
                     { title: "物料编号", dataIndex: "materialCode", width: 140 },
                     { title: "物料名称", dataIndex: "materialName", width: 220, ellipsis: true },
-                    { title: "单位", dataIndex: "unit", width: 80 },
-                    { title: "在外库存", dataIndex: "quantity", width: 110, align: "right" },
+                    {
+                      title: "部件描述",
+                      dataIndex: "partDescription",
+                      width: 220,
+                      ellipsis: true,
+                      render: (v: string | null) => v?.trim() || "—",
+                    },
+                    { title: "外发物料库存", dataIndex: "quantity", width: 120, align: "right" },
                     { title: "未回收单占用", dataIndex: "openQty", width: 126, align: "right" },
-                    { title: "已结单未退回", dataIndex: "closedCarryQty", width: 126, align: "right" },
                     { title: "关联单数", dataIndex: "orderCount", width: 96, align: "right" },
                     {
                       title: "详情",
@@ -2357,6 +2587,8 @@ export function OutsourcePage() {
         onCancel={() => {
           setRecoveryPoolDetailOpen(false);
           setRecoveryPoolDetailTarget(null);
+          setRecoveryHistoryRows([]);
+          setRecoveryHistoryLoading(false);
         }}
         footer={null}
         width={960}
@@ -2393,6 +2625,48 @@ export function OutsourcePage() {
             ]}
             locale={{ emptyText: "无共享商品明细" }}
           />
+          <Typography.Text strong>出入库记录</Typography.Text>
+          <Table<OutsourceRecoveryHistoryRow>
+            size="small"
+            rowKey="id"
+            loading={recoveryHistoryLoading}
+            pagination={false}
+            dataSource={recoveryHistoryRows}
+            columns={[
+              {
+                title: "时间",
+                dataIndex: "receivedAt",
+                width: 170,
+                render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm:ss"),
+              },
+              {
+                title: "方向",
+                dataIndex: "direction",
+                width: 80,
+                render: (v: OutsourceRecoveryHistoryRow["direction"]) =>
+                  v === "IN" ? (
+                    <Typography.Text type="success">入库</Typography.Text>
+                  ) : (
+                    <Typography.Text type="danger">出库</Typography.Text>
+                  ),
+              },
+              { title: "数量", dataIndex: "quantity", width: 90, align: "right" },
+              {
+                title: "单号/备注",
+                dataIndex: "orderNo",
+                width: 180,
+                render: (v: string) => v || "—",
+              },
+              { title: "说明", dataIndex: "partDescription", ellipsis: true },
+              {
+                title: "操作人",
+                dataIndex: "operatorName",
+                width: 120,
+                render: (v: string) => v || "—",
+              },
+            ]}
+            locale={{ emptyText: "暂无出入库记录" }}
+          />
         </Space>
       </Modal>
 
@@ -2403,7 +2677,7 @@ export function OutsourcePage() {
             <HelpTip
               text={
                 <>
-                  默认按「已结单未退回」全退。修改退料数量时，剩余会自动填入报废数量；报废也可手工改，未分配部分显示在未退数量。确认后：退料数量写入「物料信息
+                  默认按可退数量全退。修改退料数量时，剩余会自动填入报废数量；报废也可手工改。确认后：退料数量写入「物料信息
                   → 物料库存」入库流水，报废数量仅冲减外发库存。
                 </>
               }
@@ -2749,7 +3023,7 @@ export function OutsourcePage() {
               text={
                 <>
                   结单时先填写<strong>损耗套数</strong>，系统会按 BOM 自动折算各物料损耗扣减；再逐行填写
-                  <strong>退回数量</strong>（默认 0）。未退回数量会继续留在外发物料库存。
+                  <strong>退回数量</strong>（自动=当前占用-损耗折算）。
                 </>
               }
             />
@@ -2797,7 +3071,7 @@ export function OutsourcePage() {
                 { title: "物料编号", dataIndex: "code", width: 120 },
                 { title: "物料名称", dataIndex: "name", ellipsis: true },
                 { title: "单位", dataIndex: "unit", width: 64 },
-                { title: "当前在外", dataIndex: "currentQty", width: 96, align: "right" },
+                { title: "当前占用", dataIndex: "currentQty", width: 96, align: "right" },
                 {
                   title: "损耗折算",
                   dataIndex: "lossBySets",
@@ -2806,32 +3080,9 @@ export function OutsourcePage() {
                 },
                 {
                   title: "退回数量",
+                  dataIndex: "returnQty",
                   width: 120,
-                  render: (_, row, index) => (
-                    <InputNumber
-                      min={0}
-                      max={Math.max(0, row.currentQty - row.lossBySets)}
-                      precision={0}
-                      value={row.returnQty}
-                      style={{ width: "100%" }}
-                      onChange={(v) => {
-                        const n = Math.max(0, Math.trunc(Number(v) || 0));
-                        setCloseLines((prev) =>
-                          prev.map((x, i) => {
-                            if (i !== index) return x;
-                            const maxReturn = Math.max(0, x.currentQty - x.lossBySets);
-                            return { ...x, returnQty: Math.min(maxReturn, n) };
-                          }),
-                        );
-                      }}
-                    />
-                  ),
-                },
-                {
-                  title: "结单后在外",
-                  width: 116,
                   align: "right",
-                  render: (_, row) => Math.max(0, row.currentQty - row.lossBySets - row.returnQty),
                 },
               ]}
             />
@@ -2852,6 +3103,7 @@ export function OutsourcePage() {
         open={editOpen}
         onCancel={closeTodayEdit}
         width={920}
+        forceRender
         destroyOnHidden={false}
         footer={
           <Space>
@@ -2891,10 +3143,11 @@ export function OutsourcePage() {
                   placeholder="可选"
                   style={{ maxWidth: 480 }}
                   showSearch
-                  optionFilterProp="label"
+                  optionFilterProp="searchText"
                   options={suppliers.map((s) => ({
                     value: s.id,
                     label: formatSupplierSelectLabel(s),
+                    searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                   }))}
                 />
               </Form.Item>
@@ -2925,9 +3178,9 @@ export function OutsourcePage() {
         {!editLoading && editDetail ? (
           !editLocked && !editViewOnly ? (
             <>
-              {editHasStockShortage && !editLoadingStock ? (
+              {editHasStockShortage && !editLoadingStock && !editLoadingOutsourceStock ? (
                 <Typography.Paragraph type="danger" style={{ marginBottom: 0 }}>
-                  存在物料外发数量大于当前库存，请调减后再保存。
+                  存在物料外发数量不可用：填 0 时外发库存须覆盖 BOM 用量，填大于 0 时不得超过物料库存 + 外发库存。
                 </Typography.Paragraph>
               ) : null}
               <Table<EditOrderLine>
@@ -2937,13 +3190,19 @@ export function OutsourcePage() {
                 dataSource={editLines}
                 locale={{ emptyText: "无明细" }}
                 columns={[
-                  { title: "物料编号", dataIndex: "code", width: 120 },
+                  { title: "物料编号", dataIndex: "code" },
                   { title: "物料名称", dataIndex: "name", ellipsis: true },
+                  {
+                    title: "部件描述",
+                    dataIndex: "partDescription",
+                    ellipsis: true,
+                    render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
+                  },
                   { title: "单位", dataIndex: "unit", width: 64 },
                   {
-                    title: "可用库存",
-                    key: "stock",
-                    width: 96,
+                    title: "物料库存",
+                    key: "materialStock",
+                    width: 92,
                     render: (_, row) =>
                       editLoadingStock ? (
                         <Typography.Text type="secondary">…</Typography.Text>
@@ -2954,25 +3213,49 @@ export function OutsourcePage() {
                       ),
                   },
                   {
+                    title: "外发物料库存",
+                    key: "outsourceStock",
+                    width: 92,
+                    render: (_, row) =>
+                      editLoadingOutsourceStock ? (
+                        <Typography.Text type="secondary">…</Typography.Text>
+                      ) : (
+                        <Typography.Text>
+                          {editOutsourceStockByMaterial[row.materialId] ?? 0}
+                        </Typography.Text>
+                      ),
+                  },
+                  {
                     title: "外发数量",
                     dataIndex: "quantity",
-                    width: 140,
+                    width: 132,
                     render: (_, row, index) => {
-                      const avail = editStockByMaterial[row.materialId] ?? 0;
-                      const over = !editLoadingStock && row.quantity > avail;
+                      const bomNeed = editBomNeedByMaterial[row.materialId] ?? 0;
+                      const availMaterial = editStockByMaterial[row.materialId] ?? 0;
+                      const availOutsource =
+                        editOutsourceStockByMaterial[row.materialId] ?? 0;
+                      const stockErr =
+                        !editLoadingStock && !editLoadingOutsourceStock
+                          ? outsourceLineStockError(
+                              row.quantity,
+                              bomNeed,
+                              availMaterial,
+                              availOutsource,
+                            )
+                          : null;
                       return (
                         <div>
                           <InputNumber
-                            min={1}
+                            min={0}
                             max={999999999}
                             precision={0}
                             value={row.quantity}
-                            status={over ? "error" : undefined}
+                            status={stockErr ? "error" : undefined}
                             onChange={(val) => {
                               const n =
                                 val === null || val === undefined
-                                  ? 1
-                                  : Math.max(1, Math.trunc(Number(val)));
+                                  ? 0
+                                  : Math.max(0, Math.trunc(Number(val)));
                               setEditLines((prev) =>
                                 prev.map((l, i) =>
                                   i === index ? { ...l, quantity: n } : l,
@@ -2980,10 +3263,16 @@ export function OutsourcePage() {
                               );
                             }}
                           />
-                          {over ? (
+                          {stockErr ? (
                             <div>
                               <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                                超出库存（可用 {avail}）
+                                {stockErr}
+                              </Typography.Text>
+                            </div>
+                          ) : row.quantity <= 0 && bomNeed > 0 ? (
+                            <div>
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                仅扣外发库存（BOM 需 {bomNeed}）
                               </Typography.Text>
                             </div>
                           ) : null}
@@ -2995,7 +3284,13 @@ export function OutsourcePage() {
                 onRow={(record) => ({
                   style:
                     !editLoadingStock &&
-                    record.quantity > (editStockByMaterial[record.materialId] ?? 0)
+                    !editLoadingOutsourceStock &&
+                    outsourceLineStockError(
+                      record.quantity,
+                      editBomNeedByMaterial[record.materialId] ?? 0,
+                      editStockByMaterial[record.materialId] ?? 0,
+                      editOutsourceStockByMaterial[record.materialId] ?? 0,
+                    )
                       ? { background: "#fff1f0" }
                       : undefined,
                 })}
@@ -3008,9 +3303,15 @@ export function OutsourcePage() {
               pagination={false}
               dataSource={editLines}
               columns={[
-                { title: "物料编号", dataIndex: "code", width: 120 },
+                { title: "物料编号", dataIndex: "code" },
                 { title: "物料名称", dataIndex: "name", ellipsis: true },
-                { title: "单位", dataIndex: "unit", width: 64 },
+                {
+                  title: "部件描述",
+                  dataIndex: "partDescription",
+                  ellipsis: true,
+                  render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
+                },
+                { title: "单位", dataIndex: "unit" },
                 { title: "待回收数量", dataIndex: "quantity", width: 112, align: "right" },
               ]}
             />

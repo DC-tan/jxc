@@ -35,6 +35,7 @@ type Row = {
   mainProduct: string | null;
   quality: CustomerQuality;
   priceIncludesTax: boolean;
+  relatedCustomerIds?: string[];
 };
 
 const qualityOptions = (Object.keys(CUSTOMER_QUALITY_LABEL) as CustomerQuality[]).map(
@@ -51,6 +52,10 @@ export function CustomersPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
   const [form] = Form.useForm();
+  const relatedCustomerOptions = rows.map((r) => ({
+    value: r.id,
+    label: `${r.code} ${r.name}`,
+  }));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -127,7 +132,11 @@ export function CustomersPage() {
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ quality: "MEDIUM", priceIncludesTax: false });
+    form.setFieldsValue({
+      quality: "MEDIUM",
+      priceIncludesTax: false,
+      relatedCustomerIds: [],
+    });
     setOpen(true);
   };
 
@@ -143,6 +152,7 @@ export function CustomersPage() {
       mainProduct: r.mainProduct,
       quality: r.quality,
       priceIncludesTax: r.priceIncludesTax,
+      relatedCustomerIds: r.relatedCustomerIds ?? [],
     });
     setOpen(true);
   };
@@ -238,6 +248,7 @@ export function CustomersPage() {
         onCancel={() => setOpen(false)}
         onOk={() => void submit()}
         width={760}
+        forceRender
         destroyOnHidden
       >
         <Form form={form} layout="vertical">
@@ -312,6 +323,26 @@ export function CustomersPage() {
                 rules={[{ required: true, message: "请选择质量等级" }]}
               >
                 <Select options={qualityOptions} placeholder="请选择" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={24}>
+              <Form.Item
+                name="relatedCustomerIds"
+                label="关联客户"
+                extra="用于客供料共享可见范围：当前客户可使用自身及关联客户名下的客供料"
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="可选多个关联客户"
+                  options={relatedCustomerOptions.filter(
+                    (opt) => opt.value !== editing?.id,
+                  )}
+                />
               </Form.Item>
             </Col>
           </Row>

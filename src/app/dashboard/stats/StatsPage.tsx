@@ -1019,8 +1019,20 @@ type ReconcileMode = "whole" | "split";
 type PurchaseExtraFeesFilter = "all" | "yes" | "no";
 
 type ReconcileFilterOptions = {
-  suppliers: { id: string; code: string; name: string; priceIncludesTax: boolean }[];
-  customers: { id: string; code: string; name: string; priceIncludesTax: boolean }[];
+  suppliers: {
+    id: string;
+    code: string;
+    name: string;
+    shortName?: string | null;
+    priceIncludesTax: boolean;
+  }[];
+  customers: {
+    id: string;
+    code: string;
+    name: string;
+    shortName?: string | null;
+    priceIncludesTax: boolean;
+  }[];
   purchaseMaterialNames?: string[];
   purchasePartDescriptions?: string[];
 };
@@ -1495,13 +1507,14 @@ function ReconcileTabContent({
                 allowClear
                 showSearch
                 placeholder="全部"
-                optionFilterProp="label"
+                optionFilterProp="searchText"
                 loading={filtersLoading}
                 value={supplierId}
                 onChange={(v) => setSupplierId(v)}
                 options={(filterOptions?.suppliers ?? []).map((s) => ({
                   value: s.id,
                   label: `${s.code} ${s.name}`.trim(),
+                  searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                 }))}
                 style={{ minWidth: 200 }}
               />
@@ -1512,13 +1525,14 @@ function ReconcileTabContent({
                 allowClear
                 showSearch
                 placeholder="全部"
-                optionFilterProp="label"
+                optionFilterProp="searchText"
                 loading={filtersLoading}
                 value={purchaseCustomerId}
                 onChange={(v) => setPurchaseCustomerId(v)}
                 options={(filterOptions?.customers ?? []).map((c) => ({
                   value: c.id,
                   label: `${c.code} ${c.name}`.trim(),
+                  searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
                 }))}
                 style={{ minWidth: 200 }}
               />
@@ -1576,13 +1590,14 @@ function ReconcileTabContent({
               allowClear
               showSearch
               placeholder="全部"
-              optionFilterProp="label"
+              optionFilterProp="searchText"
               loading={filtersLoading}
               value={customerId}
               onChange={(v) => setCustomerId(v)}
               options={(filterOptions?.customers ?? []).map((c) => ({
                 value: c.id,
                 label: `${c.code} ${c.name}`.trim(),
+                searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
               }))}
               style={{ minWidth: 220 }}
             />

@@ -7,6 +7,7 @@ const bodySchema = z.object({
   salesOrderId: z.string().min(1).optional(),
   customerId: z.string().min(1).optional(),
   productIds: z.array(z.string().min(1)).optional(),
+  materialIds: z.array(z.string().min(1)).optional(),
   channel: z.enum(["sales", "purchase"]),
 });
 
@@ -41,6 +42,7 @@ export async function POST(req: Request) {
 
   let customerId = parsed.data.customerId?.trim() || "";
   let productIds = toUniqueStrings(parsed.data.productIds);
+  const materialIds = toUniqueStrings(parsed.data.materialIds);
 
   try {
     if (parsed.data.salesOrderId) {
@@ -58,13 +60,22 @@ export async function POST(req: Request) {
       productIds = toUniqueStrings(so.lines.map((x) => x.productId));
     }
 
-    if (!customerId || productIds.length === 0) {
+    if (productIds.length === 0 && materialIds.length > 0) {
+      const productMaterialRows = await prisma.productMaterial.findMany({
+        where: { materialId: { in: materialIds } },
+        select: { productId: true },
+        distinct: ["productId"],
+      });
+      productIds = toUniqueStrings(productMaterialRows.map((x) => x.productId));
+    }
+
+    if (productIds.length === 0) {
       return NextResponse.json({ list: [] });
     }
 
     const list = await prisma.customerChangeReminder.findMany({
       where: {
-        customerId,
+        ...(customerId ? { customerId } : {}),
         productId: { in: productIds },
         status: "ACTIVE",
         ...(parsed.data.channel === "sales"
