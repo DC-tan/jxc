@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, OutsourceOrderStatus } from "@prisma/client";
 import { reconcileOutsourceOrderLineQuantities } from "../src/lib/outsource-material-stock-query";
 
 const prisma = new PrismaClient();
@@ -8,7 +8,7 @@ async function main() {
   const where =
     orderNoArg != null && orderNoArg.length > 0
       ? { orderNo: orderNoArg }
-      : { status: { in: ["OPEN", "CLOSED"] as const } };
+      : { status: { in: [OutsourceOrderStatus.OPEN, OutsourceOrderStatus.CLOSED] } };
 
   const orders = await prisma.outsourceOrder.findMany({
     where,

@@ -1,4 +1,5 @@
-import type { OutsourceOrderStatus, PrismaClient, ProcessingMode } from "@prisma/client";
+import type { OutsourceOrderStatus, PrismaClient } from "@prisma/client";
+import type { ProcessingMode } from "@/lib/outsource-material-stock-balance";
 import {
   computeOutsourceLinePoolRemaining,
   computeOutsourceLineRemaining,
@@ -88,7 +89,10 @@ export async function loadOutsourceStockContextMaps(
   }
   const recoverySetsByOrderId = new Map<string, number>();
   for (const r of recoverySetsRows) {
-    recoverySetsByOrderId.set(r.outsourceOrderId, Number(r._sum.quantity ?? 0));
+    // 过滤掉 outsourceOrderId 为 null 的记录
+    if (r.outsourceOrderId) {
+      recoverySetsByOrderId.set(r.outsourceOrderId, Number(r._sum.quantity ?? 0));
+    }
   }
   const warehouseByOrderMaterial = new Map<string, number>();
   for (const r of warehouseRows) {

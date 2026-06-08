@@ -15,10 +15,13 @@ export async function GET() {
   }
 
   try {
-    const [customers, products] = await Promise.all([
+    const [customers, relations, products] = await Promise.all([
       prisma.customer.findMany({
         orderBy: { code: "asc" },
         select: { id: true, code: true, name: true, shortName: true },
+      }),
+      prisma.customerRelation.findMany({
+        select: { customerId: true, relatedCustomerId: true },
       }),
       prisma.product.findMany({
         where: { isDeprecated: false },
@@ -40,8 +43,29 @@ export async function GET() {
       }),
     ]);
 
+    const customerScopeMap = new Map<string, Set<string>>();
+    for (const c of customers) {
+      customerScopeMap.set(c.id, new Set([c.id]));
+    }
+    for (const rel of relations) {
+      if (!customerScopeMap.has(rel.customerId)) {
+        customerScopeMap.set(rel.customerId, new Set([rel.customerId]));
+      }
+      if (!customerScopeMap.has(rel.relatedCustomerId)) {
+        customerScopeMap.set(rel.relatedCustomerId, new Set([rel.relatedCustomerId]));
+      }
+      customerScopeMap.get(rel.customerId)?.add(rel.relatedCustomerId);
+      customerScopeMap.get(rel.relatedCustomerId)?.add(rel.customerId);
+    }
+
     return NextResponse.json({
       customers,
+      customerScopes: Object.fromEntries(
+        Array.from(customerScopeMap.entries()).map(([customerId, ids]) => [
+          customerId,
+          Array.from(ids),
+        ]),
+      ),
       products: products.map((p) => ({
         id: p.id,
         customerId: p.customerId,

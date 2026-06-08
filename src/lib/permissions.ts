@@ -141,6 +141,7 @@ export const PERMISSION_DEFINITIONS: {
   { module: "物料外发", name: "未回收外加工单", code: "tab.os.open", sortOrder: 81, expandTo: [
     "outsource.view",
     "outsource.edit",
+    "outsource.delete",
   ] },
   { module: "物料外发", name: "外发加工单查询", code: "tab.os.query", sortOrder: 82, expandTo: [
     "outsource.view",

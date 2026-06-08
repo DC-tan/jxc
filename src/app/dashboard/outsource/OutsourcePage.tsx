@@ -839,57 +839,58 @@ export function OutsourcePage() {
   };
 
   const submitCreate = async () => {
-    if (!selectedProduct) {
-      message.warning("请先检索并选择外发加工商品");
-      return;
-    }
-    if (lines.length === 0) {
-      message.warning("该商品无 BOM 行");
-      return;
-    }
-    if (loadingStock || loadingOutsourceStock) {
-      message.warning("正在校验库存，请稍候");
-      return;
-    }
-    if (hasStockShortage) {
-      message.error("实发或外发库存不足以覆盖本套用量，请调整后再保存");
-      return;
-    }
-    let v: { productQty: number; remark?: string; supplierId: string };
-    try {
-      v = await form.validateFields();
-    } catch {
-      return;
-    }
-    const productQtyN = Math.max(1, Math.trunc(Number(v.productQty)) || 1);
-    setSubmitting(true);
-    try {
-      await fetchJson("/api/outsource-orders", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productId: selectedProduct.id,
-          productQty: productQtyN,
-          supplierId: v.supplierId.trim(),
-          remark: v.remark?.trim() || undefined,
-          lines: lines.map((l) => ({
-            materialId: l.materialId,
-            quantity: l.quantity,
-          })),
-        }),
-      });
-      message.success("外发单已创建");
-      resetAddForm();
-      void loadTodayOrders();
-      setTab("open");
-      void loadOpenOrders();
-    } catch (e) {
-      message.error(e instanceof Error ? e.message : "创建失败");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  if (!selectedProduct) {
+    message.warning("请先检索并选择外发加工商品");
+    return;
+  }
+  if (lines.length === 0) {
+    message.warning("该商品无 BOM 行");
+    return;
+  }
+  if (loadingStock || loadingOutsourceStock) {
+    message.warning("正在校验库存，请稍候");
+    return;
+  }
+  if (hasStockShortage) {
+    message.error("实发或外发库存不足以覆盖本套用量，请调整后再保存");
+    return;
+  }
+  let v: { productQty: number; remark?: string; supplierId?: string };
+  try {
+    v = await form.validateFields();
+  } catch {
+    return;
+  }
+  const supplierId = v.supplierId!; // 表单已校验必填
+  const productQtyN = Math.max(1, Math.trunc(Number(v.productQty)) || 1);
+  setSubmitting(true);
+  try {
+    await fetchJson("/api/outsource-orders", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        productId: selectedProduct.id,
+        productQty: productQtyN,
+        supplierId: supplierId.trim(),
+        remark: v.remark?.trim() || undefined,
+        lines: lines.map((l) => ({
+          materialId: l.materialId,
+          quantity: l.quantity,
+        })),
+      }),
+    });
+    message.success("外发单已创建");
+    resetAddForm();
+    void loadTodayOrders();
+    setTab("open");
+    void loadOpenOrders();
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : "创建失败");
+  } finally {
+    setSubmitting(false);
+  }
+};
 
   const [openOrders, setOpenOrders] = useState<OutsourceOrderRow[]>([]);
   const [loadingOpen, setLoadingOpen] = useState(false);
@@ -1745,6 +1746,10 @@ export function OutsourcePage() {
     }
   }, [message, queryOrders]);
 
+  const { loading: tabPermLoading, allowed } = useMeTabPermissions();
+  const canAdjustRecovery = allowed(["outsource.recovery.adjust"]);
+  const canDeleteOutsource = allowed(["outsource.delete"]);
+
   const orderColumns: ColumnsType<OutsourceOrderRow> = useMemo(
     () => [
     { title: "外发单号", dataIndex: "orderNo", width: 160, ellipsis: true },
@@ -1826,7 +1831,7 @@ export function OutsourcePage() {
     width: 260,
     fixed: "right",
     render: (_, r) => {
-      const canCancel = r.canCancel !== false;
+      const canCancel = canDeleteOutsource && r.canCancel !== false;
       return (
         <Space>
           <Button
@@ -1911,7 +1916,7 @@ export function OutsourcePage() {
         if (r.status !== "OPEN") {
           return <Typography.Text type="secondary">—</Typography.Text>;
         }
-        const canCancel = r.canCancel !== false;
+        const canCancel = canDeleteOutsource && r.canCancel !== false;
         return (
           <Space size={0} wrap>
             {canCancel ? (
@@ -1931,7 +1936,7 @@ export function OutsourcePage() {
         );
       },
     }),
-    [confirmCancelTodayOrder],
+    [canDeleteOutsource, confirmCancelTodayOrder],
   );
 
   const lineEditColumns: ColumnsType<EditableLine> = [
@@ -2023,9 +2028,6 @@ export function OutsourcePage() {
       },
     },
   ];
-
-  const { loading: tabPermLoading, allowed } = useMeTabPermissions();
-  const canAdjustRecovery = allowed(["outsource.recovery.adjust"]);
 
   const visibleOutsourceTabKeys = useMemo(
     () =>

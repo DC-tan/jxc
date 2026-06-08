@@ -67,6 +67,7 @@ type ProductOpt = {
 
 type SalesPresetBundle = {
   customers: CustomerOpt[];
+  customerScopes?: Record<string, string[]>;
   products: ProductOpt[];
 };
 
@@ -732,18 +733,27 @@ function SoLinesEditor({
   setLines,
   products,
   customerId,
+  customerScopes,
 }: {
   lines: SoLine[];
   setLines: Dispatch<SetStateAction<SoLine[]>>;
   products: ProductOpt[];
   customerId: string | undefined;
+  customerScopes?: Record<string, string[]>;
 }) {
+  const scopedCustomerIds = useMemo(() => {
+    if (!customerId) return null;
+    const scope = customerScopes?.[customerId];
+    if (Array.isArray(scope) && scope.length > 0) return new Set(scope);
+    return new Set([customerId]);
+  }, [customerId, customerScopes]);
+
   const pool = useMemo(
     () =>
-      customerId
-        ? products.filter((p) => p.customerId === customerId)
+      scopedCustomerIds
+        ? products.filter((p) => scopedCustomerIds.has(p.customerId))
         : [],
-    [products, customerId],
+    [products, scopedCustomerIds],
   );
 
   const updateLine = useCallback(
@@ -1645,6 +1655,7 @@ export function SalesPage() {
       ),
     [allowed],
   );
+  const hasQueryTab = visibleSalesTabKeys.includes("query");
 
   useEffect(() => {
     if (tabPermLoading) return;
@@ -1657,6 +1668,8 @@ export function SalesPage() {
 
   return (
     <Card title="销售订单">
+      {!tabPermLoading && !hasQueryTab ? <Form form={queryForm} component={false} /> : null}
+      {!createOpen ? <Form form={createForm} component={false} /> : null}
       {tabPermLoading ? (
         <div style={{ padding: 56, textAlign: "center" }}>
           <Spin size="large" />
@@ -1986,6 +1999,7 @@ export function SalesPage() {
           setLines={setSoLines}
           products={presets?.products ?? []}
           customerId={createCustomerId}
+          customerScopes={presets?.customerScopes}
         />
       </Modal>
 

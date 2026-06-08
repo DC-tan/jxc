@@ -31,6 +31,16 @@ type Row = {
   }[];
 };
 
+type SharedProductMeta = {
+  productId: string;
+  customerCode: string;
+  customerName: string;
+  customerMaterialCode: string;
+  recoveryMaterialCode: string;
+  model: string;
+  unit: string;
+};
+
 export async function GET(req: Request) {
   const auth = await requirePermission("outsource.view");
   if (!auth.ok) {
@@ -42,29 +52,64 @@ export async function GET(req: Request) {
   const keyword = normalizeOutsourceRecoverySearchKeyword(keywordRaw).toLowerCase();
 
   try {
-    const entries = await prisma.outsourceRecoveryInbound.findMany({
-      where: { quantity: { not: 0 } },
-      orderBy: [{ receivedAt: "desc" }],
-      take: 5000,
-      select: {
-        productId: true,
-        quantity: true,
-        receivedAt: true,
-        product: {
-          select: {
-            id: true,
-            processingMode: true,
-            customerMaterialCode: true,
-            model: true,
-            unit: true,
-            customer: { select: { code: true, name: true } },
-            productMaterials: {
-              select: { scope: true, materialId: true, usageQty: true },
+    const [entries, allHybridProducts] = await Promise.all([
+      prisma.outsourceRecoveryInbound.findMany({
+        where: { quantity: { not: 0 } },
+        orderBy: [{ receivedAt: "desc" }],
+        take: 5000,
+        select: {
+          productId: true,
+          quantity: true,
+          receivedAt: true,
+          product: {
+            select: {
+              id: true,
+              processingMode: true,
+              customerMaterialCode: true,
+              model: true,
+              unit: true,
+              customer: { select: { code: true, name: true } },
+              productMaterials: {
+                select: { scope: true, materialId: true, usageQty: true },
+              },
             },
           },
         },
-      },
-    });
+      }),
+      prisma.product.findMany({
+        where: { processingMode: "OUTSOURCE_INHOUSE" },
+        select: {
+          id: true,
+          processingMode: true,
+          customerMaterialCode: true,
+          model: true,
+          unit: true,
+          customer: { select: { code: true, name: true } },
+          productMaterials: {
+            select: { scope: true, materialId: true, usageQty: true },
+          },
+        },
+      }),
+    ]);
+
+    const sharedProductsBySig = new Map<string, SharedProductMeta[]>();
+    for (const p of allHybridProducts) {
+      const sig = outsourceBomSignatureOfProduct(p);
+      if (!sig) continue;
+      const rows = sharedProductsBySig.get(sig) ?? [];
+      rows.push({
+        productId: p.id,
+        customerCode: p.customer.code,
+        customerName: p.customer.name,
+        customerMaterialCode: p.customerMaterialCode,
+        recoveryMaterialCode: formatOutsourceRecoveryMaterialCode(
+          p.customerMaterialCode,
+        ),
+        model: p.model,
+        unit: p.unit,
+      });
+      sharedProductsBySig.set(sig, rows);
+    }
 
     const pools = new Map<
       string,
@@ -150,6 +195,22 @@ export async function GET(req: Request) {
           e.receivedAt.getTime() > new Date(existing.lastReceivedAt).getTime()
         ) {
           existing.lastReceivedAt = e.receivedAt.toISOString();
+        }
+      }
+    }
+
+    for (const [poolKey, pool] of pools) {
+      const shared = sharedProductsBySig.get(poolKey);
+      if (!shared || shared.length === 0) continue;
+      for (const prod of shared) {
+        pool.customerCodes.add(prod.customerCode);
+        pool.customerNames.add(prod.customerName);
+        pool.customerMaterialCodes.add(prod.customerMaterialCode);
+        pool.models.add(prod.model);
+        pool.units.add(prod.unit);
+        pool.productIds.add(prod.productId);
+        if (!pool.products.has(prod.productId)) {
+          pool.products.set(prod.productId, prod);
         }
       }
     }

@@ -394,6 +394,7 @@ export async function DELETE(
 
 /**
  * 未回收外发单：可改加工方、备注；若尚无任一回收入库流水，还可改加工套数与各物料外发数量（并重写外发出库流水）。
+ * 注意：当前该功能已关闭（直接返回错误），如需重新启用请取消下方注释并移除提前返回。
  */
 export async function PATCH(
   req: Request,
@@ -421,11 +422,15 @@ export async function PATCH(
     );
   }
 
+  // 外发单修改功能已关闭
   return NextResponse.json({ error: "外发单修改功能已关闭" }, { status: 400 });
 
+  // 以下代码已禁用，如需重新启用请取消注释并确保类型正确
+  /*
+  const body = parsed.data;
   const hasQtyPatch =
-    parsed.data.productQty !== undefined ||
-    (parsed.data.lines !== undefined && parsed.data.lines.length > 0);
+    body.productQty !== undefined ||
+    (body.lines !== undefined && body.lines.length > 0);
 
   try {
     const order = await prisma.outsourceOrder.findUnique({
@@ -471,7 +476,7 @@ export async function PATCH(
       );
     }
 
-    const supplierIdIn = parsed.data.supplierId;
+    const supplierIdIn = body.supplierId;
     const supplierId =
       supplierIdIn === undefined
         ? undefined
@@ -488,7 +493,7 @@ export async function PATCH(
       }
     }
 
-    const remarkIn = parsed.data.remark;
+    const remarkIn = body.remark;
     const remark =
       remarkIn === undefined ? undefined : remarkIn?.trim() ? remarkIn.trim() : null;
 
@@ -521,19 +526,19 @@ export async function PATCH(
     }
 
     const newProductQty =
-      parsed.data.productQty !== undefined
-        ? toPositiveInt(parsed.data.productQty, order.productQty)
+      body.productQty !== undefined
+        ? toPositiveInt(body.productQty, order.productQty)
         : order.productQty;
 
     type FinalLine = { lineId: string; materialId: string; quantity: number };
     let finalLines: FinalLine[];
 
-    if (parsed.data.lines !== undefined && parsed.data.lines.length > 0) {
+    if (body.lines !== undefined && body.lines.length > 0) {
       const lineById = new Map(order.lines.map((l) => [l.id, l]));
       const idSet = new Set(order.lines.map((l) => l.id));
       const got = new Set<string>();
       finalLines = [];
-      for (const row of parsed.data.lines) {
+      for (const row of body.lines) {
         if (got.has(row.lineId)) {
           return NextResponse.json({ error: "lines 中存在重复的 lineId" }, { status: 400 });
         }
@@ -766,4 +771,5 @@ export async function PATCH(
     }
     return NextResponse.json({ error: msg }, { status: 500 });
   }
+  */
 }

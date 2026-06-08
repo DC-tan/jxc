@@ -106,7 +106,8 @@ export async function GET(req: Request) {
       take: 4000,
     });
 
-    const orderIds = [...new Set(rows.map((r) => r.outsourceOrderId))];
+    // 过滤掉 null 的 outsourceOrderId，确保类型为 string
+    const orderIds = [...new Set(rows.map((r) => r.outsourceOrderId).filter((id): id is string => id !== null))];
     const orderNos = [
       ...new Set(
         rows
@@ -157,7 +158,10 @@ export async function GET(req: Request) {
     }
     const recoverySetsByOrderId = new Map<string, number>();
     for (const r of recoverySetsRows) {
-      recoverySetsByOrderId.set(r.outsourceOrderId, Number(r._sum.quantity ?? 0));
+      // 修复：过滤掉 outsourceOrderId 为 null 的记录
+      if (r.outsourceOrderId) {
+        recoverySetsByOrderId.set(r.outsourceOrderId, Number(r._sum.quantity ?? 0));
+      }
     }
     const warehouseByOrderMaterial = new Map<string, number>();
     for (const r of warehouseRows) {
