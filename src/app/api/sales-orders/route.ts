@@ -44,6 +44,21 @@ function toPositiveInt(v: unknown, fallback = 1): number {
   return n;
 }
 
+async function loadScopedCustomerIds(customerId: string): Promise<Set<string>> {
+  const relations = await prisma.customerRelation.findMany({
+    where: {
+      OR: [{ customerId }, { relatedCustomerId: customerId }],
+    },
+    select: { customerId: true, relatedCustomerId: true },
+  });
+  const ids = new Set<string>([customerId]);
+  for (const r of relations) {
+    ids.add(r.customerId);
+    ids.add(r.relatedCustomerId);
+  }
+  return ids;
+}
+
 export async function GET(req: Request) {
   const auth = await requirePermission("sales.view");
   if (!auth.ok) {
@@ -181,6 +196,7 @@ export async function POST(req: Request) {
   if (!cust) {
     return NextResponse.json({ error: "客户不存在" }, { status: 400 });
   }
+  const scopedCustomerIds = await loadScopedCustomerIds(d.customerId);
 
   const productIds = d.lines.map((l) => l.productId);
   if (new Set(productIds).size !== productIds.length) {
@@ -201,11 +217,11 @@ export async function POST(req: Request) {
     );
   }
   const wrongCustomer = products
-    .filter((p) => p.customerId !== d.customerId)
+    .filter((p) => !scopedCustomerIds.has(p.customerId))
     .map((p) => p.id);
   if (wrongCustomer.length > 0) {
     return NextResponse.json(
-      { error: "所选商品必须属于当前客户" },
+      { error: "所选商品必须属于当前客户或其关联客户" },
       { status: 400 },
     );
   }
