@@ -63,7 +63,7 @@ export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const auth = await requirePermission("outsource.edit");
+  const auth = await requirePermission("outsource.receive");
   if (!auth.ok) {
     return NextResponse.json({ error: auth.message }, { status: auth.status });
   }

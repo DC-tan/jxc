@@ -190,6 +190,8 @@ export async function GET(req: Request) {
         updatedAt: r.updatedAt.toISOString(),
         canCancel:
           r.status === "OPEN" &&
+          (auth.user.isAdmin ||
+            (!!r.createdByUserId && r.createdByUserId === auth.user.id)) &&
           !hasPositiveInboundByOrderNo.has(r.orderNo) &&
           !hasRecoveryByOrderId.has(r.id),
         canClose:
@@ -419,6 +421,7 @@ export async function POST(req: Request) {
           productId,
           supplierId,
           productQty,
+          createdByUserId: auth.user.id,
           remark: remark?.trim() || null,
           status: "OPEN",
           lines: {

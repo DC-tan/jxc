@@ -320,6 +320,12 @@ export async function DELETE(
     if (!row) {
       return NextResponse.json({ error: "外发单不存在" }, { status: 404 });
     }
+    if (!auth.user.isAdmin && row.createdByUserId !== auth.user.id) {
+      return NextResponse.json(
+        { error: "仅可取消本人创建的外发单" },
+        { status: 403 },
+      );
+    }
     if (row.status !== "OPEN") {
       return NextResponse.json({ error: "仅未回收状态可取消" }, { status: 400 });
     }

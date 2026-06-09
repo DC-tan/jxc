@@ -143,20 +143,23 @@ export const PERMISSION_DEFINITIONS: {
     "outsource.edit",
     "outsource.delete",
   ] },
-  { module: "物料外发", name: "外发加工单查询", code: "tab.os.query", sortOrder: 82, expandTo: [
+  { module: "物料外发", name: "确认回收", code: "tab.os.receive", sortOrder: 82, expandTo: [
+    "outsource.receive",
+  ] },
+  { module: "物料外发", name: "外发加工单查询", code: "tab.os.query", sortOrder: 83, expandTo: [
     "outsource.view",
   ] },
-  { module: "物料外发", name: "外发物料库存", code: "tab.os.stock", sortOrder: 83, expandTo: [
+  { module: "物料外发", name: "外发物料库存", code: "tab.os.stock", sortOrder: 84, expandTo: [
     "outsource.view",
     "outsource.edit",
   ] },
-  { module: "物料外发", name: "外发回收库", code: "tab.os.recovery", sortOrder: 84, expandTo: [
+  { module: "物料外发", name: "外发回收库", code: "tab.os.recovery", sortOrder: 85, expandTo: [
     "outsource.view",
   ] },
-  { module: "物料外发", name: "回收库手动调整", code: "tab.os.recoveryAdjust", sortOrder: 85, expandTo: [
+  { module: "物料外发", name: "回收库手动调整", code: "tab.os.recoveryAdjust", sortOrder: 86, expandTo: [
     "outsource.recovery.adjust",
   ] },
-  { module: "物料外发", name: "外发单设置", code: "tab.os.settings", sortOrder: 86, expandTo: [
+  { module: "物料外发", name: "外发单设置", code: "tab.os.settings", sortOrder: 87, expandTo: [
     "outsource.view",
     "outsource.edit",
   ] },
@@ -313,6 +316,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
   const outsource = new Set([
     "tab.os.add",
     "tab.os.open",
+    "tab.os.receive",
     "tab.os.query",
     "tab.os.stock",
     "tab.os.recovery",

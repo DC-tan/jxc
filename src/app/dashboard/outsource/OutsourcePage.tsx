@@ -1749,6 +1749,7 @@ export function OutsourcePage() {
   const { loading: tabPermLoading, allowed } = useMeTabPermissions();
   const canAdjustRecovery = allowed(["outsource.recovery.adjust"]);
   const canDeleteOutsource = allowed(["outsource.delete"]);
+  const canReceiveOutsource = allowed(["outsource.receive"]);
 
   const orderColumns: ColumnsType<OutsourceOrderRow> = useMemo(
     () => [
@@ -1834,13 +1835,15 @@ export function OutsourcePage() {
       const canCancel = canDeleteOutsource && r.canCancel !== false;
       return (
         <Space>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => void openRecycleModal(r)}
-          >
-            确认回收
-          </Button>
+          {canReceiveOutsource ? (
+            <Button
+              type="link"
+              size="small"
+              onClick={() => void openRecycleModal(r)}
+            >
+              确认回收
+            </Button>
+          ) : null}
           {canCancel ? (
             <>
               <Button

@@ -61,6 +61,7 @@ model User {
   productInboundOperations ProductInbound[] @relation("ProductInboundOperator")
   /// 外发回收库流水操作人（可选）
   outsourceRecoveryOperations OutsourceRecoveryInbound[] @relation("OutsourceRecoveryOperator")
+  createdOutsourceOrders OutsourceOrder[] @relation("OutsourceOrderCreator")
   createdChangeReminders CustomerChangeReminder[] @relation("ChangeReminderCreator")
   salesConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderSalesConfirmer")
   purchaseConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderPurchaseConfirmer")
@@ -625,6 +626,8 @@ model OutsourceOrder {
   supplier    Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   /// 外发加工的商品套数
   productQty  Int
+  createdByUserId String?
+  createdBy   User?                @relation("OutsourceOrderCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   status      OutsourceOrderStatus @default(OPEN)
   remark      String?              @db.Text
   receivedAt  DateTime?
@@ -635,6 +638,7 @@ model OutsourceOrder {
 
   @@index([productId])
   @@index([supplierId])
+  @@index([createdByUserId])
   @@index([status])
   @@index([createdAt])
 }
