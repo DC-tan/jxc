@@ -1,7 +1,7 @@
 "use client";
 
 import { QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons";
-import { App, Button, Col, ConfigProvider, Row, Space, Spin, Table, Tooltip, Typography } from "antd";
+import { App, Button, Col, ConfigProvider, Modal, Row, Space, Spin, Table, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import Link from "next/link";
@@ -194,6 +194,68 @@ const dashboardTableWrapStyle: React.CSSProperties = {
   overflow: "hidden",
 };
 
+type ExpandedBoard =
+  | "sales"
+  | "needPurchase"
+  | "pendingReceive"
+  | "needOutsource"
+  | "unrecovered"
+  | "samples"
+  | "productStock"
+  | "materialStock";
+
+type SalesOrderHoverDetail = {
+  id: string;
+  lines: {
+    quantity: string;
+    product: {
+      customerMaterialCode: string;
+      model: string;
+      spec: string;
+      unit: string;
+    };
+  }[];
+};
+
+type PurchaseOrderHoverDetail = {
+  id: string;
+  lines: {
+    quantity: string;
+    remark: string | null;
+    material: {
+      code: string;
+      name: string;
+      unit: string;
+    };
+  }[];
+};
+
+function toExpandedColumns<T extends object>(columns: ColumnsType<T>): ColumnsType<T> {
+  const flatCount = columns.length > 0 ? columns.length : 1;
+  const width = `${(100 / flatCount).toFixed(2)}%`;
+  return columns.map((col) => {
+    const prevOnCell = col.onCell;
+    return {
+      ...col,
+      width,
+      fixed: undefined,
+      ellipsis: false,
+      onCell: (record, rowIndex) => {
+        const base = prevOnCell?.(record, rowIndex) ?? {};
+        return {
+          ...base,
+          style: {
+            ...(base.style ?? {}),
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+            verticalAlign: "top",
+          },
+        };
+      },
+    };
+  });
+}
+
 export function DashboardHomePage() {
   const { message } = App.useApp();
   const [me, setMe] = useState<Me | null>(null);
@@ -202,6 +264,11 @@ export function DashboardHomePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [ackLoading, setAckLoading] = useState<"supplier" | "customer" | "other" | null>(null);
   const [activeMainTab, setActiveMainTab] = useState<"workbench" | "todo">("workbench");
+  const [expandedBoard, setExpandedBoard] = useState<ExpandedBoard | null>(null);
+  const [salesOrderDetailMap, setSalesOrderDetailMap] = useState<Record<string, SalesOrderHoverDetail>>({});
+  const [salesOrderDetailLoading, setSalesOrderDetailLoading] = useState<Record<string, boolean>>({});
+  const [purchaseOrderDetailMap, setPurchaseOrderDetailMap] = useState<Record<string, PurchaseOrderHoverDetail>>({});
+  const [purchaseOrderDetailLoading, setPurchaseOrderDetailLoading] = useState<Record<string, boolean>>({});
 
   const baseDate = useMemo(() => dayjs().format("YYYY-MM-DD"), []);
 
@@ -246,6 +313,40 @@ export function DashboardHomePage() {
     },
     [load, message],
   );
+
+  const ensureSalesOrderDetail = useCallback(async (salesOrderId: string) => {
+    if (!salesOrderId) return;
+    if (salesOrderDetailMap[salesOrderId]) return;
+    if (salesOrderDetailLoading[salesOrderId]) return;
+    setSalesOrderDetailLoading((prev) => ({ ...prev, [salesOrderId]: true }));
+    try {
+      const detail = await fetchJson<SalesOrderHoverDetail>(`/api/sales-orders/${salesOrderId}`, {
+        credentials: "include",
+      });
+      setSalesOrderDetailMap((prev) => ({ ...prev, [salesOrderId]: detail }));
+    } catch {
+      // ignore hover fetch errors, keep board usable
+    } finally {
+      setSalesOrderDetailLoading((prev) => ({ ...prev, [salesOrderId]: false }));
+    }
+  }, [salesOrderDetailLoading, salesOrderDetailMap]);
+
+  const ensurePurchaseOrderDetail = useCallback(async (purchaseOrderId: string) => {
+    if (!purchaseOrderId) return;
+    if (purchaseOrderDetailMap[purchaseOrderId]) return;
+    if (purchaseOrderDetailLoading[purchaseOrderId]) return;
+    setPurchaseOrderDetailLoading((prev) => ({ ...prev, [purchaseOrderId]: true }));
+    try {
+      const detail = await fetchJson<PurchaseOrderHoverDetail>(`/api/purchase-orders/${purchaseOrderId}`, {
+        credentials: "include",
+      });
+      setPurchaseOrderDetailMap((prev) => ({ ...prev, [purchaseOrderId]: detail }));
+    } catch {
+      // ignore hover fetch errors, keep board usable
+    } finally {
+      setPurchaseOrderDetailLoading((prev) => ({ ...prev, [purchaseOrderId]: false }));
+    }
+  }, [purchaseOrderDetailLoading, purchaseOrderDetailMap]);
 
   const salesColumns: ColumnsType<NonNullable<HomePayload["salesDeliveries"]>["rows"][number]> = useMemo(
     () => [
@@ -446,6 +547,15 @@ export function DashboardHomePage() {
     [],
   );
 
+  const expandedSalesColumns = useMemo(() => toExpandedColumns(salesColumns), [salesColumns]);
+  const expandedNeedPurchaseColumns = useMemo(() => toExpandedColumns(needPurchaseColumns), [needPurchaseColumns]);
+  const expandedPoColumns = useMemo(() => toExpandedColumns(poColumns), [poColumns]);
+  const expandedOutsourceLineColumns = useMemo(() => toExpandedColumns(outsourceLineColumns), [outsourceLineColumns]);
+  const expandedOutColumns = useMemo(() => toExpandedColumns(outColumns), [outColumns]);
+  const expandedSampleColumns = useMemo(() => toExpandedColumns(sampleColumns), [sampleColumns]);
+  const expandedProductStockAlertColumns = useMemo(() => toExpandedColumns(productStockAlertColumns), [productStockAlertColumns]);
+  const expandedMaterialStockAlertColumns = useMemo(() => toExpandedColumns(materialStockAlertColumns), [materialStockAlertColumns]);
+
   const wb = useMemo((): WorkbenchStateFromApi => {
     const d = defaultWorkbenchSettings();
     if (!data?.workbench) return d;
@@ -548,6 +658,70 @@ export function DashboardHomePage() {
   const canOutsourceNav = me?.permissions?.includes("outsource.view") ?? false;
   /** 首页工作台齿轮：仅系统管理员可见，与业务角色无关 */
   const canEditGlobalWorkbench = Boolean(me?.isAdmin);
+
+  const salesRowTitle = (r: NonNullable<HomePayload["salesDeliveries"]>["rows"][number]) =>
+    (() => {
+      const base = `客户订单号: ${r.customerOrderNo} | 项目型号: ${r.customerModel} | 客户: ${r.customerName} | 约定交货日: ${dayjs(r.deliveryDueAt).format("YYYY-MM-DD")} | 交期: ${dayLabel(r.daysUntil)}`;
+      const detail = salesOrderDetailMap[r.id];
+      if (!detail) {
+        return `${base}\n商品明细: ${salesOrderDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
+      }
+      const lines = (detail.lines ?? []).map(
+        (l, idx) =>
+          `${idx + 1}. ${l.product.customerMaterialCode || "—"} / ${l.product.model || "—"} / ${l.product.spec || "—"} ×${l.quantity}${l.product.unit ? ` ${l.product.unit}` : ""}`,
+      );
+      return `${base}\n商品明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+    })();
+  const needPurchaseRowTitle = (
+    r: NonNullable<HomePayload["needPurchase"]>["rows"][number],
+  ) =>
+    (() => {
+      const base = `采购关联: ${r.unlinkedFromPurchase ? "未建" : "已建待跟进"} | 客户订单号: ${r.customerOrderNo} | 项目型号: ${r.customerModel} | 客户: ${r.customerName} | 约定交期: ${r.deliveryDueAt ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD") : "—"} | 行数: ${r.lineCount}`;
+      const detail = salesOrderDetailMap[r.id];
+      if (!detail) {
+        return `${base}\n商品明细: ${salesOrderDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
+      }
+      const lines = (detail.lines ?? []).map(
+        (l, idx) =>
+          `${idx + 1}. ${l.product.customerMaterialCode || "—"} / ${l.product.model || "—"} / ${l.product.spec || "—"} ×${l.quantity}${l.product.unit ? ` ${l.product.unit}` : ""}`,
+      );
+      return `${base}\n商品明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+    })();
+  const pendingReceiveRowTitle = (
+    r: NonNullable<HomePayload["purchasePendingReceive"]>["rows"][number],
+  ) =>
+    (() => {
+      const base = `采购单号: ${r.orderNo} | 供应商: ${r.supplierName} | 要求交期: ${r.deliveryDueAt ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD") : "—"} | 距交期: ${r.daysUntil != null ? dayLabel(r.daysUntil) : "—"}`;
+      const detail = purchaseOrderDetailMap[r.id];
+      if (!detail) {
+        return `${base}\n物料明细: ${purchaseOrderDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
+      }
+      const lines = (detail.lines ?? []).map(
+        (l, idx) =>
+          `${idx + 1}. ${l.material.code || "—"} / ${l.material.name || "—"} ×${l.quantity}${l.material.unit ? ` ${l.material.unit}` : ""}${l.remark ? `（备注: ${l.remark}）` : ""}`,
+      );
+      return `${base}\n物料明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+    })();
+  const needOutsourceRowTitle = (
+    r: NonNullable<HomePayload["needOutsourceRows"]>["sampleRows"][number],
+  ) =>
+    `加工: ${r.processingMode === "OUTSOURCE" ? "外发" : "外发+自加工"} | 客户订单号: ${r.customerOrderNo} | 型号: ${r.productModel} | 客户: ${r.customerName} | 成品库存: ${r.productOnHand} | 订/出: ${r.quantityShipped}/${r.quantity} | 缺口: ${r.unmetByStock}`;
+  const unrecoveredRowTitle = (
+    r: NonNullable<HomePayload["outsourceUnrecovered"]>["rows"][number],
+  ) =>
+    `外发单号: ${r.orderNo} | 型号: ${r.productModel} | 外协方: ${r.supplierName} | 套数: ${r.productQty} | 建单时间: ${dayjs(r.createdAt).format("YYYY-MM-DD HH:mm")}`;
+  const sampleRowTitle = (
+    r: NonNullable<HomePayload["sampleReminders"]>["rows"][number],
+  ) =>
+    `客户: ${r.customerName} | 型号: ${r.model} | 数量: ${r.quantity} | 交样日: ${dayjs(r.sampleDueAt).format("YYYY-MM-DD")} | 交期: ${dayLabel(r.daysUntil)}`;
+  const productStockRowTitle = (
+    r: NonNullable<HomePayload["productStockAlerts"]>["rows"][number],
+  ) =>
+    `客户: ${r.customerName} | 物料编号: ${r.customerMaterialCode} | 型号: ${r.model} | 库存: ${r.totalQty} | 阈值: ${r.alertType === "LOW" ? `安全 ${r.safetyStock ?? "—"}` : `最大 ${r.maxStock ?? "—"}`} | 状态: ${r.alertType === "LOW" ? "不足" : "超储"}`;
+  const materialStockRowTitle = (
+    r: NonNullable<HomePayload["materialStockAlerts"]>["rows"][number],
+  ) =>
+    `物料编号: ${r.code} | 名称: ${r.name} | 库存: ${r.totalQty} | 阈值: ${r.alertType === "LOW" ? `安全 ${r.safetyStock ?? "—"}` : `最大 ${r.maxStock ?? "—"}`} | 状态: ${r.alertType === "LOW" ? "不足" : "超储"}`;
 
   return (
     <div>
@@ -696,13 +870,24 @@ export function DashboardHomePage() {
                       columns={salesColumns}
                       pagination={false}
                       scroll={{ y: salesTableScroll.scrollY, x: 480 }}
-                      onRow={(r) => ({ style: { background: rowBg[r.urgency] } })}
+                      onRow={(r) => ({
+                        title: salesRowTitle(r),
+                        onMouseEnter: () => {
+                          void ensureSalesOrderDetail(r.id);
+                        },
+                        style: { background: rowBg[r.urgency] },
+                      })}
                     />
                   )}
                 </div>
-                <Link href="/dashboard/warehouse" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往仓库出货
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/warehouse" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往仓库出货
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("sales")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -738,16 +923,34 @@ export function DashboardHomePage() {
                       pagination={false}
                       scroll={{ y: needPurchaseTableScroll.scrollY, x: 520 }}
                       onRow={(r) =>
-                        r.unlinkedFromPurchase ? { style: { background: "#fffbe6" } } : {}
+                        r.unlinkedFromPurchase
+                          ? {
+                              title: needPurchaseRowTitle(r),
+                              onMouseEnter: () => {
+                                void ensureSalesOrderDetail(r.id);
+                              },
+                              style: { background: "#fffbe6" },
+                            }
+                          : {
+                              title: needPurchaseRowTitle(r),
+                              onMouseEnter: () => {
+                                void ensureSalesOrderDetail(r.id);
+                              },
+                            }
                       }
                     />
                   ) : (
                     <Typography.Text type="secondary">暂无待跟进的销售订单。</Typography.Text>
                   )}
                 </div>
-                <Link href="/dashboard/purchase" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往采购订单
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/purchase" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往采购订单
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("needPurchase")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -784,13 +987,24 @@ export function DashboardHomePage() {
                       columns={poColumns}
                       pagination={false}
                       scroll={{ y: receiveTableScroll.scrollY, x: 400 }}
-                      onRow={(r) => ({ style: { background: rowBg[r.urgency] } })}
+                      onRow={(r) => ({
+                        title: pendingReceiveRowTitle(r),
+                        onMouseEnter: () => {
+                          void ensurePurchaseOrderDetail(r.id);
+                        },
+                        style: { background: rowBg[r.urgency] },
+                      })}
                     />
                   )}
                 </div>
-                <Link href="/dashboard/purchase" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往采购订单（未交采购订单 · 收料）
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/purchase" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往采购订单（未交采购订单 · 收料）
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("pendingReceive")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -815,6 +1029,7 @@ export function DashboardHomePage() {
                       columns={outsourceLineColumns}
                       pagination={false}
                       scroll={{ y: outsourceTableScroll.scrollY, x: 640 }}
+                      onRow={(r) => ({ title: needOutsourceRowTitle(r) })}
                     />
                   ) : (
                     <Typography.Text type="secondary">
@@ -822,11 +1037,16 @@ export function DashboardHomePage() {
                     </Typography.Text>
                   )}
                 </div>
-                {canOutsourceNav ? (
-                  <Link href="/dashboard/outsource" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                    前往物料外发
-                  </Link>
-                ) : null}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  {canOutsourceNav ? (
+                    <Link href="/dashboard/outsource" style={{ fontSize: 13, flexShrink: 0 }}>
+                      前往物料外发
+                    </Link>
+                  ) : <span />}
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("needOutsource")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -863,12 +1083,18 @@ export function DashboardHomePage() {
                       columns={outColumns}
                       pagination={false}
                       scroll={{ y: recoverOutTableScroll.scrollY, x: 400 }}
+                      onRow={(r) => ({ title: unrecoveredRowTitle(r) })}
                     />
                   )}
                 </div>
-                <Link href="/dashboard/outsource" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往物料外发（已发外/回收进度）
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/outsource" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往物料外发（已发外/回收进度）
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("unrecovered")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -903,13 +1129,21 @@ export function DashboardHomePage() {
                       columns={sampleColumns}
                       pagination={false}
                       scroll={{ y: sampleTableScroll.scrollY, x: 420 }}
-                      onRow={(r) => ({ style: { background: rowBg[r.urgency] } })}
+                      onRow={(r) => ({
+                        title: sampleRowTitle(r),
+                        style: { background: rowBg[r.urgency] },
+                      })}
                     />
                   )}
                 </div>
-                <Link href="/dashboard/samples" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往样品详情（未交样品）
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/samples" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往样品详情（未交样品）
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("samples")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -936,12 +1170,18 @@ export function DashboardHomePage() {
                       columns={productStockAlertColumns}
                       pagination={false}
                       scroll={{ y: productStockAlertTableScroll.scrollY, x: 520 }}
+                      onRow={(r) => ({ title: productStockRowTitle(r) })}
                     />
                   )}
                 </div>
-                <Link href="/dashboard/products" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往商品信息（商品库存）
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/products" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往商品信息（商品库存）
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("productStock")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -968,12 +1208,18 @@ export function DashboardHomePage() {
                       columns={materialStockAlertColumns}
                       pagination={false}
                       scroll={{ y: materialStockAlertTableScroll.scrollY, x: 460 }}
+                      onRow={(r) => ({ title: materialStockRowTitle(r) })}
                     />
                   )}
                 </div>
-                <Link href="/dashboard/materials" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>
-                  前往物料信息（物料库存）
-                </Link>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+                  <Link href="/dashboard/materials" style={{ fontSize: 13, flexShrink: 0 }}>
+                    前往物料信息（物料库存）
+                  </Link>
+                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setExpandedBoard("materialStock")}>
+                    放大
+                  </Button>
+                </div>
               </div>
             </Col>
           )}
@@ -989,6 +1235,141 @@ export function DashboardHomePage() {
         workbench={wb}
         onSaved={load}
       />
+      <Modal
+        title={
+          expandedBoard === "sales" ? "销售提醒 · 交付（完整）" :
+          expandedBoard === "needPurchase" ? "采购提醒（完整）" :
+          expandedBoard === "pendingReceive" ? "收料提醒（完整）" :
+          expandedBoard === "needOutsource" ? "外发提醒（完整）" :
+          expandedBoard === "unrecovered" ? "回收外发提醒（完整）" :
+          expandedBoard === "samples" ? "样品提醒（完整）" :
+          expandedBoard === "productStock" ? "商品库存预警（完整）" :
+          expandedBoard === "materialStock" ? "物料库存预警（完整）" :
+          "看板详情"
+        }
+        open={expandedBoard != null}
+        onCancel={() => setExpandedBoard(null)}
+        footer={null}
+        width={1280}
+        destroyOnHidden
+      >
+        {expandedBoard === "sales" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={sRows}
+            columns={expandedSalesColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({
+              title: salesRowTitle(r),
+              onMouseEnter: () => {
+                void ensureSalesOrderDetail(r.id);
+              },
+              style: { background: rowBg[r.urgency] },
+            })}
+          />
+        ) : expandedBoard === "needPurchase" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.needPurchase?.rows ?? []}
+            columns={expandedNeedPurchaseColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) =>
+              r.unlinkedFromPurchase
+                ? {
+                    title: needPurchaseRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureSalesOrderDetail(r.id);
+                    },
+                    style: { background: "#fffbe6" },
+                  }
+                : {
+                    title: needPurchaseRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureSalesOrderDetail(r.id);
+                    },
+                  }
+            }
+          />
+        ) : expandedBoard === "pendingReceive" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.purchasePendingReceive?.rows ?? []}
+            columns={expandedPoColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({
+              title: pendingReceiveRowTitle(r),
+              onMouseEnter: () => {
+                void ensurePurchaseOrderDetail(r.id);
+              },
+              style: { background: rowBg[r.urgency] },
+            })}
+          />
+        ) : expandedBoard === "needOutsource" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.needOutsourceRows?.sampleRows ?? []}
+            columns={expandedOutsourceLineColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({ title: needOutsourceRowTitle(r) })}
+          />
+        ) : expandedBoard === "unrecovered" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.outsourceUnrecovered?.rows ?? []}
+            columns={expandedOutColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({ title: unrecoveredRowTitle(r) })}
+          />
+        ) : expandedBoard === "samples" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.sampleReminders?.rows ?? []}
+            columns={expandedSampleColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({ title: sampleRowTitle(r), style: { background: rowBg[r.urgency] } })}
+          />
+        ) : expandedBoard === "productStock" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.productStockAlerts?.rows ?? []}
+            columns={expandedProductStockAlertColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({ title: productStockRowTitle(r) })}
+          />
+        ) : expandedBoard === "materialStock" ? (
+          <Table
+            size="small"
+            rowKey="id"
+            dataSource={data.materialStockAlerts?.rows ?? []}
+            columns={expandedMaterialStockAlertColumns}
+            pagination={false}
+            tableLayout="fixed"
+            scroll={{ y: 560 }}
+            onRow={(r) => ({ title: materialStockRowTitle(r) })}
+          />
+        ) : null}
+      </Modal>
     </div>
   );
 }

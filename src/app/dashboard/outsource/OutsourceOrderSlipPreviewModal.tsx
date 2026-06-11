@@ -74,15 +74,17 @@ function slipLineWarehouseQty(l: SlipDetailPayload["lines"][number]): number {
 }
 
 function mapDetailToSlipLines(d: SlipDetailPayload): OutsourceSlipPreviewLine[] {
-  return d.lines.map((l) => ({
-    kind: kindLabel(l.material),
-    materialName: l.material.name,
-    partDescription: l.material.partDescription?.trim() || "—",
-    brand: l.material.brand?.trim() || "—",
-    unit: l.material.unit,
-    quantity: slipLineWarehouseQty(l),
-    remark: "",
-  }));
+  return d.lines
+    .filter((l) => slipLineWarehouseQty(l) > 0)
+    .map((l) => ({
+      kind: kindLabel(l.material),
+      materialName: l.material.name,
+      partDescription: l.material.partDescription?.trim() || "—",
+      brand: l.material.brand?.trim() || "—",
+      unit: l.material.unit,
+      quantity: slipLineWarehouseQty(l),
+      remark: "",
+    }));
 }
 
 /** 收件方：仅显示供应商中文全称（不显示编号、简称） */

@@ -160,6 +160,7 @@ type OutsourceOrderRow = {
   lines: {
     id: string;
     quantity: number;
+    issuedQuantity?: number;
     material: { id: string; code: string; name: string; unit: string };
   }[];
 };
@@ -1557,6 +1558,21 @@ export function OutsourcePage() {
     range?: [dayjs.Dayjs, dayjs.Dayjs];
   }>();
 
+  const orderHoverTitle = useCallback((r: OutsourceOrderRow) => {
+    const base = `外发单号: ${r.orderNo} | 客户: ${r.product.customer.name || r.product.customer.code} | 商品: ${r.product.customerMaterialCode || "—"} / ${r.product.model || "—"} | 加工方: ${r.supplier?.name || r.supplier?.code || "—"} | 外发套数: ${r.productQty}`;
+    const lines = (r.lines ?? [])
+      .map((l) => ({
+        ...l,
+        issued: Math.max(0, Math.trunc(Number(l.issuedQuantity ?? 0))),
+      }))
+      .filter((l) => l.issued > 0)
+      .map(
+        (l, idx) =>
+          `${idx + 1}. ${l.material.code || "—"} / ${l.material.name || "—"} 实发 ${l.issued}${l.material.unit ? ` ${l.material.unit}` : ""}`,
+      );
+    return `${base}\n物料明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+  }, []);
+
   const runQuery = async () => {
     const v = (await queryForm.validateFields().catch(() => ({}))) as {
       keyword?: string;
@@ -2125,6 +2141,7 @@ export function OutsourcePage() {
                       size="small"
                       loading={loadingTodayOrders}
                       dataSource={todayOrders}
+                      onRow={(r) => ({ title: orderHoverTitle(r) })}
                       columns={[...orderColumns, todayActionColumn]}
                       scroll={{ x: "max-content" }}
                       pagination={{ pageSize: 8, showSizeChanger: false }}
@@ -2224,6 +2241,7 @@ export function OutsourcePage() {
                   rowKey="id"
                   loading={loadingOpen}
                   dataSource={openOrders}
+                  onRow={(r) => ({ title: orderHoverTitle(r) })}
                   columns={[...orderColumns, openActionColumn]}
                   scroll={{ x: "max-content" }}
                   pagination={{ pageSize: 10 }}
@@ -2277,6 +2295,7 @@ export function OutsourcePage() {
                   rowKey="id"
                   loading={loadingQuery}
                   dataSource={queryOrders}
+                  onRow={(r) => ({ title: orderHoverTitle(r) })}
                   columns={orderColumns}
                   scroll={{ x: "max-content" }}
                   pagination={{

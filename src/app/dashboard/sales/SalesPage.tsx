@@ -1132,6 +1132,8 @@ export function SalesPage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<DetailPayload | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [hoverDetailMap, setHoverDetailMap] = useState<Record<string, DetailPayload>>({});
+  const [hoverDetailLoading, setHoverDetailLoading] = useState<Record<string, boolean>>({});
 
   /** 记录弹窗内已同步过的客户，仅在用户从「一个已选客户」切换到另一客户时清空明细 */
   const prevCustomerIdForLinesRef = useRef<string | undefined>(undefined);
@@ -1487,6 +1489,36 @@ export function SalesPage() {
     [message],
   );
 
+  const ensureHoverDetail = useCallback(async (id: string) => {
+    if (!id) return;
+    if (hoverDetailMap[id]) return;
+    if (hoverDetailLoading[id]) return;
+    setHoverDetailLoading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const data = await fetchJson<DetailPayload>(`/api/sales-orders/${id}`, {
+        credentials: "include",
+      });
+      setHoverDetailMap((prev) => ({ ...prev, [id]: data }));
+    } catch {
+      // ignore hover loading error
+    } finally {
+      setHoverDetailLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  }, [hoverDetailLoading, hoverDetailMap]);
+
+  const hoverRowTitle = useCallback((r: SalesOrderRow) => {
+    const base = `客户: ${r.customer.name || r.customer.code} | 订单号: ${r.customerOrderNo || "—"} | 机型: ${r.customerModel?.trim() || "—"} | 要求交货: ${r.deliveryDueAt ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD") : "—"}`;
+    const d = hoverDetailMap[r.id];
+    if (!d) {
+      return `${base}\n商品明细: ${hoverDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
+    }
+    const lines = (d.lines ?? []).map(
+      (l, idx) =>
+        `${idx + 1}. ${l.product.customerMaterialCode || "—"} / ${l.product.model || "—"} / ${l.product.spec || "—"} ×${l.quantity}${l.product.unit ? ` ${l.product.unit}` : ""}`,
+    );
+    return `${base}\n商品明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+  }, [hoverDetailLoading, hoverDetailMap]);
+
   const detailSalesOrderIdQ = searchParams.get("detailSalesOrderId");
   useEffect(() => {
     if (!detailSalesOrderIdQ) return;
@@ -1736,6 +1768,12 @@ export function SalesPage() {
                   loading={loadingToday}
                   columns={todayListColumns}
                   dataSource={todayRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   rowSelection={{
                     selectedRowKeys: todaySelectedKeys,
                     onChange: (keys) => setTodaySelectedKeys(keys),
@@ -1791,6 +1829,12 @@ export function SalesPage() {
                   loading={loadingPending}
                   columns={pendingListColumns}
                   dataSource={pendingRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   rowSelection={{
                     selectedRowKeys: pendingSelectedKeys,
                     onChange: (keys) => setPendingSelectedKeys(keys),
@@ -1889,6 +1933,12 @@ export function SalesPage() {
                   loading={loadingQuery}
                   columns={queryListColumns}
                   dataSource={queryRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   rowSelection={{
                     selectedRowKeys: querySelectedKeys,
                     onChange: (keys) => setQuerySelectedKeys(keys),

@@ -202,6 +202,7 @@ export async function GET(req: Request) {
         lines: r.lines.map((l) => ({
           id: l.id,
           quantity: l.quantity,
+          issuedQuantity: l.issuedQuantity,
           material: l.material,
         })),
       })),

@@ -806,6 +806,8 @@ export function PurchasePage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<DetailPayload | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [hoverDetailMap, setHoverDetailMap] = useState<Record<string, DetailPayload>>({});
+  const [hoverDetailLoading, setHoverDetailLoading] = useState<Record<string, boolean>>({});
   const [detailLineColKeys, setDetailLineColKeys] = useState<string[]>(() =>
     loadPurchaseVisibleColKeys(
       LS_PURCHASE_DETAIL_LINE_COLS,
@@ -1329,7 +1331,7 @@ export function PurchasePage() {
       setDetail(null);
       setLoadingDetail(true);
       try {
-        const data = await fetchJson<DetailPayload>(`/api/purchase-orders/${id}`, {
+        const data = await fetchJson<DetailPayload>(`/api/purchase-orders/${id}?forPreview=1`, {
           credentials: "include",
         });
         setDetail(data);
@@ -1341,6 +1343,63 @@ export function PurchasePage() {
     },
     [message],
   );
+
+  const ensureHoverDetail = useCallback(async (id: string) => {
+    if (!id) return;
+    if (hoverDetailMap[id]) return;
+    if (hoverDetailLoading[id]) return;
+    setHoverDetailLoading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const data = await fetchJson<DetailPayload>(`/api/purchase-orders/${id}?forPreview=1`, {
+        credentials: "include",
+      });
+      setHoverDetailMap((prev) => ({ ...prev, [id]: data }));
+    } catch {
+      // ignore hover loading error
+    } finally {
+      setHoverDetailLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  }, [hoverDetailLoading, hoverDetailMap]);
+
+  const hoverRowTitle = useCallback((r: PurchaseOrderRow) => {
+    const base = `采购单号: ${r.orderNo} | 供应商: ${r.supplier.name || r.supplier.code} | 要求交货: ${r.deliveryDueAt ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD") : "—"} | 销售订单: ${r.salesOrder?.customerOrderNo || "—"}`;
+    const d = hoverDetailMap[r.id];
+    if (!d) {
+      return `${base}\n物料明细: ${hoverDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
+    }
+    const lines = (d.lines ?? []).map(
+      (l, idx) =>
+        `${idx + 1}. ${l.material.code || "—"} / ${l.material.name || "—"} ×${l.quantity}${l.material.unit ? ` ${l.material.unit}` : ""}${l.remark ? `（备注: ${l.remark}）` : ""}`,
+    );
+    return `${base}\n物料明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+  }, [hoverDetailLoading, hoverDetailMap]);
+
+  useEffect(() => {
+    if (queryRows.length === 0) return;
+    const targets = queryRows
+      .map((r) => r.id)
+      .filter((id) => !hoverDetailMap[id] && !hoverDetailLoading[id]);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      await Promise.all(
+        targets.map(async (id) => {
+          try {
+            const data = await fetchJson<DetailPayload>(`/api/purchase-orders/${id}?forPreview=1`, {
+              credentials: "include",
+            });
+            if (cancelled) return;
+            setHoverDetailMap((prev) => ({ ...prev, [id]: data }));
+          } catch {
+            // ignore prefetch errors, fallback to hover fetch
+          }
+        }),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [queryRows, hoverDetailLoading, hoverDetailMap]);
 
   const detailPurchaseOrderIdQ = searchParams.get("detailPurchaseOrderId");
   useEffect(() => {
@@ -1752,21 +1811,6 @@ export function PurchasePage() {
     [purchaseListColsQuery],
   );
 
-  const queryOnlyOpCol = useMemo(
-    () =>
-      ({
-        key: "op",
-        title: "操作",
-        width: 88,
-        render: (_: unknown, r: PurchaseOrderRow) => (
-          <Button type="link" size="small" onClick={() => void openDetail(r.id)}>
-            详情
-          </Button>
-        ),
-      }) as ColumnsType<PurchaseOrderRow>[number],
-    [openDetail],
-  );
-
   const mutableOpCol = useMemo(
     () =>
       ({
@@ -1811,10 +1855,9 @@ export function PurchasePage() {
   ]);
 
   const queryListColumns = useMemo(() => {
-    const base = [...purchaseListColsQuery, queryOnlyOpCol];
+    const base = purchaseListColsQuery;
     const visible = base.filter(
       (col) =>
-        col.key === "op" ||
         col.key === "orderPreview" ||
         (typeof col.key === "string" && queryPoListColKeys.includes(col.key)),
     );
@@ -1826,7 +1869,6 @@ export function PurchasePage() {
     );
   }, [
     purchaseListColsQuery,
-    queryOnlyOpCol,
     queryPoListColKeys,
     queryPoListColWidths,
   ]);
@@ -2161,6 +2203,12 @@ export function PurchasePage() {
                   loading={loadingToday}
                   columns={todayListColumns}
                   dataSource={todayRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   pagination={{ pageSize: 8 }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
@@ -2219,6 +2267,12 @@ export function PurchasePage() {
                   loading={loadingPending}
                   columns={pendingListColumns}
                   dataSource={pendingRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   pagination={{ pageSize: 10 }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
@@ -2288,6 +2342,12 @@ export function PurchasePage() {
                   loading={loadingPcb}
                   columns={pcbListColumns}
                   dataSource={pcbRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   pagination={{ pageSize: 10 }}
                   scroll={{ x: "max-content" }}
                   tableLayout="fixed"
@@ -2400,6 +2460,12 @@ export function PurchasePage() {
                   loading={loadingQuery}
                   columns={queryListColumns}
                   dataSource={queryRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverDetail(r.id);
+                    },
+                  })}
                   pagination={{
                     defaultPageSize: 10,
                     showSizeChanger: true,

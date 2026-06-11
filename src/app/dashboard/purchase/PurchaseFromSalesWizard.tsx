@@ -416,6 +416,7 @@ export function PurchaseFromSalesWizard({
   const [previewOpen, setPreviewOpen] = useState(false);
   /** 采购合同预览当前选中的供应商分组 */
   const [previewSupplierId, setPreviewSupplierId] = useState<string | undefined>();
+  const [previewConfirmedOnly, setPreviewConfirmedOnly] = useState(false);
   const [visualTemplate, setVisualTemplate] = useState<VisualEditorState | null>(null);
   /** 与系统采购单号规则一致的下一单号预览（不写库） */
   const [previewContractNo, setPreviewContractNo] = useState<string | null>(null);
@@ -484,6 +485,7 @@ export function PurchaseFromSalesWizard({
       setGroups([]);
       setPreviewOpen(false);
       setPreviewSupplierId(undefined);
+      setPreviewConfirmedOnly(false);
       setExtraFeesBySupplierId({});
       setMaterialStockById({});
       setActualDemandByProductId({});
@@ -986,28 +988,37 @@ export function PurchaseFromSalesWizard({
     () => groupsWithPositiveQuantityLines(groups),
     [groups],
   );
+  const confirmedPositiveQtyGroups = useMemo(
+    () => groupsWithPositiveQuantityLines(groups.filter((g) => g.confirmed)),
+    [groups],
+  );
   const allQuantitiesAreZero = useMemo(
     () => isAllLineQuantitiesZero(groups),
     [groups],
   );
 
-  const openUnifiedPreview = useCallback(async () => {
+  const openUnifiedPreview = useCallback(async (confirmedOnly = false) => {
     if (!split) return;
-    if (positiveQtyGroups.length === 0) {
+    const candidateGroups = confirmedOnly ? confirmedPositiveQtyGroups : positiveQtyGroups;
+    if (candidateGroups.length === 0) {
       message.warning(
-        "没有可采购的明细：数量 0 表示不采购。请至少保留一条数量大于 0 的物料。",
+        confirmedOnly
+          ? "当前没有可生成的“已确认”明细，请先对至少一个供应商点「确认」。"
+          : "没有可采购的明细：数量 0 表示不采购。请至少保留一条数量大于 0 的物料。",
       );
       return;
     }
-    const needConfirm = groups.filter((g) =>
-      g.lines.some((l) => shouldShowPurchaseLine(l)),
-    );
-    const unconfirmed = needConfirm.filter((g) => !g.confirmed);
-    if (unconfirmed.length > 0) {
-      message.warning(
-        `请先对各供应商点「确认」：${unconfirmed.map((g) => g.supplier.name).join("、")}`,
+    if (!confirmedOnly) {
+      const needConfirm = groups.filter((g) =>
+        g.lines.some((l) => shouldShowPurchaseLine(l)),
       );
-      return;
+      const unconfirmed = needConfirm.filter((g) => !g.confirmed);
+      if (unconfirmed.length > 0) {
+        message.warning(
+          `请先对各供应商点「确认」：${unconfirmed.map((g) => g.supplier.name).join("、")}`,
+        );
+        return;
+      }
     }
     try {
       const reminderPayload = await fetchJson<{
@@ -1032,9 +1043,10 @@ export function PurchaseFromSalesWizard({
       );
       return;
     }
-    setPreviewSupplierId(positiveQtyGroups[0]?.supplierId);
+    setPreviewConfirmedOnly(confirmedOnly);
+    setPreviewSupplierId(candidateGroups[0]?.supplierId);
     setPreviewOpen(true);
-  }, [groups, message, modal, positiveQtyGroups, split]);
+  }, [confirmedPositiveQtyGroups, groups, message, modal, positiveQtyGroups, split]);
 
   const submitNoPurchaseRequired = useCallback(() => {
     if (!split || !allQuantitiesAreZero) return;
@@ -1068,7 +1080,7 @@ export function PurchaseFromSalesWizard({
 
   const submitBatch = async () => {
     if (!split) return;
-    const toCreate = positiveQtyGroups;
+    const toCreate = previewConfirmedOnly ? confirmedPositiveQtyGroups : positiveQtyGroups;
     if (toCreate.length === 0) {
       message.warning("没有可生成的采购明细，请至少保留一条数量大于 0 的物料。");
       return;
@@ -1118,18 +1130,23 @@ export function PurchaseFromSalesWizard({
     window.print();
   };
 
+  const previewGroups = useMemo(
+    () => (previewConfirmedOnly ? confirmedPositiveQtyGroups : positiveQtyGroups),
+    [confirmedPositiveQtyGroups, positiveQtyGroups, previewConfirmedOnly],
+  );
+
   const previewGroup = useMemo(() => {
-    if (positiveQtyGroups.length === 0) return null;
+    if (previewGroups.length === 0) return null;
     const id = previewSupplierId;
     if (id) {
-      const hit = positiveQtyGroups.find((g) => g.supplierId === id);
+      const hit = previewGroups.find((g) => g.supplierId === id);
       if (hit) return hit;
     }
-    return positiveQtyGroups[0] ?? null;
-  }, [positiveQtyGroups, previewSupplierId]);
+    return previewGroups[0] ?? null;
+  }, [previewGroups, previewSupplierId]);
 
   const previewActiveSupplierId =
-    previewSupplierId ?? positiveQtyGroups[0]?.supplierId ?? null;
+    previewSupplierId ?? previewGroups[0]?.supplierId ?? null;
 
   const previewExtraFees = previewActiveSupplierId
     ? (extraFeesBySupplierId[previewActiveSupplierId] ?? [])
@@ -1356,6 +1373,9 @@ export function PurchaseFromSalesWizard({
                 >
                   确认生成预览
                 </Button>
+                <Button onClick={() => void openUnifiedPreview(true)}>
+                  仅已确认项生成
+                </Button>
                 <Button onClick={onClose}>取消</Button>
               </Space>
             </Layout.Content>
@@ -1455,6 +1475,7 @@ export function PurchaseFromSalesWizard({
         onCancel={() => {
           setPreviewOpen(false);
           setPreviewSupplierId(undefined);
+          setPreviewConfirmedOnly(false);
         }}
         width="min(1600px, 94vw)"
         centered
@@ -1468,6 +1489,7 @@ export function PurchaseFromSalesWizard({
               onClick={() => {
                 setPreviewOpen(false);
                 setPreviewSupplierId(undefined);
+                setPreviewConfirmedOnly(false);
               }}
             >
               返回编辑
@@ -1493,14 +1515,14 @@ export function PurchaseFromSalesWizard({
         >
           浏览器打印对话框中选择「另存为 PDF」即可导出 PDF。请先选择乙方（供应商），可为本合同添加开模费、测试架等附加费用，再打印或点击「确定生成」。
         </Typography.Paragraph>
-        {split && positiveQtyGroups.length > 0 && (
+        {split && previewGroups.length > 0 && (
           <Space className="purchase-contract-print-ui" style={{ marginBottom: 16 }} wrap align="center">
             <Typography.Text strong>乙方（供应商）</Typography.Text>
             <Select
               style={{ minWidth: 360 }}
-              value={previewSupplierId ?? positiveQtyGroups[0]?.supplierId}
+              value={previewSupplierId ?? previewGroups[0]?.supplierId}
               onChange={(v) => setPreviewSupplierId(v)}
-              options={positiveQtyGroups.map((g) => ({
+              options={previewGroups.map((g) => ({
                 value: g.supplierId,
                 label: `${g.supplier.code} ${g.supplier.name}`,
               }))}

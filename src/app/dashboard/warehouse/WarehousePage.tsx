@@ -106,6 +106,41 @@ type DetailPayload = {
   lines: DetailLine[];
 };
 
+function toBalancedColumns<T extends object>(
+  columns: ColumnsType<T>,
+  preserveKeys: string[] = [],
+): ColumnsType<T> {
+  const keep = new Set(preserveKeys);
+  const adjustable = columns.filter((c) => {
+    const key = typeof c.key === "string" ? c.key : undefined;
+    return !key || !keep.has(key);
+  });
+  const width = `${(100 / Math.max(1, adjustable.length)).toFixed(2)}%`;
+  return columns.map((col) => {
+    const key = typeof col.key === "string" ? col.key : undefined;
+    if (key && keep.has(key)) return col;
+    const prevOnCell = col.onCell;
+    return {
+      ...col,
+      width,
+      fixed: undefined,
+      ellipsis: false,
+      onCell: (record, rowIndex) => {
+        const base = prevOnCell?.(record, rowIndex) ?? {};
+        return {
+          ...base,
+          style: {
+            ...(base.style ?? {}),
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+            verticalAlign: "top",
+          },
+        };
+      },
+    };
+  });
+}
+
 function buildQuery(
   tab: "pending" | "delivered",
   params: {
@@ -178,6 +213,8 @@ export function WarehousePage() {
   /** 自加工 / 外发+自加工行：本批自加工完工数（≥ 本批出货） */
   const [deliverInhouseProduceByLine, setDeliverInhouseProduceByLine] =
     useState<Record<string, number>>({});
+  const [hoverDetailMap, setHoverDetailMap] = useState<Record<string, DetailPayload>>({});
+  const [hoverDetailLoading, setHoverDetailLoading] = useState<Record<string, boolean>>({});
 
   const [queryKeyword, setQueryKeyword] = useState<string | undefined>();
   const [queryDeliveredRange, setQueryDeliveredRange] = useState<
@@ -375,6 +412,36 @@ export function WarehousePage() {
     message,
     router,
   ]);
+
+  const ensureHoverOrderDetail = useCallback(async (orderId: string) => {
+    if (!orderId) return;
+    if (hoverDetailMap[orderId]) return;
+    if (hoverDetailLoading[orderId]) return;
+    setHoverDetailLoading((prev) => ({ ...prev, [orderId]: true }));
+    try {
+      const d = await fetchJson<DetailPayload>(`/api/warehouse/sales-orders/${orderId}`, {
+        credentials: "include",
+      });
+      setHoverDetailMap((prev) => ({ ...prev, [orderId]: d }));
+    } catch {
+      // ignore hover fetch errors
+    } finally {
+      setHoverDetailLoading((prev) => ({ ...prev, [orderId]: false }));
+    }
+  }, [hoverDetailLoading, hoverDetailMap]);
+
+  const hoverRowTitle = useCallback((r: WarehouseSalesRow) => {
+    const base = `客户: ${r.customer.name || r.customer.code} | 订单号: ${r.customerOrderNo || "—"} | 客户机型: ${r.customerModel?.trim() || "—"} | 要求交货: ${r.deliveryDueAt ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD") : "—"}`;
+    const detail = hoverDetailMap[r.id];
+    if (!detail) {
+      return `${base}\n商品明细: ${hoverDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
+    }
+    const lines = (detail.lines ?? []).map(
+      (l, idx) =>
+        `${idx + 1}. ${l.product.customerMaterialCode || "—"} / ${l.product.model || "—"} / ${l.product.spec || "—"} ×${l.quantity}${l.product.unit ? ` ${l.product.unit}` : ""}（已交${l.quantityShipped}，待交${l.remaining}）`,
+    );
+    return `${base}\n商品明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
+  }, [hoverDetailLoading, hoverDetailMap]);
 
   const deliverHasInhouseBom = useMemo(
     () =>
@@ -653,6 +720,25 @@ export function WarehousePage() {
     ),
   };
 
+  const pendingColumns = useMemo(
+    () => toBalancedColumns([...baseColumns, shipActionCol], ["op"]),
+    [baseColumns, shipActionCol],
+  );
+  const deliveredColumns = useMemo(
+    () =>
+      toBalancedColumns(
+        [
+          ...baseColumns.slice(0, 4),
+          queryDeliveredCol,
+          deliveryNotePreviewCol,
+          ...baseColumns.slice(4, 6),
+          queryRemarkCol,
+        ],
+        ["deliveryNotePreview"],
+      ),
+    [baseColumns, queryDeliveredCol, deliveryNotePreviewCol, queryRemarkCol],
+  );
+
   const closeSelectedPending = useCallback(async () => {
     if (selectedPendingIds.length === 0) {
       message.warning("请先勾选要结单的订单");
@@ -781,6 +867,12 @@ export function WarehousePage() {
                   rowKey="id"
                   loading={loadingPending}
                   dataSource={pendingRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverOrderDetail(r.id);
+                    },
+                  })}
                   rowSelection={
                     pendingSelectMode
                       ? {
@@ -790,8 +882,8 @@ export function WarehousePage() {
                         }
                       : undefined
                   }
-                  columns={[...baseColumns, shipActionCol]}
-                  scroll={{ x: "max-content" }}
+                  columns={pendingColumns}
+                  tableLayout="fixed"
                   pagination={{ pageSize: 10 }}
                   locale={{ emptyText: "暂无待出货订单" }}
                 />
@@ -868,6 +960,12 @@ export function WarehousePage() {
                   rowKey="id"
                   loading={loadingDelivered}
                   dataSource={deliveredRows}
+                  onRow={(r) => ({
+                    title: hoverRowTitle(r),
+                    onMouseEnter: () => {
+                      void ensureHoverOrderDetail(r.id);
+                    },
+                  })}
                   rowSelection={
                     deliveredSelectMode
                       ? {
@@ -877,14 +975,8 @@ export function WarehousePage() {
                         }
                       : undefined
                   }
-                  columns={[
-                    ...baseColumns.slice(0, 4),
-                    queryDeliveredCol,
-                    deliveryNotePreviewCol,
-                    ...baseColumns.slice(4, 6),
-                    queryRemarkCol,
-                  ]}
-                  scroll={{ x: "max-content" }}
+                  columns={deliveredColumns}
+                  tableLayout="fixed"
                   pagination={{ pageSize: 10 }}
                   locale={{ emptyText: "暂无数据" }}
                   summary={
