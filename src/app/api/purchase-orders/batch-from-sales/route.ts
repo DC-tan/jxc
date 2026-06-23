@@ -8,6 +8,7 @@ import {
   parseExtraFeesPayload,
   syncPurchaseOrderExtraFees,
 } from "@/lib/purchase-extra-fees";
+import { ackPurchaseSkipMaterials } from "@/lib/purchase-sales-skip-material";
 
 const lineInSchema = z.object({
   materialId: z.string().min(1),
@@ -27,6 +28,8 @@ const bodySchema = z.object({
   salesOrderId: z.string().min(1),
   remark: z.string().optional().nullable(),
   groups: z.array(groupSchema).min(1),
+  /** 已确认无需采购（数量为 0）的物料，写入后第二次拆分不再带出 */
+  skippedMaterialIds: z.array(z.string().min(1)).optional(),
 });
 
 function toDecimal(v: unknown, fallback = "0"): string {
@@ -69,7 +72,8 @@ export async function POST(req: Request) {
     );
   }
 
-  const { salesOrderId, groups: rawGroups, remark } = parsed.data;
+  const { salesOrderId, groups: rawGroups, remark, skippedMaterialIds } =
+    parsed.data;
 
   const groups: {
     supplierId: string;
@@ -216,6 +220,10 @@ export async function POST(req: Request) {
       }
       return out;
     });
+
+    if (skippedMaterialIds?.length) {
+      await ackPurchaseSkipMaterials(prisma, salesOrderId, skippedMaterialIds);
+    }
 
     return NextResponse.json({ ok: true, orders: created });
   } catch (e) {

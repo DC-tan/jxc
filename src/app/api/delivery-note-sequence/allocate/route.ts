@@ -5,9 +5,12 @@ import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 
 const bodySchema = z.object({
-  orderId: z.string().min(1),
+  orderId: z.string().min(1).optional(),
+  customerId: z.string().min(1).optional(),
   /** 以该时间所在自然年作流水年；与送货单日期一致 */
   atIso: z.string().optional(),
+}).refine((d) => d.orderId || d.customerId, {
+  message: "请提供销售订单或客户",
 });
 
 /**
@@ -45,12 +48,29 @@ export async function POST(req: Request) {
   const d = dayjs(at);
 
   try {
-    const order = await prisma.salesOrder.findUnique({
-      where: { id: parsed.data.orderId },
-      include: { customer: { select: { code: true, name: true, shortName: true } } },
-    });
-    if (!order) {
-      return NextResponse.json({ error: "销售订单不存在" }, { status: 404 });
+    const customer =
+      parsed.data.customerId != null
+        ? await prisma.customer.findUnique({
+            where: { id: parsed.data.customerId.trim() },
+            select: { code: true, name: true, shortName: true },
+          })
+        : null;
+    const order =
+      parsed.data.orderId != null
+        ? await prisma.salesOrder.findUnique({
+            where: { id: parsed.data.orderId.trim() },
+            include: {
+              customer: { select: { code: true, name: true, shortName: true } },
+            },
+          })
+        : null;
+
+    const c = order?.customer ?? customer;
+    if (!c) {
+      return NextResponse.json(
+        { error: order ? "销售订单不存在" : "客户不存在" },
+        { status: 404 },
+      );
     }
 
     const row = await prisma.deliveryNoteSerial.upsert({
@@ -60,7 +80,6 @@ export async function POST(req: Request) {
     });
 
     const seqPadded = String(row.lastSeq).padStart(3, "0");
-    const c = order.customer;
     const rawLabel =
       c.shortName?.trim() ||
       c.name?.trim().replace(/\s+/g, "").slice(0, 4) ||

@@ -12,7 +12,11 @@ export async function fetchJson<T = unknown>(
     try {
       body = JSON.parse(text) as unknown;
     } catch {
-      throw new Error(`接口返回非 JSON（HTTP ${res.status}）`);
+      const hint =
+        res.status === 404
+          ? "（接口未找到，若刚更新过代码请重启 npm run dev）"
+          : "";
+      throw new Error(`接口返回非 JSON（HTTP ${res.status}）${hint}`);
     }
   }
   if (!res.ok) {

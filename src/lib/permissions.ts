@@ -83,11 +83,15 @@ export const PERMISSION_DEFINITIONS: {
   { module: "商品信息", name: "商品库存", code: "tab.prod.inv", sortOrder: 51, expandTo: [
     "product.view",
   ] },
-  { module: "商品信息", name: "手动调整", code: "tab.prod.adjust", sortOrder: 52, expandTo: [
+  { module: "商品信息", name: "商品入库", code: "tab.prod.stockIn", sortOrder: 52, expandTo: [
+    "warehouse.view",
+    "warehouse.edit",
+  ] },
+  { module: "商品信息", name: "手动调整", code: "tab.prod.adjust", sortOrder: 53, expandTo: [
     "product.view",
     "product.edit",
   ] },
-  { module: "商品信息", name: "弃用商品查询", code: "tab.prod.deprecated", sortOrder: 53, expandTo: [
+  { module: "商品信息", name: "弃用商品查询", code: "tab.prod.deprecated", sortOrder: 54, expandTo: [
     "product.view",
   ] },
   { module: "销售订单", name: "新增销售订单", code: "tab.sales.add", sortOrder: 60, expandTo: [
@@ -304,6 +308,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
     "tab.mat.deprecated",
     "tab.prod.add",
     "tab.prod.inv",
+    "tab.prod.stockIn",
     "tab.prod.adjust",
     "tab.prod.deprecated",
     "tab.supplier",
@@ -335,6 +340,7 @@ export function defaultMatrixForRole(role: StaffRole): Set<string> {
   const warehouse = new Set([
     "tab.wh.ship",
     "tab.wh.query",
+    "tab.prod.stockIn",
     "tab.wh.settings",
     "tab.mat.inv",
     "tab.prod.inv",

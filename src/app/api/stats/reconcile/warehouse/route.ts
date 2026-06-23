@@ -3,6 +3,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { parseStatsRange, statsRangeQuerySchema } from "@/lib/stats-range";
+import {
+  listNoOrderShipOutRows,
+  noOrderShipOutToReconcileRow,
+} from "@/lib/warehouse-no-order-ship-out-query";
 
 const bodySchema = z.object({
   mode: z.enum(["whole", "split"]),
@@ -26,9 +30,10 @@ export type WarehouseReconcileRow = {
 };
 
 /**
- * 仓库出货对帐：以 `SalesOrderLineShipLog.batchDeliveredAt` 为实际出货时间。
+ * 仓库出货对帐：以 `SalesOrderLineShipLog.batchDeliveredAt` 为实际出货时间；
+ * 无单出货以 `ProductInbound` 负流水（备注/说明含「无单出货」）为准。
  * - split：区间内每条出货记录一行
- * - whole：同一条记录还须在「整单已交清且 actualDeliveredAt 在区间内」的订单上（未交完则顺延至交清后月份对帐，本区间不列）
+ * - whole：销售订单行还须整单已交清且 actualDeliveredAt 在区间内；无单出货按出货时间计入
  */
 export async function POST(req: Request) {
   const auth = await requirePermission("stats.view");
@@ -114,6 +119,20 @@ export async function POST(req: Request) {
         备品数量: log.spareQty,
       });
     }
+
+    const noOrderRows = await listNoOrderShipOutRows(prisma, {
+      from,
+      to,
+      customerId,
+    });
+    for (const r of noOrderRows) {
+      rows.push(noOrderShipOutToReconcileRow(r));
+    }
+
+    rows.sort(
+      (a, b) =>
+        new Date(a.送货日期).getTime() - new Date(b.送货日期).getTime(),
+    );
 
     const totalAmount = rows.reduce((s, r) => s + r.金额, 0);
     return NextResponse.json({

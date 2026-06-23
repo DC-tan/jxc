@@ -77,6 +77,7 @@ function mapDetailToSlipLines(d: SlipDetailPayload): OutsourceSlipPreviewLine[] 
   return d.lines
     .filter((l) => slipLineWarehouseQty(l) > 0)
     .map((l) => ({
+      materialCode: l.material.code,
       kind: kindLabel(l.material),
       materialName: l.material.name,
       partDescription: l.material.partDescription?.trim() || "—",

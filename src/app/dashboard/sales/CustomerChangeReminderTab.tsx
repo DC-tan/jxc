@@ -65,8 +65,30 @@ export function CustomerChangeReminderTab() {
   const [editing, setEditing] = useState<ReminderRow | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm<ReminderFormInput>();
-  const customerId = Form.useWatch("customerId", form);
-  const productId = Form.useWatch("productId", form);
+  const [customerId, setCustomerId] = useState<string | undefined>();
+  const [productId, setProductId] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!open) return;
+    const t = window.setTimeout(() => {
+      if (editing) {
+        form.setFieldsValue({
+          customerId: editing.customerId,
+          productId: editing.productId,
+          changeSummary: editing.changeSummary,
+          proposedAt: dayjs(editing.proposedAt),
+        });
+        setCustomerId(editing.customerId);
+        setProductId(editing.productId);
+      } else {
+        form.resetFields();
+        form.setFieldsValue({ proposedAt: dayjs() });
+        setCustomerId(undefined);
+        setProductId(undefined);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [open, editing, form]);
 
   const loadPresets = useCallback(async () => {
     setLoadingPresets(true);
@@ -132,19 +154,11 @@ export function CustomerChangeReminderTab() {
 
   const openCreate = () => {
     setEditing(null);
-    form.resetFields();
-    form.setFieldsValue({ proposedAt: dayjs() });
     setOpen(true);
   };
 
   const openEdit = (r: ReminderRow) => {
     setEditing(r);
-    form.setFieldsValue({
-      customerId: r.customerId,
-      productId: r.productId,
-      changeSummary: r.changeSummary,
-      proposedAt: dayjs(r.proposedAt),
-    });
     setOpen(true);
   };
 
@@ -334,7 +348,21 @@ export function CustomerChangeReminderTab() {
         confirmLoading={submitting}
         destroyOnHidden
       >
-        <Form<ReminderFormInput> form={form} layout="vertical" autoComplete="off">
+        <Form<ReminderFormInput>
+          form={form}
+          layout="vertical"
+          autoComplete="off"
+          onValuesChange={(changed) => {
+            if (changed.customerId !== undefined) {
+              setCustomerId(changed.customerId as string | undefined);
+              form.setFieldValue("productId", undefined);
+              setProductId(undefined);
+            }
+            if (changed.productId !== undefined) {
+              setProductId(changed.productId as string | undefined);
+            }
+          }}
+        >
           <Form.Item
             name="customerId"
             label="客户名称"

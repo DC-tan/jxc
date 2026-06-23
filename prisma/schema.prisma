@@ -177,6 +177,7 @@ model SampleOrder {
   id            String            @id @default(cuid())
   customerId    String
   customer      Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  supplierInfo  String?           @db.Text
   model         String
   materialNames String            @db.Text
   quantity      Int
@@ -354,6 +355,7 @@ model Material {
   productMaterials ProductMaterial[]
   purchaseOrderLines PurchaseOrderLine[]
   outsourceOrderLines OutsourceOrderLine[]
+  purchaseSkipMaterials SalesOrderPurchaseSkipMaterial[]
 
   @@index([isCustomerSupplied])
   @@index([isDeprecated])
@@ -472,12 +474,25 @@ model SalesOrder {
   updatedAt  DateTime         @updatedAt
   lines      SalesOrderLine[]
   purchaseOrders PurchaseOrder[]
+  purchaseSkipMaterials SalesOrderPurchaseSkipMaterial[]
 
   @@index([customerId])
   @@index([createdAt])
   @@index([customerOrderNo])
   @@index([deliveryDueAt])
   @@index([actualDeliveredAt])
+}
+
+/// 销售单拆采购时确认「库存已覆盖、无需采购」的物料（第二次拆分不再带出）
+model SalesOrderPurchaseSkipMaterial {
+  salesOrderId   String
+  salesOrder     SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  materialId     String
+  material       Material   @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  acknowledgedAt DateTime   @default(now())
+
+  @@id([salesOrderId, materialId])
+  @@index([materialId])
 }
 
 /// 销售订单明细（行项目为系统商品档案）

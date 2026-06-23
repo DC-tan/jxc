@@ -25,7 +25,7 @@ import dayjs from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { ResizeCallbackData } from "react-resizable";
 import type { Dispatch, ReactNode, SetStateAction, SyntheticEvent } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
 import { moneyColumnLabels } from "@/lib/price-tax";
@@ -53,6 +53,7 @@ type MaterialOpt = {
   id: string;
   code: string;
   name: string;
+  partDescription: string | null;
   unit: string;
   unitPrice: string;
   purchaseChannel: "STANDARD_PURCHASE" | "PROCESSING_CONTRACT";
@@ -320,14 +321,15 @@ const LS_PURCHASE_QUERY_COLS = "purchase.orderList.query.cols.v2";
 const LS_PURCHASE_PENDING_COLS = "purchase.orderList.pending.cols.v3";
 
 const PO_LINE_COL_OPTIONS: { label: string; value: string }[] = [
-  { label: "物料", value: "material" },
+  { label: "物料名称", value: "material" },
+  { label: "部件描述", value: "partDescription" },
   { label: "数量", value: "quantity" },
   { label: "单价", value: "unitPrice" },
   { label: "备注", value: "lineRemark" },
 ];
 
 const PO_LINE_ALL_KEYS = PO_LINE_COL_OPTIONS.map((o) => o.value);
-const LS_PO_LINE_COLS = "purchase.poLine.cols.v1";
+const LS_PO_LINE_COLS = "purchase.poLine.cols.v2";
 
 const DETAIL_LINE_COL_OPTIONS: { label: string; value: string }[] = [
   { label: "物料编号", value: "materialCode" },
@@ -355,7 +357,8 @@ const DEFAULT_DETAIL_LINE_COL_WIDTH: Record<string, number> = {
 };
 
 const DEFAULT_PO_LINE_COL_WIDTH: Record<string, number> = {
-  material: 240,
+  material: 200,
+  partDescription: 200,
   quantity: 120,
   unitPrice: 120,
   lineRemark: 120,
@@ -506,11 +509,15 @@ function PoLinesEditor({
   setLines,
   materials,
   priceIncludesTax,
+  materialPickDisabled = false,
+  materialPickDisabledReason = "请先选择供应商",
 }: {
   lines: PoLine[];
   setLines: Dispatch<SetStateAction<PoLine[]>>;
   materials: MaterialOpt[];
   priceIncludesTax: boolean;
+  materialPickDisabled?: boolean;
+  materialPickDisabledReason?: string;
 }) {
   const priceLabels = useMemo(
     () => moneyColumnLabels(priceIncludesTax),
@@ -553,50 +560,90 @@ function PoLinesEditor({
     ]);
   };
 
+  const selectableMaterialsForRow = useCallback(
+    (rowKey: string, materialId: string | undefined) => {
+      const taken = new Set(
+        lines
+          .filter((l) => l.key !== rowKey && l.materialId)
+          .map((l) => l.materialId as string),
+      );
+      return materials.filter(
+        (m) => !taken.has(m.id) || m.id === materialId,
+      );
+    },
+    [lines, materials],
+  );
+
+  const pickMaterial = useCallback(
+    (rowKey: string, mid: string | undefined) => {
+      if (!mid) {
+        updateLine(rowKey, { materialId: undefined, unitPrice: 0 });
+        return;
+      }
+      const m = materials.find((x) => x.id === mid);
+      updateLine(rowKey, {
+        materialId: mid,
+        unitPrice: m ? Number(m.unitPrice) : 0,
+      });
+    },
+    [materials, updateLine],
+  );
+
+  const renderMaterialPicker = useCallback(
+    (row: PoLine, field: "name" | "partDescription") => {
+      const opts = selectableMaterialsForRow(row.key, row.materialId);
+      const placeholder = materialPickDisabled
+        ? materialPickDisabledReason
+        : field === "name"
+          ? "选择物料"
+          : "按部件描述选择";
+      return (
+        <Select
+          placeholder={placeholder}
+          allowClear
+          showSearch
+          disabled={materialPickDisabled}
+          style={{ width: "100%" }}
+          optionFilterProp="searchText"
+          value={row.materialId}
+          options={opts.map((m) => {
+            const searchText =
+              `${m.code} ${m.name} ${m.partDescription ?? ""}`.toLowerCase();
+            if (field === "name") {
+              return { value: m.id, label: m.name, searchText };
+            }
+            const desc = m.partDescription?.trim();
+            return {
+              value: m.id,
+              label: desc ? `${desc}（${m.name}）` : `（无部件描述）${m.name}`,
+              searchText,
+            };
+          })}
+          onChange={(mid) => pickMaterial(row.key, mid)}
+        />
+      );
+    },
+    [
+      selectableMaterialsForRow,
+      pickMaterial,
+      materialPickDisabled,
+      materialPickDisabledReason,
+    ],
+  );
+
   const poLineAllColumns: ColumnsType<PoLine> = useMemo(
     () => [
     {
       key: "material",
-      title: "物料",
-      width: 240,
-      render: (_, row) => {
-        const taken = new Set(
-          lines
-            .filter((l) => l.key !== row.key && l.materialId)
-            .map((l) => l.materialId as string),
-        );
-        const opts = materials.filter(
-          (m) => !taken.has(m.id) || m.id === row.materialId,
-        );
-        return (
-          <Select
-            placeholder="选择物料"
-            allowClear
-            showSearch
-            style={{ width: "100%" }}
-            optionFilterProp="label"
-            value={row.materialId}
-            options={opts.map((m) => ({
-              value: m.id,
-              label: `${m.code} ${m.name}`,
-            }))}
-            onChange={(mid) => {
-              if (!mid) {
-                updateLine(row.key, {
-                  materialId: undefined,
-                  unitPrice: 0,
-                });
-                return;
-              }
-              const m = materials.find((x) => x.id === mid);
-              updateLine(row.key, {
-                materialId: mid,
-                unitPrice: m ? Number(m.unitPrice) : 0,
-              });
-            }}
-          />
-        );
-      },
+      title: "物料名称",
+      width: 200,
+      render: (_, row) => renderMaterialPicker(row, "name"),
+    },
+    {
+      key: "partDescription",
+      title: "部件描述",
+      width: 200,
+      render: (_, row) => renderMaterialPicker(row, "partDescription"),
     },
     {
       key: "quantity",
@@ -668,7 +715,7 @@ function PoLinesEditor({
       ),
     },
     ],
-    [lines, materials, updateLine, removeLine, priceLabels],
+    [renderMaterialPicker, updateLine, removeLine, priceLabels],
   );
 
   const poLineColumns = useMemo(() => {
@@ -709,7 +756,11 @@ function PoLinesEditor({
         rowKey="key"
         pagination={false}
         dataSource={lines}
-        locale={{ emptyText: "请点击下方按钮添加一行" }}
+        locale={{
+          emptyText: materialPickDisabled
+            ? materialPickDisabledReason
+            : "请点击下方按钮添加一行",
+        }}
         columns={poLineColumns}
         tableLayout="fixed"
         scroll={{ x: "max-content" }}
@@ -717,7 +768,12 @@ function PoLinesEditor({
           header: { cell: ResizableTableTitle },
         }}
       />
-      <Button type="dashed" onClick={addLine} style={{ marginTop: 8 }}>
+      <Button
+        type="dashed"
+        onClick={addLine}
+        disabled={materialPickDisabled}
+        style={{ marginTop: 8 }}
+      >
         添加一行
       </Button>
     </div>
@@ -800,7 +856,17 @@ export function PurchasePage() {
       false
     );
   }, [createSupplierId, presets]);
+
+  const createPoLineMaterials = useMemo(() => {
+    const base = (presets?.materials ?? []).filter(
+      (m) => m.purchaseChannel === createChannel,
+    );
+    if (!createSupplierId) return [];
+    return base.filter((m) => m.supplier.id === createSupplierId);
+  }, [presets, createChannel, createSupplierId]);
+
   const [poLines, setPoLines] = useState<PoLine[]>([]);
+  const prevCreateSupplierIdRef = useRef<string | undefined>(undefined);
   const [submitting, setSubmitting] = useState(false);
 
   const [detailOpen, setDetailOpen] = useState(false);
@@ -835,6 +901,26 @@ export function PurchasePage() {
   const [receiptSpareQtyByLineId, setReceiptSpareQtyByLineId] = useState<
     Record<string, number>
   >({});
+
+  useEffect(() => {
+    if (!createOpen) {
+      prevCreateSupplierIdRef.current = undefined;
+      return;
+    }
+    const prev = prevCreateSupplierIdRef.current;
+    prevCreateSupplierIdRef.current = createSupplierId;
+    if (!createSupplierId || !prev || prev === createSupplierId) return;
+    const allowed = new Set(createPoLineMaterials.map((m) => m.id));
+    setPoLines((prevLines) => {
+      let changed = false;
+      const next = prevLines.map((line) => {
+        if (!line.materialId || allowed.has(line.materialId)) return line;
+        changed = true;
+        return { ...line, materialId: undefined, unitPrice: 0 };
+      });
+      return changed ? next : prevLines;
+    });
+  }, [createOpen, createSupplierId, createPoLineMaterials]);
 
   const openPoContractPreview = useCallback((r: PurchaseOrderRow) => {
     setPoContractPreviewId(r.id);
@@ -1245,7 +1331,14 @@ export function PurchasePage() {
       message.error("每行数量须大于 0");
       return;
     }
-    const materialById = new Map((presets?.materials ?? []).map((m) => [m.id, m] as const));
+    const materialById = new Map(createPoLineMaterials.map((m) => [m.id, m] as const));
+    const hasInvalidSupplierMaterial = filled.some(
+      (l) => l.materialId && !materialById.has(l.materialId),
+    );
+    if (hasInvalidSupplierMaterial) {
+      message.error("存在不属于当前供应商的物料，请重新选择");
+      return;
+    }
     const hasCrossChannel = filled.some((l) => {
       const material = l.materialId ? materialById.get(l.materialId) : undefined;
       if (!material) return false;
@@ -2543,10 +2636,10 @@ export function PurchasePage() {
         <PoLinesEditor
           lines={poLines}
           setLines={setPoLines}
-          materials={(presets?.materials ?? []).filter(
-            (m) => m.purchaseChannel === createChannel,
-          )}
+          materials={createPoLineMaterials}
           priceIncludesTax={createSupplierPriceIncludesTax}
+          materialPickDisabled={!createSupplierId}
+          materialPickDisabledReason="请先选择供应商"
         />
       </Modal>
 

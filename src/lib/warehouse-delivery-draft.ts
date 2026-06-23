@@ -13,6 +13,14 @@ export type WarehouseDeliveryLineDraft = {
   userRemark?: string;
 };
 
+export type WarehouseNoOrderLineMeta = {
+  productId: string;
+  model: string;
+  customerMaterialCode: string;
+  unit: string;
+  spec?: string;
+};
+
 export type WarehouseDeliveryDraft = {
   orderId: string;
   actualDeliveredAt: string;
@@ -27,4 +35,40 @@ export type WarehouseDeliveryDraft = {
   needsInhouseStep?: boolean;
   /** 送货单 NO（年度流水，进入打印页时分配，写入后保存草稿） */
   documentNo?: string;
+  /** 无单出货：点送货单页「确定」后扣减库存并落出库流水 */
+  noOrderShipOut?: boolean;
+  customerId?: string;
+  /** lineId（= productId）→ 商品信息，供送货单渲染 */
+  noOrderLineMeta?: Record<string, WarehouseNoOrderLineMeta>;
+  noOrderCustomer?: { code: string; name: string; shortName?: string | null };
+  /** 无单出货扣库存流水 ID，用于回写送货单号 */
+  noOrderInboundIds?: string[];
+  /** 无单出货备注；空则落库时默认「无单出货」 */
+  noOrderShipOutRemark?: string;
 };
+
+export function buildNoOrderDeliveryDraft(input: {
+  customerId: string;
+  customer: { code: string; name: string; shortName?: string | null };
+  shippedAt: string;
+  lines: WarehouseDeliveryLineDraft[];
+  noOrderLineMeta: Record<string, WarehouseNoOrderLineMeta>;
+  noOrderInboundIds?: string[];
+  noOrderShipOutRemark?: string;
+}): WarehouseDeliveryDraft {
+  const batchKey =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `no-${Date.now()}`;
+  return {
+    orderId: `no-order:${batchKey}`,
+    noOrderShipOut: true,
+    customerId: input.customerId,
+    noOrderCustomer: input.customer,
+    actualDeliveredAt: input.shippedAt,
+    lines: input.lines,
+    noOrderLineMeta: input.noOrderLineMeta,
+    noOrderInboundIds: input.noOrderInboundIds,
+    noOrderShipOutRemark: input.noOrderShipOutRemark?.trim() || undefined,
+  };
+}

@@ -14,7 +14,11 @@ import {
 import { fetchJson } from "@/lib/fetch-json";
 import type { WarehouseDeliveryDraft } from "@/lib/warehouse-delivery-draft";
 import type { WarehouseDeliveryLineDraft } from "@/lib/warehouse-delivery-draft";
-import { WAREHOUSE_DELIVERY_DRAFT_KEY } from "@/lib/warehouse-delivery-draft";
+import {
+  WAREHOUSE_DELIVERY_DRAFT_KEY,
+  buildNoOrderDeliveryDraft,
+} from "@/lib/warehouse-delivery-draft";
+import { WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK } from "@/lib/warehouse-product-ship-out";
 import {
   buildShipmentQueryPreview,
   getDeliveryNoteNoForBatchAt,
@@ -68,6 +72,44 @@ type DetailPayload = {
   customer: CustomerBrief;
   lines: DetailLine[];
 };
+
+function buildNoOrderDetailPayload(draft: WarehouseDeliveryDraft): DetailPayload {
+  const c = draft.noOrderCustomer!;
+  const meta = draft.noOrderLineMeta ?? {};
+  return {
+    id: draft.orderId,
+    customerOrderNo: "—",
+    customerModel: "—",
+    actualDeliveredAt: draft.actualDeliveredAt,
+    customer: {
+      id: draft.customerId ?? draft.orderId,
+      code: c.code,
+      name: c.name,
+      shortName: c.shortName,
+    },
+    lines: draft.lines.map((row) => {
+      const m = meta[row.lineId];
+      const qty = Math.max(0, Math.trunc(row.shipQty));
+      return {
+        id: row.lineId,
+        quantity: qty,
+        quantityShipped: 0,
+        remaining: 0,
+        unitPrice: "0",
+        remark:
+          draft.noOrderShipOutRemark?.trim() || WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK,
+        product: {
+          id: m?.productId ?? row.lineId,
+          customerMaterialCode: m?.customerMaterialCode?.trim() || "—",
+          model: m?.model?.trim() || "—",
+          spec: m?.spec?.trim() || "",
+          unit: m?.unit?.trim() || "—",
+          productRemark: null,
+        },
+      };
+    }),
+  };
+}
 
 /** 仅备品、附加备注在打印页维护；实出数量在仓库「确认出货」弹窗填写 */
 type LineState = { spare: number; userRemark: string };
@@ -182,6 +224,59 @@ export function DeliveryNotePrintPage() {
   /** 出货查询：只拉单；批次由 URL `batch` 下标在下一 effect 应用 */
   useEffect(() => {
     let cancelled = false;
+    const sessionDraft = readDraft();
+
+    if (
+      !viewShipment &&
+      sessionDraft?.noOrderShipOut &&
+      sessionDraft.customerId
+    ) {
+      setDraft(sessionDraft);
+      setLineState(initLineStateFromDraft(sessionDraft));
+      if (sessionDraft.documentNo) setDocNo(sessionDraft.documentNo);
+      setShipmentPreviewOrder(null);
+      setShipmentQueryPreview(false);
+      setEffShippedBeforeByLine(new Map());
+      setBootstrapDone(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (viewShipment && orderIdFromQuery?.startsWith("no-order:")) {
+      const inboundId = orderIdFromQuery.slice("no-order:".length);
+      (async () => {
+        try {
+          const preview = await fetchJson<{
+            draft: WarehouseDeliveryDraft;
+            documentNo: string | null;
+          }>(`/api/warehouse/product-ship-out/delivery-preview/${encodeURIComponent(inboundId)}`, {
+            credentials: "include",
+          });
+          if (cancelled) return;
+          const d: WarehouseDeliveryDraft = {
+            ...preview.draft,
+            documentNo: preview.documentNo ?? preview.draft.documentNo,
+          };
+          setDraft(d);
+          setLineState(initLineStateFromDraft(d));
+          setDocNo(d.documentNo?.trim() ?? "");
+          setShipmentQueryPreview(true);
+          setShipmentPreviewOrder(null);
+        } catch (e) {
+          if (!cancelled) {
+            message.error(e instanceof Error ? e.message : "加载失败");
+            setDraft(null);
+            setShipmentPreviewOrder(null);
+          }
+        } finally {
+          if (!cancelled) setBootstrapDone(true);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
     if (viewShipment && orderIdFromQuery) {
       (async () => {
         try {
@@ -269,6 +364,19 @@ export function DeliveryNotePrintPage() {
           setCfg(mergeDeliveryNotePrintConfig(tpl.config));
           setOrder(shipmentPreviewOrder);
           setIssuerName(me.name?.trim() || me.loginName || "—");
+        } else if (draft.noOrderShipOut && draft.noOrderCustomer) {
+          const [tpl, me] = await Promise.all([
+            fetchJson<{ config: unknown }>("/api/delivery-note-print-template", {
+              credentials: "include",
+            }),
+            fetchJson<{ name: string; loginName: string }>("/api/me", {
+              credentials: "include",
+            }),
+          ]);
+          if (cancelled) return;
+          setCfg(mergeDeliveryNotePrintConfig(tpl.config));
+          setOrder(buildNoOrderDetailPayload(draft));
+          setIssuerName(me.name?.trim() || me.loginName || "—");
         } else {
           const [tpl, ord, me] = await Promise.all([
             fetchJson<{ config: unknown }>("/api/delivery-note-print-template", {
@@ -299,12 +407,25 @@ export function DeliveryNotePrintPage() {
     };
   }, [draft, message, shipmentQueryPreview, shipmentPreviewOrder]);
 
-  /** 分配送货单 NO。注意：勿把 allocatingNo 放进依赖，否则 setState 会反复触发 effect 清理，把 cancelled 置 true 导致永远无法 setDocNo */
+  /** 分配送货单 NO（与销售订单出货相同：进入打印页自动分配） */
   const [docNoTick, setDocNoTick] = useState(0);
   useEffect(() => {
-    if (!draft || !order) return;
+    if (!draft) return;
     if (shipmentQueryPreview) return;
-    if (docNo) return;
+
+    const existing = docNo.trim() || draft.documentNo?.trim() || "";
+    if (existing) {
+      if (!docNo.trim() && draft.documentNo?.trim()) {
+        setDocNo(draft.documentNo.trim());
+      }
+      return;
+    }
+
+    const readyToAllocate = draft.noOrderShipOut
+      ? Boolean(draft.customerId && draft.actualDeliveredAt)
+      : Boolean(order);
+    if (!readyToAllocate) return;
+
     let cancelled = false;
     (async () => {
       setAllocatingNo(true);
@@ -315,10 +436,17 @@ export function DeliveryNotePrintPage() {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              orderId: draft.orderId,
-              atIso: draft.actualDeliveredAt,
-            }),
+            body: JSON.stringify(
+              draft.noOrderShipOut && draft.customerId
+                ? {
+                    customerId: draft.customerId,
+                    atIso: draft.actualDeliveredAt,
+                  }
+                : {
+                    orderId: draft.orderId,
+                    atIso: draft.actualDeliveredAt,
+                  },
+            ),
           },
         );
         if (cancelled) return;
@@ -340,7 +468,14 @@ export function DeliveryNotePrintPage() {
     return () => {
       cancelled = true;
     };
-  }, [draft?.orderId, order?.id, docNo, message, docNoTick, shipmentQueryPreview]);
+  }, [
+    draft,
+    order?.id,
+    docNo,
+    message,
+    docNoTick,
+    shipmentQueryPreview,
+  ]);
 
   const goShipmentBatch = useCallback(
     (nextIdx: number) => {
@@ -363,7 +498,11 @@ export function DeliveryNotePrintPage() {
 
   /** 出货查询预览：与完成出货时落库的送货单号一致 */
   const shipmentQueryDocumentNo = useMemo(() => {
-    if (!shipmentQueryPreview || !shipmentPreviewOrder) return null;
+    if (!shipmentQueryPreview) return null;
+    if (draft?.noOrderShipOut) {
+      return draft.documentNo?.trim() || docNo.trim() || null;
+    }
+    if (!shipmentPreviewOrder) return null;
     if (shipmentBatchAts.length > 0) {
       const bAt = shipmentBatchAts[batchIndex];
       if (!bAt) return null;
@@ -376,7 +515,7 @@ export function DeliveryNotePrintPage() {
       }
     }
     return null;
-  }, [shipmentQueryPreview, shipmentPreviewOrder, shipmentBatchAts, batchIndex]);
+  }, [shipmentQueryPreview, draft, shipmentPreviewOrder, shipmentBatchAts, batchIndex, docNo]);
 
   const currentBatchAt = useMemo(() => {
     if (!shipmentQueryPreview || shipmentBatchAts.length === 0) return null;
@@ -384,13 +523,22 @@ export function DeliveryNotePrintPage() {
   }, [shipmentQueryPreview, shipmentBatchAts, batchIndex]);
 
   const slipDocumentNo = useMemo(() => {
-    if (shipmentQueryPreview) {
-      return (
-        shipmentQueryDocumentNo?.trim() || "（无单号存档：该出货发生于功能升级前，或未在送货单页分配单号后完成。）"
-      );
-    }
-    return docNo.trim() || "（单号待分配，请稍候或点重试）";
-  }, [shipmentQueryPreview, shipmentQueryDocumentNo, docNo]);
+    const saved =
+      docNo.trim() ||
+      draft?.documentNo?.trim() ||
+      shipmentQueryDocumentNo?.trim() ||
+      "";
+    if (saved) return saved;
+    if (shipmentQueryPreview) return "—";
+    if (allocatingNo) return "分配中…";
+    return "（单号待分配，请稍候或点重试）";
+  }, [
+    shipmentQueryPreview,
+    shipmentQueryDocumentNo,
+    docNo,
+    draft?.documentNo,
+    allocatingNo,
+  ]);
 
   const liveSlip: DeliveryNoteLiveSlip | null = useMemo(() => {
     if (!draft || !order || !cfg) return null;
@@ -537,6 +685,58 @@ export function DeliveryNotePrintPage() {
 
   const handleComplete = useCallback(async () => {
     if (!draft || shipmentQueryPreview) return;
+    if (draft.noOrderShipOut) {
+      const doc = draft.documentNo?.trim() || docNo.trim();
+      if (!doc) {
+        message.error("送货单号尚未分配，请稍候或点重试");
+        return;
+      }
+      if (!draft.customerId) {
+        message.error("缺少客户信息，请从无单出货重新进入");
+        return;
+      }
+      setCompleting(true);
+      const merged = mergeLineIntoDraft(draft, lineState);
+      try {
+        if (draft.noOrderInboundIds?.length) {
+          await fetchJson("/api/warehouse/product-ship-out/attach-delivery-note", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              inboundIds: draft.noOrderInboundIds,
+              documentNo: doc,
+            }),
+          });
+        } else {
+          await fetchJson("/api/warehouse/product-ship-out", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              customerId: draft.customerId,
+              shippedAt: merged.actualDeliveredAt,
+              deliveryNoteNo: doc,
+              remark: draft.noOrderShipOutRemark?.trim() || undefined,
+              lines: merged.lines
+                .map((l) => ({
+                  productId: l.lineId,
+                  shipQty: lineOutboundTotal(l),
+                }))
+                .filter((x) => x.shipQty > 0),
+            }),
+          });
+        }
+        sessionStorage.removeItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
+        message.success("无单出货已完成，库存已扣减");
+        router.push("/dashboard/warehouse?tab=query");
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "提交失败");
+      } finally {
+        setCompleting(false);
+      }
+      return;
+    }
     setCompleting(true);
     const merged = mergeLineIntoDraft(draft, lineState);
     try {
@@ -585,7 +785,7 @@ export function DeliveryNotePrintPage() {
     } finally {
       setCompleting(false);
     }
-  }, [draft, lineState, message, router, shipmentQueryPreview]);
+  }, [draft, docNo, lineState, message, router, shipmentQueryPreview]);
 
   const handleCancel = useCallback(() => {
     if (shipmentQueryPreview) {
@@ -599,6 +799,10 @@ export function DeliveryNotePrintPage() {
   const handleBackStep = useCallback(() => {
     if (shipmentQueryPreview) {
       router.push("/dashboard/warehouse?tab=query");
+      return;
+    }
+    if (draft?.noOrderShipOut) {
+      router.push("/dashboard/warehouse");
       return;
     }
     if (!draft) return;
@@ -753,7 +957,13 @@ export function DeliveryNotePrintPage() {
   return (
     <Card
       className="warehouse-delivery-slip-print-scope"
-      title={shipmentQueryPreview ? "送货单预览（出货查询，只读）" : "送货单打印（A5 横向）"}
+      title={
+        shipmentQueryPreview
+          ? "送货单预览（出货查询，只读）"
+          : draft?.noOrderShipOut
+            ? "无单出货 · 送货单打印（A5 横向）"
+            : "送货单打印（A5 横向）"
+      }
       styles={{ body: { overflow: "visible" } }}
       extra={
         shipmentQueryPreview ? null : (
@@ -819,11 +1029,33 @@ export function DeliveryNotePrintPage() {
               )}
             </Typography.Text>
           </div>
+        ) : draft?.noOrderShipOut ? (
+          <div style={{ marginBottom: 10 }}>
+            <Typography.Text>
+              送货单号：
+              {slipDocumentNo && !slipDocumentNo.startsWith("（") && slipDocumentNo !== "分配中…" ? (
+                <strong style={{ marginLeft: 8 }}>{slipDocumentNo}</strong>
+              ) : (
+                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                  {allocatingNo ? "分配中…" : "待分配"}
+                </Typography.Text>
+              )}
+            </Typography.Text>
+          </div>
         ) : null}
         <Space wrap>
           {shipmentQueryPreview ? null : (
-            <Button type="primary" onClick={() => void handleComplete()} loading={completing}>
-              完成
+            <Button
+              type="primary"
+              onClick={() => void handleComplete()}
+              loading={completing}
+              disabled={
+                draft?.noOrderShipOut
+                  ? !(docNo.trim() || draft.documentNo?.trim()) || allocatingNo
+                  : false
+              }
+            >
+              {draft?.noOrderShipOut ? "确定" : "完成"}
             </Button>
           )}
           <Button onClick={handleBackStep}>
@@ -837,7 +1069,7 @@ export function DeliveryNotePrintPage() {
           >
             导出 PDF
           </Button>
-          {shipmentQueryPreview ? (
+          {shipmentQueryPreview && !draft?.noOrderShipOut ? (
             <Button
               danger
               onClick={voidCurrentBatch}
@@ -858,8 +1090,13 @@ export function DeliveryNotePrintPage() {
           {allocatingNo ? <Typography.Text type="secondary">单号分配中…</Typography.Text> : null}
           {shipmentQueryPreview ? (
             <Typography.Text type="secondary">
-              送货单号按本批出货写入记录显示，与当时点击「完成」时一致；无存档时见灰字说明。按每批出货时间还原行数量与日期；多批可用「上一批/下一批」或下拉。当批备品/附加备注未存档时本页不显示。可打印、导出
-              PDF。
+              {draft?.noOrderShipOut
+                ? "无单出货送货单只读预览；送货单号与打印完成时一致。可打印、导出 PDF。"
+                : "送货单号按本批出货写入记录显示，与当时点击「完成」时一致；无存档时见灰字说明。按每批出货时间还原行数量与日期；多批可用「上一批/下一批」或下拉。当批备品/附加备注未存档时本页不显示。可打印、导出 PDF。"}
+            </Typography.Text>
+          ) : draft?.noOrderShipOut ? (
+            <Typography.Text type="secondary">
+              可设置备品/备注后打印或导出 PDF；点「确定」后扣减库存并登记出库。点「取消」不扣库存。
             </Typography.Text>
           ) : (
             <Typography.Text type="secondary">

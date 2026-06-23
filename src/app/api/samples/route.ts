@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/api-auth";
 
 const createSchema = z.object({
   customerId: z.string().min(1, "请选择客户"),
+  supplierInfo: z.string().optional().nullable(),
   model: z.string().min(1, "请填写型号"),
   materialNames: z.string().min(1, "请填写包含物料名称"),
   quantity: z.union([z.number(), z.string()]),
@@ -29,6 +30,7 @@ function serializeSample(
     id: s.id,
     customerId: s.customerId,
     customer: s.customer,
+    supplierInfo: s.supplierInfo,
     model: s.model,
     materialNames: s.materialNames,
     quantity: s.quantity,
@@ -52,6 +54,7 @@ export async function GET(req: Request) {
   const status = searchParams.get("status")?.trim().toUpperCase();
   const customerId = searchParams.get("customerId")?.trim() || undefined;
   const keyword = searchParams.get("keyword")?.trim() || undefined;
+  const supplierInfo = searchParams.get("supplierInfo")?.trim() || undefined;
   const trackingNo = searchParams.get("trackingNo")?.trim() || undefined;
   const from = searchParams.get("from")?.trim();
   const to = searchParams.get("to")?.trim();
@@ -64,9 +67,13 @@ export async function GET(req: Request) {
       { model: { contains: keyword, mode: "insensitive" } },
       { materialNames: { contains: keyword, mode: "insensitive" } },
       { remark: { contains: keyword, mode: "insensitive" } },
+      { supplierInfo: { contains: keyword, mode: "insensitive" } },
       { customer: { name: { contains: keyword, mode: "insensitive" } } },
       { customer: { code: { contains: keyword, mode: "insensitive" } } },
     ];
+  }
+  if (supplierInfo) {
+    where.supplierInfo = { contains: supplierInfo, mode: "insensitive" };
   }
   if (trackingNo) {
     where.remark = { contains: trackingNo, mode: "insensitive" };
@@ -143,6 +150,7 @@ export async function POST(req: Request) {
     const row = await prisma.sampleOrder.create({
       data: {
         customerId: d.customerId,
+        supplierInfo: d.supplierInfo?.trim() || null,
         model: d.model.trim(),
         materialNames: d.materialNames.trim(),
         quantity: toPositiveInt(d.quantity, 1),

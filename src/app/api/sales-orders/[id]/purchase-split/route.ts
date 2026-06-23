@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
+import { OutsourceOrderStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import { sumActivePurchaseQtyByMaterial } from "@/lib/purchase-sales-ordered-qty";
+import { listSkippedPurchaseMaterialIds } from "@/lib/purchase-sales-skip-material";
+import {
+  computeOutsourceLineStockSplit,
+  perSetFromProductMaterials,
+} from "@/lib/outsource-material-stock-balance";
 
 type MatWithSup = Prisma.MaterialGetPayload<{
   include: {
@@ -21,6 +27,13 @@ type SplitLineOut = {
   orderedQty: number;
   suggestedQty: number;
   unitPrice: string;
+};
+
+type ProcessorOptionOut = {
+  id: string;
+  code: string;
+  name: string;
+  shortName: string | null;
 };
 
 type SupplierGroupOut = {
@@ -71,6 +84,19 @@ function supplierSnapshot(
   };
 }
 
+function addOutsourceStockByProcessorMaterial(
+  map: Map<string, number>,
+  supplierId: string | null | undefined,
+  materialId: string,
+  quantity: number,
+) {
+  const sid = supplierId?.trim();
+  if (!sid) return;
+  if (!Number.isFinite(quantity) || quantity <= 0) return;
+  const key = `${sid}::${materialId}`;
+  map.set(key, (map.get(key) ?? 0) + quantity);
+}
+
 export async function GET(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
@@ -108,6 +134,7 @@ export async function GET(
                     },
                   },
                 },
+                processingMode: true,
               },
             },
           },
@@ -152,6 +179,7 @@ export async function GET(
       unit: string;
       salesQty: number;
       productStockQty: number;
+      processingMode: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE";
       bomLines: {
         materialId: string;
         code: string;
@@ -161,6 +189,7 @@ export async function GET(
         usageQty: string;
         needQty: number;
         supplierName: string;
+        scope: "DEFAULT" | "OUTSOURCE" | "INHOUSE";
       }[];
     }[] = [];
 
@@ -194,6 +223,7 @@ export async function GET(
           supplierName: mat.isCustomerSupplied
             ? `客供：${mat.customer?.name ?? "未设置客户"}`
             : mat.supplier.name,
+          scope: pm.scope,
         });
       }
       bomByProduct.push({
@@ -204,6 +234,7 @@ export async function GET(
         unit: p.unit,
         salesQty: line.quantity,
         productStockQty: 0,
+        processingMode: p.processingMode,
         bomLines,
       });
     }
@@ -228,6 +259,7 @@ export async function GET(
 
     let supplierGroups: SupplierGroupOut[] = [];
     const orderedQtyByMaterial: Record<string, number> = {};
+    const outsourceStockByProcessorMaterial = new Map<string, number>();
 
     if (splitMode === "redo_cancelled") {
       const groupMap = new Map<string, SupplierGroupOut>();
@@ -289,10 +321,10 @@ export async function GET(
         );
       }
     } else {
-      const orderedByMaterial = await sumActivePurchaseQtyByMaterial(
-        prisma,
-        order.id,
-      );
+      const [orderedByMaterial, skippedMaterialIds] = await Promise.all([
+        sumActivePurchaseQtyByMaterial(prisma, order.id),
+        listSkippedPurchaseMaterialIds(prisma, order.id),
+      ]);
       for (const [mid, q] of orderedByMaterial) {
         orderedQtyByMaterial[mid] = q;
       }
@@ -300,6 +332,7 @@ export async function GET(
       const supplierGroupsMap = new Map<string, SupplierGroupOut>();
 
       for (const { qty, material: m } of needMap.values()) {
+        if (skippedMaterialIds.has(m.id)) continue;
         const orderedQty = orderedByMaterial.get(m.id) ?? 0;
         const remaining = Math.max(0, qty - orderedQty);
         if (remaining <= 0) continue;
@@ -334,6 +367,150 @@ export async function GET(
           : "full_bom";
     }
 
+    const relevantMaterialIds = [
+      ...new Set(
+        bomByProduct
+          .flatMap((bp) => bp.bomLines.map((l) => l.materialId))
+          .filter(Boolean),
+      ),
+    ];
+    if (relevantMaterialIds.length > 0) {
+      const rows = await prisma.outsourceOrderLine.findMany({
+        where: {
+          materialId: { in: relevantMaterialIds },
+          outsourceOrder: {
+            status: { in: [OutsourceOrderStatus.OPEN, OutsourceOrderStatus.CLOSED] },
+          },
+        },
+        select: {
+          materialId: true,
+          quantity: true,
+          issuedQuantity: true,
+          outsourceOrder: {
+            select: {
+              id: true,
+              orderNo: true,
+              status: true,
+              productQty: true,
+              supplierId: true,
+              product: {
+                select: {
+                  processingMode: true,
+                  productMaterials: {
+                    select: { materialId: true, usageQty: true, scope: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      const orderIds = [
+        ...new Set(rows.map((r) => r.outsourceOrder.id).filter((x) => Boolean(x))),
+      ];
+      const orderNos = [
+        ...new Set(
+          rows
+            .map((r) => r.outsourceOrder.orderNo?.trim())
+            .filter((x): x is string => Boolean(x)),
+        ),
+      ];
+      const [productSetsRows, recoverySetsRows, warehouseRows, closeReturnRows] =
+        await Promise.all([
+          prisma.productInbound.groupBy({
+            by: ["purchaseOrderNo"],
+            where: { purchaseOrderNo: { in: orderNos }, quantity: { gt: 0 } },
+            _sum: { quantity: true },
+          }),
+          prisma.outsourceRecoveryInbound.groupBy({
+            by: ["outsourceOrderId"],
+            where: { outsourceOrderId: { in: orderIds }, quantity: { gt: 0 } },
+            _sum: { quantity: true },
+          }),
+          prisma.materialInbound.groupBy({
+            by: ["purchaseOrderNo", "materialId"],
+            where: {
+              purchaseOrderNo: { in: orderNos },
+              quantity: { lt: 0 },
+            },
+            _sum: { quantity: true },
+          }),
+          prisma.materialInbound.groupBy({
+            by: ["purchaseOrderNo", "materialId"],
+            where: {
+              purchaseOrderNo: { in: orderNos },
+              quantity: { gt: 0 },
+              partDescription: { startsWith: "外发结单退回" },
+            },
+            _sum: { quantity: true },
+          }),
+        ]);
+
+      const productSetsByOrderNo = new Map<string, number>();
+      for (const r of productSetsRows) {
+        if (r.purchaseOrderNo) {
+          productSetsByOrderNo.set(r.purchaseOrderNo, Number(r._sum.quantity ?? 0));
+        }
+      }
+      const recoverySetsByOrderId = new Map<string, number>();
+      for (const r of recoverySetsRows) {
+        if (r.outsourceOrderId) {
+          recoverySetsByOrderId.set(r.outsourceOrderId, Number(r._sum.quantity ?? 0));
+        }
+      }
+      const warehouseByOrderMaterial = new Map<string, number>();
+      for (const r of warehouseRows) {
+        if (!r.purchaseOrderNo) continue;
+        const key = `${r.purchaseOrderNo}::${r.materialId}`;
+        warehouseByOrderMaterial.set(key, Math.abs(Number(r._sum.quantity ?? 0)));
+      }
+      const closeReturnByOrderMaterial = new Map<string, number>();
+      for (const r of closeReturnRows) {
+        if (!r.purchaseOrderNo) continue;
+        const key = `${r.purchaseOrderNo}::${r.materialId}`;
+        closeReturnByOrderMaterial.set(key, Number(r._sum.quantity ?? 0));
+      }
+
+      for (const row of rows) {
+        const orderNo = row.outsourceOrder.orderNo?.trim() ?? "";
+        const omKey = `${orderNo}::${row.materialId}`;
+        const recoveredSets =
+          row.outsourceOrder.product.processingMode === "OUTSOURCE_INHOUSE"
+            ? recoverySetsByOrderId.get(row.outsourceOrder.id) ?? 0
+            : productSetsByOrderNo.get(orderNo) ?? 0;
+        const perSet = perSetFromProductMaterials(
+          row.outsourceOrder.product.processingMode,
+          row.outsourceOrder.product.productMaterials ?? [],
+          row.materialId,
+        );
+        const split = computeOutsourceLineStockSplit({
+          orderStatus: row.outsourceOrder.status,
+          processingMode: row.outsourceOrder.product.processingMode,
+          orderNo,
+          materialId: row.materialId,
+          productQty: row.outsourceOrder.productQty,
+          issuedQuantity: row.issuedQuantity,
+          storedQuantity: row.quantity,
+          warehouseOutbound: warehouseByOrderMaterial.get(omKey) ?? 0,
+          recoveredSets,
+          closeReturnQty: closeReturnByOrderMaterial.get(omKey) ?? 0,
+          perSet,
+        });
+        addOutsourceStockByProcessorMaterial(
+          outsourceStockByProcessorMaterial,
+          row.outsourceOrder.supplierId,
+          row.materialId,
+          split.poolRemaining,
+        );
+      }
+    }
+
+    const processorOptions = await prisma.supplier.findMany({
+      where: { attrProcessing: true },
+      select: { id: true, code: true, name: true, shortName: true },
+      orderBy: [{ code: "asc" }, { name: "asc" }],
+    });
+
     return NextResponse.json({
       salesOrder: {
         id: order.id,
@@ -349,6 +526,20 @@ export async function GET(
       bomByProduct: bomByProduct.filter((bp) => bp.bomLines.length > 0),
       orderedQtyByMaterial,
       supplierGroups,
+      processorOptions: processorOptions.map(
+        (s): ProcessorOptionOut => ({
+          id: s.id,
+          code: s.code,
+          name: s.name,
+          shortName: s.shortName,
+        }),
+      ),
+      outsourceStockByProcessorMaterial: Object.fromEntries(
+        [...outsourceStockByProcessorMaterial.entries()].map(([k, v]) => [
+          k,
+          Math.max(0, Math.trunc(v)),
+        ]),
+      ),
     });
   } catch (e) {
     console.error("[GET /api/sales-orders/[id]/purchase-split]", e);

@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
+import {
+  listNoOrderShipOutRows,
+  noOrderShipOutToQueryRow,
+  queryRowDeliveredAtMs,
+  type WarehouseDeliveredQueryRow,
+} from "@/lib/warehouse-no-order-ship-out-query";
 
 function buildDeliveredTimeRange(
   deliveredFrom: string | undefined,
@@ -40,9 +46,20 @@ function latestBatchIso(p: {
   return new Date(Math.max(...times)).toISOString();
 }
 
+/** 整单已交清用 actualDeliveredAt，未结单分批用最近一批时间 */
+function effectiveDeliveredAtMs(
+  actualDeliveredAtIso: string | null,
+  latestBatchIsoStr: string | null,
+): number {
+  const iso = actualDeliveredAtIso ?? latestBatchIsoStr;
+  if (!iso) return 0;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
 /**
  * 仓库出货：待出货 / 已出货销售订单列表（与「销售订单」数据同源，权限走 warehouse.view）
- * `includePartialInquiry=1` 且 `tab=delivered`：含整单已交清 + 仅分批出货且整单未结单，按「实际交货 / 分批时间」区间筛选。
+ * `includePartialInquiry=1` 且 `tab=delivered`：含整单已交清 + 仅分批出货且整单未结单，按「实际交货 / 分批时间」区间筛选，按有效交货时间降序。
  */
 export async function GET(req: Request) {
   const auth = await requirePermission("warehouse.view");
@@ -134,9 +151,12 @@ export async function GET(req: Request) {
   const where: Prisma.SalesOrderWhereInput =
     andParts.length === 1 ? andParts[0]! : { AND: andParts };
 
-  const orderBy: Prisma.SalesOrderOrderByWithRelationInput =
-    tab === "delivered" && includePartialInquiry
-      ? { updatedAt: "desc" }
+  const sortByEffectiveDeliveredAt =
+    tab === "delivered" && includePartialInquiry;
+
+  const orderBy: Prisma.SalesOrderOrderByWithRelationInput | undefined =
+    sortByEffectiveDeliveredAt
+      ? undefined
       : tab === "delivered"
         ? { actualDeliveredAt: "desc" }
         : { createdAt: "desc" };
@@ -144,8 +164,8 @@ export async function GET(req: Request) {
   try {
     const list = await prisma.salesOrder.findMany({
       where,
-      orderBy,
-      take: 400,
+      ...(orderBy ? { orderBy } : {}),
+      ...(sortByEffectiveDeliveredAt ? {} : { take: 400 }),
       include: {
         customer: { select: { id: true, code: true, name: true } },
         _count: { select: { lines: true } },
@@ -161,31 +181,73 @@ export async function GET(req: Request) {
       },
     });
 
-    return NextResponse.json({
-      list: list.map((p) => {
-        const pWithLines = p as typeof p & {
-          lines?: { shipLogs: { batchDeliveredAt: Date }[] }[];
-        };
-        const latestBatchDeliveredAt =
-          includePartialInquiry && tab === "delivered" && pWithLines.lines
-            ? latestBatchIso(pWithLines)
-            : null;
-        return {
-          id: p.id,
-          customerOrderNo: p.customerOrderNo,
-          customerModel: p.customerModel,
-          deliveryDueAt: p.deliveryDueAt?.toISOString() ?? null,
-          actualDeliveredAt: p.actualDeliveredAt?.toISOString() ?? null,
-          latestBatchDeliveredAt,
-          totalAmount: p.totalAmount.toString(),
-          remark: p.remark,
-          customer: p.customer,
-          lineCount: p._count.lines,
-          createdAt: p.createdAt.toISOString(),
-          updatedAt: p.updatedAt.toISOString(),
-        };
-      }),
+    const mapped = list.map((p) => {
+      const pWithLines = p as typeof p & {
+        lines?: { shipLogs: { batchDeliveredAt: Date }[] }[];
+      };
+      const latestBatchDeliveredAt =
+        includePartialInquiry && tab === "delivered" && pWithLines.lines
+          ? latestBatchIso(pWithLines)
+          : null;
+      return {
+        id: p.id,
+        customerOrderNo: p.customerOrderNo,
+        customerModel: p.customerModel,
+        deliveryDueAt: p.deliveryDueAt?.toISOString() ?? null,
+        actualDeliveredAt: p.actualDeliveredAt?.toISOString() ?? null,
+        latestBatchDeliveredAt,
+        totalAmount: p.totalAmount.toString(),
+        remark: p.remark,
+        customer: p.customer,
+        lineCount: p._count.lines,
+        createdAt: p.createdAt.toISOString(),
+        updatedAt: p.updatedAt.toISOString(),
+      };
     });
+
+    const resultList = sortByEffectiveDeliveredAt
+      ? mapped
+          .sort(
+            (a, b) =>
+              effectiveDeliveredAtMs(
+                b.actualDeliveredAt,
+                b.latestBatchDeliveredAt ?? null,
+              ) -
+              effectiveDeliveredAtMs(
+                a.actualDeliveredAt,
+                a.latestBatchDeliveredAt ?? null,
+              ),
+          )
+          .slice(0, 400)
+      : mapped;
+
+    const salesRows: WarehouseDeliveredQueryRow[] = resultList.map((p) => ({
+      ...p,
+      rowKind: "sales" as const,
+    }));
+
+    let mergedList = salesRows;
+    if (tab === "delivered") {
+      const from = deliveredFrom ? new Date(deliveredFrom) : undefined;
+      let to: Date | undefined;
+      if (deliveredTo) {
+        to = new Date(deliveredTo);
+        if (!Number.isNaN(to.getTime())) {
+          to.setHours(23, 59, 59, 999);
+        }
+      }
+      const noOrderList = await listNoOrderShipOutRows(prisma, {
+        from:
+          from && !Number.isNaN(from.getTime()) ? from : undefined,
+        to: to && !Number.isNaN(to.getTime()) ? to : undefined,
+        keyword: keyword || undefined,
+      });
+      mergedList = [...salesRows, ...noOrderList.map(noOrderShipOutToQueryRow)]
+        .sort((a, b) => queryRowDeliveredAtMs(b) - queryRowDeliveredAtMs(a))
+        .slice(0, 400);
+    }
+
+    return NextResponse.json({ list: mergedList });
   } catch (e) {
     console.error("[GET /api/warehouse/sales-orders]", e);
     return NextResponse.json(

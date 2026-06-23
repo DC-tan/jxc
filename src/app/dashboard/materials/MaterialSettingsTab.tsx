@@ -53,6 +53,55 @@ export function MaterialSettingsTab() {
   const [brandForm] = Form.useForm();
   const [unitForm] = Form.useForm();
 
+  useEffect(() => {
+    if (!kindModal) return;
+    const t = window.setTimeout(() => {
+      if (kindModal.mode === "edit" && kindModal.row) {
+        kindForm.setFieldsValue(kindModal.row);
+      } else {
+        kindForm.resetFields();
+        kindForm.setFieldsValue({ namingMode: "STANDARD" });
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [kindModal, kindForm]);
+
+  useEffect(() => {
+    if (!nameModal) return;
+    const t = window.setTimeout(() => {
+      if (nameModal.mode === "edit" && nameModal.row) {
+        nameForm.setFieldsValue(nameModal.row);
+      } else {
+        nameForm.resetFields();
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [nameModal, nameForm]);
+
+  useEffect(() => {
+    if (!brandModal) return;
+    const t = window.setTimeout(() => {
+      if (brandModal.mode === "edit" && brandModal.row) {
+        brandForm.setFieldsValue(brandModal.row);
+      } else {
+        brandForm.resetFields();
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [brandModal, brandForm]);
+
+  useEffect(() => {
+    if (!unitModal) return;
+    const t = window.setTimeout(() => {
+      if (unitModal.mode === "edit" && unitModal.row) {
+        unitForm.setFieldsValue(unitModal.row);
+      } else {
+        unitForm.resetFields();
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [unitModal, unitForm]);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -93,7 +142,6 @@ export function MaterialSettingsTab() {
             icon={<EditOutlined />}
             onClick={() => {
               setKindModal({ mode: "edit", row: r });
-              kindForm.setFieldsValue(r);
             }}
           >
             编辑
@@ -148,7 +196,6 @@ export function MaterialSettingsTab() {
             size="small"
             onClick={() => {
               setNameModal({ mode: "edit", row: r });
-              nameForm.setFieldsValue(r);
             }}
           >
             编辑
@@ -196,7 +243,6 @@ export function MaterialSettingsTab() {
             size="small"
             onClick={() => {
               setBrandModal({ mode: "edit", row: r });
-              brandForm.setFieldsValue(r);
             }}
           >
             编辑
@@ -250,7 +296,6 @@ export function MaterialSettingsTab() {
             size="small"
             onClick={() => {
               setUnitModal({ mode: "edit", row: r });
-              unitForm.setFieldsValue(r);
             }}
           >
             编辑
@@ -413,8 +458,6 @@ export function MaterialSettingsTab() {
                 size="small"
                 icon={<PlusOutlined />}
                 onClick={() => {
-                  kindForm.resetFields();
-                  kindForm.setFieldsValue({ namingMode: "STANDARD" });
                   setKindModal({ mode: "create" });
                 }}
               >
@@ -442,7 +485,6 @@ export function MaterialSettingsTab() {
                 size="small"
                 icon={<PlusOutlined />}
                 onClick={() => {
-                  nameForm.resetFields();
                   setNameModal({ mode: "create" });
                 }}
               >
@@ -473,7 +515,6 @@ export function MaterialSettingsTab() {
                 size="small"
                 icon={<PlusOutlined />}
                 onClick={() => {
-                  brandForm.resetFields();
                   setBrandModal({ mode: "create" });
                 }}
               >
@@ -501,7 +542,6 @@ export function MaterialSettingsTab() {
                 size="small"
                 icon={<PlusOutlined />}
                 onClick={() => {
-                  unitForm.resetFields();
                   setUnitModal({ mode: "create" });
                 }}
               >

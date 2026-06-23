@@ -8,6 +8,7 @@ import type { OutsourceMaterialSlipTemplateConfig } from "@/lib/outsource-print-
 export const OUTSOURCE_SLIP_SHEET_FIT_CLASS = "outsource-slip--sheet-fit";
 
 export type OutsourceSlipPreviewLine = {
+  materialCode?: string;
   kind: string;
   materialName: string;
   partDescription: string;
@@ -124,7 +125,7 @@ export function OutsourceMaterialSlipPreview({
   const edit = templateEditMode && !!onTemplatePatch;
 
   const rowValues = (row: OutsourceSlipPreviewLine) => [
-    row.kind,
+    row.materialCode ?? row.kind,
     row.materialName,
     row.partDescription,
     row.brand,

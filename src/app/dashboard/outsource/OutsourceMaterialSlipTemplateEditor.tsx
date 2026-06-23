@@ -30,6 +30,7 @@ import {
 
 const SAMPLE_LINES: OutsourceSlipPreviewLine[] = [
   {
+    materialCode: "E-C-001",
     kind: "电子料",
     materialName: "示例电容",
     partDescription: "0603 / 10uF",
@@ -39,6 +40,7 @@ const SAMPLE_LINES: OutsourceSlipPreviewLine[] = [
     remark: "",
   },
   {
+    materialCode: "E-S-001",
     kind: "辅料",
     materialName: "示例锡线",
     partDescription: "Φ0.8mm",

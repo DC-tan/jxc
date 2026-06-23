@@ -5,6 +5,7 @@ import { requirePermission } from "@/lib/api-auth";
 
 const patchSchema = z.object({
   customerId: z.string().min(1).optional(),
+  supplierInfo: z.string().optional().nullable(),
   model: z.string().min(1).optional(),
   materialNames: z.string().min(1).optional(),
   quantity: z.union([z.number(), z.string()]).optional(),
@@ -67,6 +68,7 @@ export async function PATCH(
     where: { id },
     data: {
       ...(d.customerId !== undefined ? { customerId: d.customerId } : {}),
+      ...(d.supplierInfo !== undefined ? { supplierInfo: d.supplierInfo?.trim() || null } : {}),
       ...(d.model !== undefined ? { model: d.model.trim() } : {}),
       ...(d.materialNames !== undefined
         ? { materialNames: d.materialNames.trim() }

@@ -442,31 +442,35 @@ export function MaterialsPage() {
   const [customerSupplyQueryForm] = Form.useForm<{
     customerId?: string;
     materialId?: string;
+    partDescription?: string;
     keyword?: string;
   }>();
-  const [customerSupplyEntryForm] = Form.useForm<{
-    customerId: string;
-    materialId: string;
-    quantity: number;
+  const [customerSupplyBatchForm] = Form.useForm<{
     receivedAt: dayjs.Dayjs;
-    partDescription?: string;
     remark?: string;
   }>();
-  const [customerSupplyMaterials, setCustomerSupplyMaterials] = useState<
+  /** 筛选项下拉用（选客户后立即刷新；不驱动下方列表） */
+  const [customerSupplyCatalog, setCustomerSupplyCatalog] = useState<
     CustomerSupplyMaterialOption[]
   >([]);
-  const customerSupplyEntryCustomerId = Form.useWatch(
-    "customerId",
-    customerSupplyEntryForm,
-  );
+  /** 点「查询」后的列表数据 */
+  const [customerSupplyQueryResults, setCustomerSupplyQueryResults] = useState<
+    CustomerSupplyMaterialOption[]
+  >([]);
   const [customerSupplyPartDescSuggestions, setCustomerSupplyPartDescSuggestions] =
     useState<string[]>([]);
   const [customerSupplyRows, setCustomerSupplyRows] = useState<
     CustomerSupplyInboundRow[]
   >([]);
+  const [loadingCustomerSupplyCatalog, setLoadingCustomerSupplyCatalog] =
+    useState(false);
   const [loadingCustomerSupply, setLoadingCustomerSupply] = useState(false);
   const [submittingCustomerSupply, setSubmittingCustomerSupply] = useState(false);
-
+  const [customerSupplyInboundMode, setCustomerSupplyInboundMode] = useState(false);
+  const [customerSupplySelectedMaterialIds, setCustomerSupplySelectedMaterialIds] =
+    useState<string[]>([]);
+  const [customerSupplyInboundQtyByMaterialId, setCustomerSupplyInboundQtyByMaterialId] =
+    useState<Record<string, number>>({});
   const addSelectedKind = useMemo(
     () => (presets?.kinds ?? []).find((k) => k.id === addKindId),
     [addKindId, presets?.kinds],
@@ -588,42 +592,81 @@ export function MaterialsPage() {
     return p;
   };
 
-  const loadCustomerSupply = useCallback(
-    async (override?: { customerId?: string; materialId?: string; keyword?: string }) => {
-      setLoadingCustomerSupply(true);
+  const loadCustomerSupplyCatalog = useCallback(
+    async (customerId?: string) => {
+      setLoadingCustomerSupplyCatalog(true);
       try {
-        const formVals =
-          override ??
-          ((await customerSupplyQueryForm.validateFields().catch(() => ({}))) as {
-            customerId?: string;
-            materialId?: string;
-            keyword?: string;
-          });
         const q = new URLSearchParams();
-        if (formVals.customerId) q.set("customerId", formVals.customerId);
-        if (formVals.materialId) q.set("materialId", formVals.materialId);
-        if (formVals.keyword) q.set("keyword", formVals.keyword.trim());
+        if (customerId) q.set("customerId", customerId);
         const data = await fetchJson<{
           customers: CustomerOpt[];
           materials: CustomerSupplyMaterialOption[];
           partDescriptionSuggestions?: string[];
-          list: CustomerSupplyInboundRow[];
         }>(`/api/materials/customer-supply?${q.toString()}`, {
           credentials: "include",
         });
         setCustomers((prev) => (prev.length > 0 ? prev : (data.customers ?? [])));
-        setCustomerSupplyMaterials(data.materials ?? []);
+        setCustomerSupplyCatalog(data.materials ?? []);
         setCustomerSupplyPartDescSuggestions(data.partDescriptionSuggestions ?? []);
-        setCustomerSupplyRows(data.list ?? []);
       } catch (e) {
-        message.error(e instanceof Error ? e.message : "加载客供记录失败");
-        setCustomerSupplyRows([]);
+        message.error(e instanceof Error ? e.message : "加载客供料选项失败");
+        setCustomerSupplyCatalog([]);
+        setCustomerSupplyPartDescSuggestions([]);
       } finally {
-        setLoadingCustomerSupply(false);
+        setLoadingCustomerSupplyCatalog(false);
       }
     },
-    [customerSupplyQueryForm, message],
+    [message],
   );
+
+  const runCustomerSupplyQuery = useCallback(async () => {
+    setLoadingCustomerSupply(true);
+    try {
+      const formVals = (await customerSupplyQueryForm.validateFields().catch(() => ({}))) as {
+        customerId?: string;
+        materialId?: string;
+        partDescription?: string;
+        keyword?: string;
+      };
+      const q = new URLSearchParams();
+      if (formVals.customerId) q.set("customerId", formVals.customerId);
+      if (formVals.materialId) q.set("materialId", formVals.materialId);
+      const keyword = formVals.keyword?.trim();
+      const partDesc = formVals.partDescription?.trim();
+      if (keyword) q.set("keyword", keyword);
+      if (!keyword && partDesc) q.set("keyword", partDesc);
+      const data = await fetchJson<{
+        customers: CustomerOpt[];
+        materials: CustomerSupplyMaterialOption[];
+        partDescriptionSuggestions?: string[];
+        list: CustomerSupplyInboundRow[];
+      }>(`/api/materials/customer-supply?${q.toString()}`, {
+        credentials: "include",
+      });
+      setCustomers((prev) => (prev.length > 0 ? prev : (data.customers ?? [])));
+      setCustomerSupplyQueryResults(data.materials ?? []);
+      setCustomerSupplyRows(data.list ?? []);
+      setCustomerSupplyInboundMode(false);
+      setCustomerSupplySelectedMaterialIds([]);
+      setCustomerSupplyInboundQtyByMaterialId({});
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "查询失败");
+      setCustomerSupplyQueryResults([]);
+      setCustomerSupplyRows([]);
+    } finally {
+      setLoadingCustomerSupply(false);
+    }
+  }, [customerSupplyQueryForm, message]);
+
+  const resetCustomerSupplyFilter = useCallback(() => {
+    customerSupplyQueryForm.resetFields();
+    setCustomerSupplyQueryResults([]);
+    setCustomerSupplyRows([]);
+    setCustomerSupplyInboundMode(false);
+    setCustomerSupplySelectedMaterialIds([]);
+    setCustomerSupplyInboundQtyByMaterialId({});
+    void loadCustomerSupplyCatalog();
+  }, [customerSupplyQueryForm, loadCustomerSupplyCatalog]);
 
   const loadInventory = useCallback(
     async (
@@ -667,13 +710,22 @@ export function MaterialsPage() {
     }
     if (tab === "customerSupply") {
       void loadCustomers();
-      customerSupplyEntryForm.setFieldsValue({
-        quantity: 1,
-        receivedAt: dayjs(),
-      });
-      void loadCustomerSupply({});
+      setCustomerSupplyQueryResults([]);
+      setCustomerSupplyRows([]);
+      void loadCustomerSupplyCatalog();
     }
-  }, [tab, loadInventory, loadCustomerSupply, customerSupplyEntryForm, loadCustomers]);
+  }, [tab, loadInventory, loadCustomerSupplyCatalog, loadCustomers]);
+
+  useEffect(() => {
+    if (tab !== "customerSupply") return;
+    const t = window.setTimeout(() => {
+      customerSupplyBatchForm.setFieldsValue({
+        receivedAt: dayjs(),
+        remark: "",
+      });
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, [tab, customerSupplyBatchForm]);
 
   const uploadSample = async (
     file: File,
@@ -1111,7 +1163,7 @@ export function MaterialsPage() {
     });
   };
 
-  const openDetail = async (id: string) => {
+  const openDetail = useCallback(async (id: string) => {
     setDetailOpen(true);
     setDetail(null);
     setLoadingDetail(true);
@@ -1136,7 +1188,7 @@ export function MaterialsPage() {
     } finally {
       setLoadingDetail(false);
     }
-  };
+  }, [message]);
 
   const exportInboundExcel = useCallback(async () => {
     if (!detail) return;
@@ -1178,7 +1230,7 @@ export function MaterialsPage() {
     return () => {
       cancelled = true;
     };
-  }, [detailMaterialIdQ, pathname, router]);
+  }, [detailMaterialIdQ, openDetail, pathname, router]);
 
   const renderSampleThumbs = (urls: string[]) => {
     if (!urls.length) return "—";
@@ -1432,124 +1484,27 @@ export function MaterialsPage() {
     message.success("已导出");
   }, [inventory, message]);
 
-  const customerSupplyMaterialOptions = useMemo(
+  const customerSupplyFilterMaterialOptions = useMemo(
     () =>
-      customerSupplyMaterials
-        .filter(
-          (m) =>
-            !customerSupplyEntryCustomerId || m.customerId === customerSupplyEntryCustomerId,
-        )
-        .map((m) => ({
-          value: m.id,
-          label: `${m.code} ${m.name}`,
-        })),
-    [customerSupplyEntryCustomerId, customerSupplyMaterials],
-  );
-
-  const resolveCustomerSupplyByPartDesc = useCallback(
-    (partDesc: string) => {
-      const key = partDesc.trim().toLowerCase();
-      if (!key) return [];
-      const out: CustomerSupplyMaterialOption[] = [];
-      const seen = new Set<string>();
-      for (const m of customerSupplyMaterials) {
-        if ((m.partDescription?.trim().toLowerCase() ?? "") !== key) continue;
-        if (seen.has(m.id)) continue;
-        seen.add(m.id);
-        out.push(m);
-      }
-      for (const r of customerSupplyRows) {
-        if ((r.partDescription?.trim().toLowerCase() ?? "") !== key) continue;
-        const m = customerSupplyMaterials.find((x) => x.id === r.material.id);
-        if (!m || seen.has(m.id)) continue;
-        seen.add(m.id);
-        out.push(m);
-      }
-      return out;
-    },
-    [customerSupplyMaterials, customerSupplyRows],
-  );
-
-  const applyPartDescriptionLookup = useCallback(
-    (partDesc: string) => {
-      const trimmed = partDesc.trim();
-      if (!trimmed) return;
-      const matches = resolveCustomerSupplyByPartDesc(trimmed);
-      if (matches.length === 0) return;
-
-      let target = matches[0]!;
-      if (matches.length > 1) {
-        const recent = customerSupplyRows.find(
-          (r) =>
-            (r.partDescription?.trim().toLowerCase() ?? "") ===
-            trimmed.toLowerCase(),
-        );
-        if (recent) {
-          const fromRecent = matches.find((m) => m.id === recent.material.id);
-          if (fromRecent) target = fromRecent;
-        }
-        message.info(
-          `该部件描述对应 ${matches.length} 个客供料，已带出：${target.code} ${target.name}`,
-        );
-      }
-
-      if (!target.customerId) {
-        message.warning("该客供料未绑定客供客户，请手动选择客户");
-        customerSupplyEntryForm.setFieldsValue({
-          materialId: target.id,
-          partDescription: trimmed,
-        });
-        return;
-      }
-
-      customerSupplyEntryForm.setFieldsValue({
-        customerId: target.customerId,
-        materialId: target.id,
-        partDescription: trimmed,
-      });
-    },
-    [
-      resolveCustomerSupplyByPartDesc,
-      customerSupplyRows,
-      customerSupplyEntryForm,
-      message,
-    ],
+      customerSupplyCatalog.map((m) => ({
+        value: m.id,
+        label: `${m.code} ${m.name}`,
+      })),
+    [customerSupplyCatalog],
   );
 
   const customerSupplyPartDescAutoOptions = useMemo(() => {
-    const set = new Set(customerSupplyPartDescSuggestions);
-    for (const m of customerSupplyMaterials) {
-      if (m.partDescription?.trim()) set.add(m.partDescription.trim());
+    const set = new Set<string>();
+    for (const s of customerSupplyPartDescSuggestions) {
+      if (s.trim()) set.add(s.trim());
     }
-    for (const r of customerSupplyRows) {
-      if (r.partDescription?.trim()) set.add(r.partDescription.trim());
+    for (const m of customerSupplyCatalog) {
+      if (m.partDescription?.trim()) set.add(m.partDescription.trim());
     }
     return Array.from(set)
       .sort((a, b) => a.localeCompare(b, "zh-CN"))
-      .map((value) => {
-        const matches = customerSupplyMaterials.filter(
-          (m) =>
-            (m.partDescription?.trim().toLowerCase() ?? "") ===
-            value.toLowerCase(),
-        );
-        let label = value;
-        if (matches.length === 1) {
-          const m = matches[0]!;
-          const cust =
-            m.customer?.name ??
-            customers.find((c) => c.id === m.customerId)?.name;
-          label = `${value} — ${m.code} ${m.name}${cust ? ` / ${cust}` : ""}`;
-        } else if (matches.length > 1) {
-          label = `${value}（${matches.length} 个客供料）`;
-        }
-        return { value, label };
-      });
-  }, [
-    customerSupplyPartDescSuggestions,
-    customerSupplyMaterials,
-    customerSupplyRows,
-    customers,
-  ]);
+      .map((value) => ({ value, label: value }));
+  }, [customerSupplyCatalog, customerSupplyPartDescSuggestions]);
 
   const showInventoryFilter =
     tab === "inventory" || tab === "stockAdjust" || tab === "deprecated";
@@ -1560,8 +1515,8 @@ export function MaterialsPage() {
     setStockAdjustOpen(true);
   };
 
-  const stockAdjustTableColumns = useMemo(() => {
-    const base: ColumnsType<InventoryRow> = [
+  const stockAdjustTableColumns = attachResize<InventoryRow>(
+    [
       { title: "物料编号", dataIndex: "code", key: "code", ellipsis: true },
       { title: "物料名称", dataIndex: "name", key: "name", ellipsis: true },
       { title: "种类", dataIndex: "kindName", key: "kind", ellipsis: true },
@@ -1587,14 +1542,11 @@ export function MaterialsPage() {
           </Space>
         ),
       },
-    ];
-    return attachResize(
-      base,
-      matAdjColWidths,
-      setMatAdjColWidths,
-      DEFAULT_MAT_ADJ_COL_WIDTH,
-    );
-  }, [matAdjColWidths, openEdit]);
+    ],
+    matAdjColWidths,
+    setMatAdjColWidths,
+    DEFAULT_MAT_ADJ_COL_WIDTH,
+  );
 
   const submitStockAdjust = async () => {
     if (!stockAdjustTarget) return;
@@ -1633,43 +1585,72 @@ export function MaterialsPage() {
     }
   };
 
-  const submitCustomerSupplyInbound = async () => {
-    let v: {
-      customerId: string;
-      materialId: string;
-      quantity: number;
-      receivedAt: dayjs.Dayjs;
-      partDescription?: string;
-      remark?: string;
-    };
+  const submitCustomerSupplyInbound = useCallback(async (materialIds: string[]) => {
+    if (materialIds.length === 0) {
+      message.warning("请先勾选需要入库的物料");
+      return;
+    }
+    let formVals: { receivedAt: dayjs.Dayjs; remark?: string };
     try {
-      v = await customerSupplyEntryForm.validateFields();
+      formVals = await customerSupplyBatchForm.validateFields();
     } catch {
       return;
     }
+    const payloads: {
+      customerId: string;
+      materialId: string;
+      quantity: number;
+      partDescription: string | null;
+    }[] = [];
+    for (const materialId of materialIds) {
+      const qty = Math.trunc(Number(customerSupplyInboundQtyByMaterialId[materialId] ?? 0));
+      if (!Number.isFinite(qty) || qty < 1) {
+        message.warning("勾选的物料请填写大于 0 的入库数量");
+        return;
+      }
+      const m = customerSupplyQueryResults.find((x) => x.id === materialId);
+      if (!m?.customerId) {
+        message.error("存在未绑定客供客户的物料，无法入库");
+        return;
+      }
+      payloads.push({
+        customerId: m.customerId,
+        materialId: m.id,
+        quantity: qty,
+        partDescription: m.partDescription?.trim() || null,
+      });
+    }
     setSubmittingCustomerSupply(true);
     try {
-      await fetchJson("/api/materials/customer-supply", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customerId: v.customerId,
-          materialId: v.materialId,
-          quantity: v.quantity,
-          receivedAt: v.receivedAt?.toISOString(),
-          partDescription: v.partDescription?.trim() || null,
-          remark: v.remark?.trim() || null,
-        }),
+      for (const p of payloads) {
+        await fetchJson("/api/materials/customer-supply", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            customerId: p.customerId,
+            materialId: p.materialId,
+            quantity: p.quantity,
+            receivedAt: formVals.receivedAt?.toISOString(),
+            partDescription: p.partDescription,
+            remark: formVals.remark?.trim() || null,
+          }),
+        });
+      }
+      message.success(`已完成 ${payloads.length} 条客供料入库`);
+      setCustomerSupplySelectedMaterialIds((prev) =>
+        prev.filter((id) => !materialIds.includes(id)),
+      );
+      setCustomerSupplyInboundQtyByMaterialId((prev) => {
+        const next = { ...prev };
+        for (const id of materialIds) delete next[id];
+        return next;
       });
-      message.success("客供料已入库");
-      customerSupplyEntryForm.setFieldsValue({
-        quantity: 1,
-        partDescription: undefined,
-        remark: "",
-        receivedAt: dayjs(),
-      });
-      await loadCustomerSupply();
+      await runCustomerSupplyQuery();
+      const customerId = customerSupplyQueryForm.getFieldValue("customerId") as
+        | string
+        | undefined;
+      void loadCustomerSupplyCatalog(customerId);
       if (tab === "inventory" || tab === "stockAdjust" || tab === "deprecated") {
         await loadInventory(
           filterForm.getFieldsValue() as Record<string, unknown>,
@@ -1681,7 +1662,18 @@ export function MaterialsPage() {
     } finally {
       setSubmittingCustomerSupply(false);
     }
-  };
+  }, [
+    customerSupplyBatchForm,
+    customerSupplyInboundQtyByMaterialId,
+    customerSupplyQueryResults,
+    customerSupplyQueryForm,
+    loadCustomerSupplyCatalog,
+    runCustomerSupplyQuery,
+    loadInventory,
+    filterForm,
+    message,
+    tab,
+  ]);
 
   const { loading: tabPermLoading, allowed } = useMeTabPermissions();
 
@@ -1821,11 +1813,9 @@ export function MaterialsPage() {
           setTab(k);
           if (k === "add" || k === "inventory" || k === "stockAdjust") void loadPresets();
           if (k === "customerSupply") {
-            customerSupplyEntryForm.setFieldsValue({
-              quantity: 1,
-              receivedAt: dayjs(),
-            });
-            void loadCustomerSupply({});
+            setCustomerSupplyQueryResults([]);
+            setCustomerSupplyRows([]);
+            void loadCustomerSupplyCatalog();
           }
         }}
         items={[
@@ -1940,180 +1930,225 @@ export function MaterialsPage() {
                 <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
                   <HelpTip text="仅用于客供料收料入库。采购单不会生成客供料，请在本页登记收料。" />
                 </div>
-                <Card size="small" title="收料入库">
-                  <Form
-                    form={customerSupplyEntryForm}
-                    layout="inline"
-                    style={{ rowGap: 12 }}
-                    onFinish={() => void submitCustomerSupplyInbound()}
-                  >
-                    <Form.Item name="partDescription" label="部件描述">
-                      <AutoComplete
-                        allowClear
-                        style={{ width: 280 }}
-                        options={customerSupplyPartDescAutoOptions}
-                        filterOption={(inputValue, option) =>
-                          String(option?.value ?? "")
-                            .toLowerCase()
-                            .includes(String(inputValue ?? "").trim().toLowerCase()) ||
-                          String(option?.label ?? "")
-                            .toLowerCase()
-                            .includes(String(inputValue ?? "").trim().toLowerCase())
-                        }
-                        onSelect={(value) => {
-                          applyPartDescriptionLookup(String(value));
-                        }}
-                      >
-                        <Input
-                          placeholder="输入或选择，可带出客供客户与客供料"
-                          autoComplete="off"
-                          spellCheck={false}
-                          onBlur={(e) => {
-                            const v = e.target.value.trim();
-                            if (v) applyPartDescriptionLookup(v);
+                <Card size="small" title="筛选入库">
+                  <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                    <Form form={customerSupplyBatchForm} component={false} />
+                    <Form
+                      form={customerSupplyQueryForm}
+                      layout="inline"
+                      style={{ rowGap: 12 }}
+                      onFinish={() => void runCustomerSupplyQuery()}
+                    >
+                      <Form.Item name="customerId" label="客供客户">
+                        <Select
+                          allowClear
+                          showSearch
+                          placeholder="全部"
+                          optionFilterProp="searchText"
+                          style={{ width: 220 }}
+                          loading={loadingCustomerSupplyCatalog}
+                          options={customers.map((c) => ({
+                            value: c.id,
+                            label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
+                            searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
+                          }))}
+                          onChange={(customerId) => {
+                            customerSupplyQueryForm.setFieldsValue({
+                              materialId: undefined,
+                              partDescription: undefined,
+                            });
+                            void loadCustomerSupplyCatalog(
+                              customerId ? String(customerId) : undefined,
+                            );
                           }}
                         />
-                      </AutoComplete>
-                    </Form.Item>
-                    <Form.Item
-                      name="customerId"
-                      label="客供客户"
-                      rules={[{ required: true, message: "请选择客供客户" }]}
-                    >
-                      <Select
-                        showSearch
-                        placeholder="选择客户"
-                        optionFilterProp="searchText"
-                        style={{ width: 220 }}
-                        options={customers.map((c) => ({
-                          value: c.id,
-                          label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
-                          searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
-                        }))}
-                        onChange={() => {
-                          customerSupplyEntryForm.setFieldsValue({
-                            materialId: undefined,
-                          });
-                        }}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      name="materialId"
-                      label="客供料"
-                      rules={[{ required: true, message: "请选择客供料" }]}
-                    >
-                      <Select
-                        showSearch
-                        placeholder="选择客供料"
-                        optionFilterProp="label"
-                        style={{ width: 260 }}
-                        options={customerSupplyMaterialOptions}
-                        onChange={(materialId) => {
-                          const mat = customerSupplyMaterials.find(
-                            (m) => m.id === materialId,
-                          );
-                          const archive = mat?.partDescription?.trim();
-                          const cur = customerSupplyEntryForm.getFieldValue(
-                            "partDescription",
-                          );
-                          if (
-                            archive &&
-                            (!cur || !String(cur).trim())
-                          ) {
-                            customerSupplyEntryForm.setFieldsValue({
-                              partDescription: archive,
-                            });
+                      </Form.Item>
+                      <Form.Item name="materialId" label="客供料">
+                        <Select
+                          allowClear
+                          showSearch
+                          placeholder="全部"
+                          optionFilterProp="label"
+                          style={{ width: 260 }}
+                          loading={loadingCustomerSupplyCatalog}
+                          options={customerSupplyFilterMaterialOptions}
+                        />
+                      </Form.Item>
+                      <Form.Item name="partDescription" label="部件描述">
+                        <AutoComplete
+                          allowClear
+                          style={{ width: 280 }}
+                          options={customerSupplyPartDescAutoOptions}
+                          filterOption={(inputValue, option) =>
+                            String(option?.value ?? "")
+                              .toLowerCase()
+                              .includes(String(inputValue ?? "").trim().toLowerCase()) ||
+                            String(option?.label ?? "")
+                              .toLowerCase()
+                              .includes(String(inputValue ?? "").trim().toLowerCase())
                           }
-                          if (mat?.customerId) {
-                            customerSupplyEntryForm.setFieldsValue({
-                              customerId: mat.customerId,
-                            });
-                          }
-                        }}
-                      />
-                    </Form.Item>
-                    <Form.Item
-                      name="quantity"
-                      label="数量"
-                      rules={[{ required: true, message: "请填写数量" }]}
-                    >
-                      <InputNumber min={1} precision={0} />
-                    </Form.Item>
-                    <Form.Item
-                      name="receivedAt"
-                      label="收料时间"
-                      rules={[{ required: true, message: "请选择收料时间" }]}
-                    >
-                      <DatePicker showTime />
-                    </Form.Item>
-                    <Form.Item name="remark" label="备注">
-                      <Input allowClear placeholder="可写来料批次等" style={{ width: 220 }} />
-                    </Form.Item>
-                    <Form.Item>
-                      <Button
-                        type="primary"
-                        htmlType="submit"
-                        loading={submittingCustomerSupply}
+                        >
+                          <Input placeholder="输入部件描述筛选物料" autoComplete="off" />
+                        </AutoComplete>
+                      </Form.Item>
+                      <Form.Item>
+                        <Button type="primary" htmlType="submit">
+                          查询
+                        </Button>
+                      </Form.Item>
+                      <Form.Item>
+                        <Button onClick={() => resetCustomerSupplyFilter()}>
+                          重置
+                        </Button>
+                      </Form.Item>
+                      <Form.Item>
+                        <Button
+                          type={customerSupplyInboundMode ? "default" : "primary"}
+                          onClick={() => {
+                            setCustomerSupplyInboundMode((prev) => !prev);
+                            if (customerSupplyInboundMode) {
+                              setCustomerSupplySelectedMaterialIds([]);
+                              setCustomerSupplyInboundQtyByMaterialId({});
+                            }
+                          }}
+                        >
+                          入库
+                        </Button>
+                      </Form.Item>
+                    </Form>
+
+                    <Table<CustomerSupplyMaterialOption>
+                      rowKey="id"
+                      loading={loadingCustomerSupply}
+                      dataSource={customerSupplyQueryResults}
+                      locale={{ emptyText: "请先设置筛选条件并点击「查询」" }}
+                      pagination={{ pageSize: 10 }}
+                      rowSelection={
+                        customerSupplyInboundMode
+                          ? {
+                              selectedRowKeys: customerSupplySelectedMaterialIds,
+                              onChange: (keys) => {
+                                const next = (keys as string[]).map(String);
+                                setCustomerSupplySelectedMaterialIds(next);
+                                setCustomerSupplyInboundQtyByMaterialId((prev) => {
+                                  const keep: Record<string, number> = {};
+                                  for (const id of next) {
+                                    keep[id] = Math.max(1, Math.trunc(Number(prev[id] ?? 1)));
+                                  }
+                                  return keep;
+                                });
+                              },
+                            }
+                          : undefined
+                      }
+                      columns={[
+                        {
+                          title: "客供客户",
+                          key: "customer",
+                          width: 200,
+                          render: (_, r) =>
+                            r.customer
+                              ? `${r.customer.name}${r.customer.code ? `（${r.customer.code}）` : ""}`
+                              : "—",
+                        },
+                        {
+                          title: "客供料",
+                          key: "material",
+                          width: 260,
+                          render: (_, r) => `${r.code} ${r.name}`,
+                        },
+                        {
+                          title: "部件描述",
+                          dataIndex: "partDescription",
+                          width: 180,
+                          ellipsis: true,
+                          render: (v: string | null) => v?.trim() || "—",
+                        },
+                        {
+                          title: "入库数量",
+                          key: "inboundQty",
+                          width: 140,
+                          render: (_, r) => {
+                            const checked = customerSupplySelectedMaterialIds.includes(r.id);
+                            if (!customerSupplyInboundMode || !checked) return "—";
+                            return (
+                              <InputNumber
+                                min={1}
+                                precision={0}
+                                value={customerSupplyInboundQtyByMaterialId[r.id] ?? 1}
+                                onChange={(v) => {
+                                  const n = Math.max(
+                                    1,
+                                    Math.trunc(Number(v == null ? 1 : v) || 1),
+                                  );
+                                  setCustomerSupplyInboundQtyByMaterialId((prev) => ({
+                                    ...prev,
+                                    [r.id]: n,
+                                  }));
+                                }}
+                              />
+                            );
+                          },
+                        },
+                        {
+                          title: "操作",
+                          key: "op",
+                          width: 120,
+                          render: (_, r) => {
+                            const checked = customerSupplySelectedMaterialIds.includes(r.id);
+                            if (!customerSupplyInboundMode || !checked) return "—";
+                            return (
+                              <Button
+                                type="link"
+                                size="small"
+                                loading={submittingCustomerSupply}
+                                onClick={() => void submitCustomerSupplyInbound([r.id])}
+                              >
+                                完成
+                              </Button>
+                            );
+                          },
+                        },
+                      ]}
+                    />
+
+                    {customerSupplyInboundMode ? (
+                      <Form
+                        form={customerSupplyBatchForm}
+                        layout="inline"
+                        style={{ rowGap: 12, paddingTop: 4 }}
                       >
-                        收料入库
-                      </Button>
-                    </Form.Item>
-                  </Form>
+                        <Form.Item
+                          name="receivedAt"
+                          label="收料时间"
+                          rules={[{ required: true, message: "请选择收料时间" }]}
+                        >
+                          <DatePicker showTime />
+                        </Form.Item>
+                        <Form.Item name="remark" label="备注">
+                          <Input allowClear placeholder="可写来料批次等" style={{ width: 260 }} />
+                        </Form.Item>
+                        <Form.Item>
+                          <Button
+                            type="primary"
+                            loading={submittingCustomerSupply}
+                            onClick={() =>
+                              void submitCustomerSupplyInbound(customerSupplySelectedMaterialIds)
+                            }
+                          >
+                            统一完成
+                          </Button>
+                        </Form.Item>
+                      </Form>
+                    ) : null}
+                  </Space>
                 </Card>
 
                 <Card size="small" title="收料记录">
-                  <Form
-                    form={customerSupplyQueryForm}
-                    layout="inline"
-                    style={{ marginBottom: 12, rowGap: 12 }}
-                    onFinish={() => void loadCustomerSupply()}
-                  >
-                    <Form.Item name="customerId" label="客供客户">
-                      <Select
-                        allowClear
-                        showSearch
-                        placeholder="全部"
-                        optionFilterProp="searchText"
-                        style={{ width: 220 }}
-                        options={customers.map((c) => ({
-                          value: c.id,
-                          label: `${c.name}${c.code ? `（${c.code}）` : ""}`,
-                          searchText: `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase(),
-                        }))}
-                      />
-                    </Form.Item>
-                    <Form.Item name="materialId" label="客供料名称">
-                      <Select
-                        allowClear
-                        showSearch
-                        placeholder="全部"
-                        optionFilterProp="label"
-                        style={{ width: 260 }}
-                        options={customerSupplyMaterials.map((m) => ({
-                          value: m.id,
-                          label: `${m.code} ${m.name}`,
-                        }))}
-                      />
-                    </Form.Item>
-                    <Form.Item name="keyword" label="备注">
-                      <Input allowClear placeholder="备注关键字" style={{ width: 180 }} />
-                    </Form.Item>
-                    <Form.Item>
-                      <Button type="primary" htmlType="submit">
-                        查询
-                      </Button>
-                    </Form.Item>
-                    <Form.Item>
-                      <Button
-                        onClick={() => {
-                          customerSupplyQueryForm.resetFields();
-                          void loadCustomerSupply({});
-                        }}
-                      >
-                        重置
-                      </Button>
-                    </Form.Item>
-                  </Form>
+                  <Space style={{ marginBottom: 12 }}>
+                    <Button onClick={() => void runCustomerSupplyQuery()}>刷新记录</Button>
+                    <Button onClick={() => resetCustomerSupplyFilter()}>清空筛选</Button>
+                  </Space>
 
                   <Table<CustomerSupplyInboundRow>
                     rowKey="id"

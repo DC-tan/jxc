@@ -54,12 +54,26 @@ import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 
+import { ProductStockInTab } from "./ProductStockInTab";
+
 const PRODUCT_TAB_PERM: Record<string, string> = {
   add: "tab.prod.add",
   inventory: "tab.prod.inv",
+  stockIn: "tab.prod.stockIn",
   stockAdjust: "tab.prod.adjust",
   deprecated: "tab.prod.deprecated",
 };
+
+/** 兼容旧权限码 tab.wh.stockIn */
+function productTabAllowed(
+  key: string,
+  allowed: (codes: string | readonly string[]) => boolean,
+): boolean {
+  const code = PRODUCT_TAB_PERM[key];
+  if (!code) return false;
+  if (key === "stockIn") return allowed([code, "tab.wh.stockIn"]);
+  return allowed([code]);
+}
 
 const LS_PROD_COLS = "products.table.visibleCols.mat.v1";
 const LS_PROD_INV_COLS = "products.table.visibleCols.inv.v1";
@@ -1133,6 +1147,11 @@ export function ProductsPage() {
   }, []);
   const [tab, setTab] = useState("add");
 
+  useEffect(() => {
+    const t = searchParams.get("tab");
+    if (t === "stockIn") setTab("stockIn");
+  }, [searchParams]);
+
   const [presets, setPresets] = useState<ProductPresetBundle | null>(null);
   const [loadingPresets, setLoadingPresets] = useState(true);
 
@@ -1146,9 +1165,8 @@ export function ProductsPage() {
 
   const [addOpen, setAddOpen] = useState(false);
   const [addForm] = Form.useForm();
-  const addProcessingMode = Form.useWatch("processingMode", addForm) as
-    | ProductProcessingMode
-    | undefined;
+  const [addProcessingMode, setAddProcessingMode] =
+    useState<ProductProcessingMode>("INHOUSE");
   const addFormFieldsPendingRef = useRef<Record<string, unknown> | null>(null);
   const [sampleUrls, setSampleUrls] = useState<string[]>([]);
 
@@ -1162,9 +1180,8 @@ export function ProductsPage() {
   const [deprecating, setDeprecating] = useState(false);
   const [deletingFromEdit, setDeletingFromEdit] = useState(false);
   const [editForm] = Form.useForm();
-  const editProcessingMode = Form.useWatch("processingMode", editForm) as
-    | ProductProcessingMode
-    | undefined;
+  const [editProcessingMode, setEditProcessingMode] =
+    useState<ProductProcessingMode>("INHOUSE");
   const editFormFieldsPendingRef = useRef<Record<string, unknown> | null>(null);
   const [editSamples, setEditSamples] = useState<string[]>([]);
 
@@ -1670,6 +1687,7 @@ export function ProductsPage() {
   const closeAddModal = () => {
     setAddOpen(false);
     addForm.resetFields();
+    setAddProcessingMode("INHOUSE");
     setSampleUrls([]);
     setAddBomLines([]);
     setAddBomOutsource([]);
@@ -2491,8 +2509,8 @@ export function ProductsPage() {
 
   const visibleProductTabKeys = useMemo(
     () =>
-      (["add", "inventory", "stockAdjust", "deprecated"] as const).filter((k) =>
-        allowed([PRODUCT_TAB_PERM[k]]),
+      (["add", "inventory", "stockIn", "stockAdjust", "deprecated"] as const).filter(
+        (k) => productTabAllowed(k, allowed),
       ),
     [allowed],
   );
@@ -2692,6 +2710,11 @@ export function ProductsPage() {
             ),
           },
           {
+            key: "stockIn",
+            label: "商品入库",
+            children: <ProductStockInTab />,
+          },
+          {
             key: "stockAdjust",
             label: "手动调整",
             children: (
@@ -2794,10 +2817,7 @@ export function ProductsPage() {
               </Space>
             ),
           },
-        ].filter((item) => {
-          const code = PRODUCT_TAB_PERM[String(item.key)];
-          return code ? allowed([code]) : false;
-        })}
+        ].filter((item) => productTabAllowed(String(item.key), allowed))}
       />
         </>
       )}
@@ -2876,11 +2896,23 @@ export function ProductsPage() {
           if (open && addFormFieldsPendingRef.current) {
             addForm.resetFields();
             addForm.setFieldsValue(addFormFieldsPendingRef.current);
+            const mode = addFormFieldsPendingRef.current.processingMode;
+            if (mode === "INHOUSE" || mode === "OUTSOURCE" || mode === "OUTSOURCE_INHOUSE") {
+              setAddProcessingMode(mode);
+            }
             addFormFieldsPendingRef.current = null;
           }
         }}
       >
-        <Form form={addForm} layout="vertical">
+        <Form
+          form={addForm}
+          layout="vertical"
+          onValuesChange={(changed) => {
+            if (changed.processingMode != null) {
+              setAddProcessingMode(changed.processingMode as ProductProcessingMode);
+            }
+          }}
+        >
           <Row gutter={16}>
             <Col xs={24} sm={12}>
               <Form.Item
@@ -3049,6 +3081,7 @@ export function ProductsPage() {
           setEditOpen(false);
           setEditingId(null);
           setEditingProductInfo(null);
+          setEditProcessingMode("INHOUSE");
           setEditBomLines([]);
           setEditBomOutsource([]);
           setEditBomInhouse([]);
@@ -3093,11 +3126,23 @@ export function ProductsPage() {
         afterOpenChange={(open) => {
           if (open && editFormFieldsPendingRef.current) {
             editForm.setFieldsValue(editFormFieldsPendingRef.current);
+            const mode = editFormFieldsPendingRef.current.processingMode;
+            if (mode === "INHOUSE" || mode === "OUTSOURCE" || mode === "OUTSOURCE_INHOUSE") {
+              setEditProcessingMode(mode);
+            }
             editFormFieldsPendingRef.current = null;
           }
         }}
       >
-        <Form form={editForm} layout="vertical">
+        <Form
+          form={editForm}
+          layout="vertical"
+          onValuesChange={(changed) => {
+            if (changed.processingMode != null) {
+              setEditProcessingMode(changed.processingMode as ProductProcessingMode);
+            }
+          }}
+        >
           <Row gutter={16}>
             <Col xs={24} sm={12}>
               <Form.Item

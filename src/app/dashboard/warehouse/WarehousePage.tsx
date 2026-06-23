@@ -23,6 +23,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
+import type { WarehouseDeliveredQueryRow } from "@/lib/warehouse-no-order-ship-out-query";
 import { inhouseMaterialRowsForProductSets } from "@/lib/inhouse-bom-display";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import {
@@ -31,14 +32,15 @@ import {
   shipmentNeedsInhouseStep,
 } from "@/lib/warehouse-delivery-inhouse-step";
 import { WAREHOUSE_DELIVERY_DRAFT_KEY } from "@/lib/warehouse-delivery-draft";
+import type { WarehouseDeliveryDraft } from "@/lib/warehouse-delivery-draft";
+import { WarehouseNoOrderShipPanel } from "./WarehouseNoOrderShipPanel";
+import { WarehouseSettingsTab } from "./WarehouseSettingsTab";
 
 const WAREHOUSE_TAB_PERM: Record<string, string> = {
   ship: "tab.wh.ship",
   query: "tab.wh.query",
   settings: "tab.wh.settings",
 };
-import type { WarehouseDeliveryDraft } from "@/lib/warehouse-delivery-draft";
-import { WarehouseSettingsTab } from "./WarehouseSettingsTab";
 
 type CustomerBrief = { id: string; code: string; name: string };
 
@@ -186,15 +188,21 @@ export function WarehousePage() {
   const [tab, setTab] = useState("ship");
 
   useEffect(() => {
-    if (searchParams.get("tab") === "query") setTab("query");
-  }, [searchParams]);
+    const t = searchParams.get("tab");
+    if (t === "query") setTab("query");
+    if (t === "stockIn") {
+      router.replace("/dashboard/products?tab=stockIn");
+    }
+  }, [searchParams, router]);
 
   const [pendingRows, setPendingRows] = useState<WarehouseSalesRow[]>([]);
   const [loadingPending, setLoadingPending] = useState(false);
   const [pendingSelectMode, setPendingSelectMode] = useState(false);
   const [selectedPendingIds, setSelectedPendingIds] = useState<string[]>([]);
   const [closingPending, setClosingPending] = useState(false);
-  const [deliveredRows, setDeliveredRows] = useState<WarehouseSalesRow[]>([]);
+  const [deliveredRows, setDeliveredRows] = useState<WarehouseDeliveredQueryRow[]>(
+    [],
+  );
   const [loadingDelivered, setLoadingDelivered] = useState(false);
   const [exportingDeliveredQuery, setExportingDeliveredQuery] = useState(false);
   const [deliveredSelectMode, setDeliveredSelectMode] = useState(false);
@@ -248,13 +256,15 @@ export function WarehousePage() {
         deliveredRange: queryDeliveredRange,
         includePartialInquiry: true,
       });
-      const data = await fetchJson<{ list: WarehouseSalesRow[] }>(
+      const data = await fetchJson<{ list: WarehouseDeliveredQueryRow[] }>(
         `/api/warehouse/sales-orders?${qs}`,
         { credentials: "include" },
       );
       setDeliveredRows(data.list ?? []);
       setSelectedDeliveredIds((prev) =>
-        prev.filter((id) => (data.list ?? []).some((x) => x.id === id)),
+        prev.filter((id) =>
+          (data.list ?? []).some((x) => x.id === id && x.rowKind === "sales"),
+        ),
       );
     } catch (e) {
       message.error(e instanceof Error ? e.message : "查询失败");
@@ -542,12 +552,77 @@ export function WarehousePage() {
     [],
   );
 
+  const queryBaseColumns: ColumnsType<WarehouseDeliveredQueryRow> = useMemo(
+    () => [
+      {
+        title: "客户",
+        key: "cust",
+        width: 160,
+        ellipsis: true,
+        render: (_, r) => r.customer.name || r.customer.code,
+      },
+      {
+        title: "客户订单编号",
+        dataIndex: "customerOrderNo",
+        width: 140,
+        ellipsis: true,
+        render: (t: string, r) =>
+          r.rowKind === "noOrder" ? "—" : t?.trim() || "—",
+      },
+      {
+        title: "客户机型",
+        dataIndex: "customerModel",
+        width: 120,
+        ellipsis: true,
+        render: (t: string) => t?.trim() || "—",
+      },
+      {
+        title: "要求交货",
+        dataIndex: "deliveryDueAt",
+        width: 120,
+        render: (t: string | null, r) =>
+          r.rowKind === "noOrder"
+            ? "—"
+            : t
+              ? dayjs(t).format("YYYY-MM-DD")
+              : "—",
+      },
+      {
+        title: "建单时间",
+        dataIndex: "createdAt",
+        width: 168,
+        render: (t: string, r) =>
+          r.rowKind === "noOrder"
+            ? "—"
+            : dayjs(t).format("YYYY-MM-DD HH:mm"),
+      },
+      {
+        title: "订单金额",
+        dataIndex: "totalAmount",
+        width: 112,
+        align: "right",
+        render: (v: string) =>
+          Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2 }),
+      },
+      {
+        title: "备注",
+        dataIndex: "remark",
+        ellipsis: true,
+        render: (t: string | null) => t?.trim() || "—",
+      },
+    ],
+    [],
+  );
+
   /** 仅「出货查询」表：整单未结时备注提示，并与用户备注合并 */
-  const queryRemarkCol: ColumnsType<WarehouseSalesRow>[number] = {
+  const queryRemarkCol: ColumnsType<WarehouseDeliveredQueryRow>[number] = {
     title: "备注",
     dataIndex: "remark",
     ellipsis: true,
     render: (t: string | null, r) => {
+      if (r.rowKind === "noOrder") {
+        return t?.trim() || "—";
+      }
       const user = t?.trim();
       if (r.actualDeliveredAt) {
         return user || "—";
@@ -559,7 +634,7 @@ export function WarehousePage() {
     },
   };
 
-  const queryDeliveredCol: ColumnsType<WarehouseSalesRow>[number] = {
+  const queryDeliveredCol: ColumnsType<WarehouseDeliveredQueryRow>[number] = {
     title: "实际交货",
     key: "delivered",
     width: 200,
@@ -589,19 +664,21 @@ export function WarehousePage() {
       t ? dayjs(t).format("YYYY-MM-DD HH:mm") : "—",
   };
 
-  const deliveryNotePreviewCol: ColumnsType<WarehouseSalesRow>[number] = {
-    title: "送货单预览",
-    key: "deliveryNotePreview",
-    width: 112,
-    align: "center",
-    render: (_, r) => (
-      <Link
-        href={`/dashboard/warehouse/delivery-note?orderId=${encodeURIComponent(r.id)}&view=shipment`}
-      >
-        打开预览
-      </Link>
-    ),
-  };
+  const deliveryNotePreviewCol: ColumnsType<WarehouseDeliveredQueryRow>[number] =
+    {
+      title: "送货单号",
+      key: "deliveryNotePreview",
+      width: 140,
+      align: "center",
+      ellipsis: true,
+      render: (_, r) => (
+        <Link
+          href={`/dashboard/warehouse/delivery-note?orderId=${encodeURIComponent(r.id)}&view=shipment`}
+        >
+          打开预览
+        </Link>
+      ),
+    };
 
   const deliveredQueryAmountTotal = useMemo(
     () => deliveredRows.reduce((s, r) => s + (Number(r.totalAmount) || 0), 0),
@@ -623,19 +700,30 @@ export function WarehousePage() {
         } else if (r.latestBatchDeliveredAt) {
           delAt = `${dayjs(r.latestBatchDeliveredAt).format("YYYY-MM-DD HH:mm")}（最近一批·未结单）`;
         }
+        const orderNo =
+          r.rowKind === "noOrder" ? "—" : r.customerOrderNo?.trim() || "—";
+        let remark = r.remark?.trim() || "—";
+        if (r.rowKind === "sales" && !r.actualDeliveredAt) {
+          remark = remark !== "—" ? `订单未交完；${remark}` : "订单未交完";
+        }
         return {
           客户: r.customer.name || r.customer.code,
-          客户订单编号: r.customerOrderNo,
+          客户订单编号: orderNo,
           客户机型: r.customerModel?.trim() || "—",
-          要求交货: r.deliveryDueAt ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD") : "—",
+          要求交货:
+            r.rowKind === "noOrder"
+              ? "—"
+              : r.deliveryDueAt
+                ? dayjs(r.deliveryDueAt).format("YYYY-MM-DD")
+                : "—",
           实际交货: delAt,
-          建单时间: dayjs(r.createdAt).format("YYYY-MM-DD HH:mm"),
+          送货单号: r.rowKind === "noOrder" ? r.deliveryNoteNo?.trim() || "—" : "见预览",
+          建单时间:
+            r.rowKind === "noOrder"
+              ? "—"
+              : dayjs(r.createdAt).format("YYYY-MM-DD HH:mm"),
           订单金额: Number(r.totalAmount) || 0,
-          备注: r.actualDeliveredAt
-            ? (r.remark?.trim() || "—")
-            : r.remark?.trim()
-              ? `订单未交完；${r.remark.trim()}`
-              : "订单未交完",
+          备注: remark,
         };
       });
       rows.push({
@@ -644,13 +732,13 @@ export function WarehousePage() {
         客户机型: "",
         要求交货: "",
         实际交货: "",
+        送货单号: "",
         建单时间: "",
         订单金额: deliveredQueryAmountTotal,
-        备注: `共 ${deliveredRows.length} 单`,
+        备注: `共 ${deliveredRows.length} 条`,
       });
-      const ws = XLSX.utils.json_to_sheet(rows);
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "出货查询");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "出货查询");
       XLSX.writeFile(
         wb,
         `仓库出货查询_${dayjs().format("YYYYMMDD_HHmmss")}.xlsx`,
@@ -685,7 +773,9 @@ export function WarehousePage() {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ orderIds: selectedDeliveredIds }),
+            body: JSON.stringify({
+            orderIds: selectedDeliveredIds.filter((id) => !id.startsWith("no-order:")),
+          }),
           });
           message.success(
             `已作废 ${Math.max(0, Number(res.revertedOrders ?? 0))} 单，回退数量 ${Math.max(0, Number(res.revertedShipmentQty ?? 0))}`,
@@ -728,15 +818,15 @@ export function WarehousePage() {
     () =>
       toBalancedColumns(
         [
-          ...baseColumns.slice(0, 4),
+          ...queryBaseColumns.slice(0, 4),
           queryDeliveredCol,
           deliveryNotePreviewCol,
-          ...baseColumns.slice(4, 6),
+          ...queryBaseColumns.slice(4, 6),
           queryRemarkCol,
         ],
         ["deliveryNotePreview"],
       ),
-    [baseColumns, queryDeliveredCol, deliveryNotePreviewCol, queryRemarkCol],
+    [queryBaseColumns, queryDeliveredCol, deliveryNotePreviewCol, queryRemarkCol],
   );
 
   const closeSelectedPending = useCallback(async () => {
@@ -817,77 +907,92 @@ export function WarehousePage() {
             key: "ship",
             label: "出货",
             children: (
-              <Space direction="vertical" style={{ width: "100%" }} size="middle">
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 8,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <Space>
-                    <Button onClick={() => void loadPending()}>刷新</Button>
-                    <Button
-                      onClick={() => {
-                        setPendingSelectMode((v) => !v);
-                        setSelectedPendingIds([]);
-                      }}
-                    >
-                      {pendingSelectMode ? "取消选择" : "选择"}
-                    </Button>
-                    {pendingSelectMode ? (
-                      <Button
-                        danger
-                        type="primary"
-                        onClick={() => void closeSelectedPending()}
-                        disabled={selectedPendingIds.length === 0}
-                        loading={closingPending}
-                      >
-                        结单
-                      </Button>
-                    ) : null}
-                  </Space>
-                  <HelpTip
-                    text={
-                      <>
-                        以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
-                        <strong>本批实际出货</strong>
-                        （可超过待交/订单行数量）。自加工/外发+自加工须在弹窗填写
-                        <strong>本批自加工完工</strong>（默认=出货−商品库存）；若大于默认数，另经
-                        <strong>补产入库存</strong>后再进<strong>送货单打印</strong>
-                        。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>
-                        后登记库存；全部交清后写入<strong>实际交货时间</strong>。
-                      </>
-                    }
-                  />
-                </div>
-                <Table<WarehouseSalesRow>
-                  rowKey="id"
-                  loading={loadingPending}
-                  dataSource={pendingRows}
-                  onRow={(r) => ({
-                    title: hoverRowTitle(r),
-                    onMouseEnter: () => {
-                      void ensureHoverOrderDetail(r.id);
-                    },
-                  })}
-                  rowSelection={
-                    pendingSelectMode
-                      ? {
-                          selectedRowKeys: selectedPendingIds,
-                          onChange: (keys) =>
-                            setSelectedPendingIds(keys.map((x) => String(x))),
-                        }
-                      : undefined
-                  }
-                  columns={pendingColumns}
-                  tableLayout="fixed"
-                  pagination={{ pageSize: 10 }}
-                  locale={{ emptyText: "暂无待出货订单" }}
-                />
-              </Space>
+              <Tabs
+                items={[
+                  {
+                    key: "sales",
+                    label: "销售订单出货",
+                    children: (
+                      <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <Space>
+                            <Button onClick={() => void loadPending()}>刷新</Button>
+                            <Button
+                              onClick={() => {
+                                setPendingSelectMode((v) => !v);
+                                setSelectedPendingIds([]);
+                              }}
+                            >
+                              {pendingSelectMode ? "取消选择" : "选择"}
+                            </Button>
+                            {pendingSelectMode ? (
+                              <Button
+                                danger
+                                type="primary"
+                                onClick={() => void closeSelectedPending()}
+                                disabled={selectedPendingIds.length === 0}
+                                loading={closingPending}
+                              >
+                                结单
+                              </Button>
+                            ) : null}
+                          </Space>
+                          <HelpTip
+                            text={
+                              <>
+                                以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
+                                <strong>本批实际出货</strong>
+                                （可超过待交/订单行数量）。自加工/外发+自加工须在弹窗填写
+                                <strong>本批自加工完工</strong>（默认=出货−商品库存）；若大于默认数，另经
+                                <strong>补产入库存</strong>后再进<strong>送货单打印</strong>
+                                。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>
+                                后登记库存；全部交清后写入<strong>实际交货时间</strong>。
+                              </>
+                            }
+                          />
+                        </div>
+                        <Table<WarehouseSalesRow>
+                          rowKey="id"
+                          loading={loadingPending}
+                          dataSource={pendingRows}
+                          onRow={(r) => ({
+                            title: hoverRowTitle(r),
+                            onMouseEnter: () => {
+                              void ensureHoverOrderDetail(r.id);
+                            },
+                          })}
+                          rowSelection={
+                            pendingSelectMode
+                              ? {
+                                  selectedRowKeys: selectedPendingIds,
+                                  onChange: (keys) =>
+                                    setSelectedPendingIds(keys.map((x) => String(x))),
+                                }
+                              : undefined
+                          }
+                          columns={pendingColumns}
+                          tableLayout="fixed"
+                          pagination={{ pageSize: 10 }}
+                          locale={{ emptyText: "暂无待出货订单" }}
+                        />
+                      </Space>
+                    ),
+                  },
+                  {
+                    key: "noOrder",
+                    label: "无单出货",
+                    children: <WarehouseNoOrderShipPanel />,
+                  },
+                ]}
+              />
             ),
           },
           {
@@ -948,30 +1053,37 @@ export function WarehousePage() {
                     <HelpTip
                       text={
                         <>
-                          按<strong>整单实际交货</strong>或<strong>分批出货时间</strong>
-                          区间与关键字查询：含已交清单、仅分批出货且
-                          <strong>整单未结</strong>的订单。未结订单备注列会标注「订单未交完」。
+                          按<strong>整单实际交货</strong>、<strong>分批出货时间</strong>
+                          或<strong>无单出货时间</strong>区间查询；含销售订单出货与无单出货（无单时客户订单编号为
+                          —）。
                         </>
                       }
                     />
                   </div>
                 </Space>
-                <Table<WarehouseSalesRow>
+                <Table<WarehouseDeliveredQueryRow>
                   rowKey="id"
                   loading={loadingDelivered}
                   dataSource={deliveredRows}
-                  onRow={(r) => ({
-                    title: hoverRowTitle(r),
-                    onMouseEnter: () => {
-                      void ensureHoverOrderDetail(r.id);
-                    },
-                  })}
+                  onRow={(r) =>
+                    r.rowKind === "sales"
+                      ? {
+                          title: hoverRowTitle(r as WarehouseSalesRow),
+                          onMouseEnter: () => {
+                            void ensureHoverOrderDetail(r.id);
+                          },
+                        }
+                      : {}
+                  }
                   rowSelection={
                     deliveredSelectMode
                       ? {
                           selectedRowKeys: selectedDeliveredIds,
                           onChange: (keys) =>
                             setSelectedDeliveredIds(keys.map((x) => String(x))),
+                          getCheckboxProps: (r) => ({
+                            disabled: r.rowKind === "noOrder",
+                          }),
                         }
                       : undefined
                   }

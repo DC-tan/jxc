@@ -2,6 +2,7 @@
 
 import { PlusOutlined, QuestionCircleOutlined } from "@ant-design/icons";
 import {
+  AutoComplete,
   App,
   Button,
   Card,
@@ -41,11 +42,13 @@ const SAMPLE_TAB_PERM: Record<string, string> = {
 };
 
 type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
+type SupplierOpt = { id: string; code: string; name: string; shortName?: string | null };
 
 type SampleRow = {
   id: string;
   customerId: string;
   customer: CustomerOpt;
+  supplierInfo: string | null;
   model: string;
   materialNames: string;
   quantity: number;
@@ -60,6 +63,7 @@ type SampleRow = {
 
 type SampleFormValues = {
   customerId: string;
+  supplierInfo?: string;
   model: string;
   materialNames: string;
   quantity: number;
@@ -70,6 +74,7 @@ type SampleFormValues = {
 type SampleQueryValues = {
   dateRange?: [dayjs.Dayjs, dayjs.Dayjs];
   customerId?: string;
+  supplierInfo?: string;
   trackingNo?: string;
   keyword?: string;
 };
@@ -93,6 +98,7 @@ function sampleDueDayLabel(iso: string) {
 
 const DEFAULT_SAMPLE_LIST_WIDTH: Record<string, number> = {
   customer: 180,
+  supplierInfo: 180,
   model: 150,
   materialNames: 240,
   quantity: 90,
@@ -145,6 +151,8 @@ export function SamplesPage() {
 
   const [customers, setCustomers] = useState<CustomerOpt[]>([]);
   const [loadingCustomers, setLoadingCustomers] = useState(false);
+  const [suppliers, setSuppliers] = useState<SupplierOpt[]>([]);
+  const [loadingSuppliers, setLoadingSuppliers] = useState(false);
 
   const [todayRows, setTodayRows] = useState<SampleRow[]>([]);
   const [openRows, setOpenRows] = useState<SampleRow[]>([]);
@@ -206,6 +214,22 @@ export function SamplesPage() {
     [customers],
   );
 
+  const supplierInfoOptions = useMemo(
+    () =>
+      suppliers.map((s) => {
+        const code = s.code?.trim() || "";
+        const name = s.name?.trim() || "";
+        const shortName = s.shortName?.trim() || "";
+        const display = name ? `${name}${code ? `（${code}）` : ""}` : code || shortName || "—";
+        return {
+          value: display,
+          label: display,
+          searchText: `${name} ${code} ${shortName}`.toLowerCase(),
+        };
+      }),
+    [suppliers],
+  );
+
   const loadToday = useCallback(async () => {
     setLoadingToday(true);
     try {
@@ -256,6 +280,7 @@ export function SamplesPage() {
         if (range?.[0]) p.set("from", range[0].startOf("day").toISOString());
         if (range?.[1]) p.set("to", range[1].endOf("day").toISOString());
         if (v.customerId) p.set("customerId", String(v.customerId));
+        if (v.supplierInfo) p.set("supplierInfo", String(v.supplierInfo).trim());
         if (v.trackingNo) p.set("trackingNo", String(v.trackingNo).trim());
         if (v.keyword) p.set("keyword", String(v.keyword).trim());
         const data = await fetchJson<{ list: SampleRow[] }>(
@@ -276,6 +301,26 @@ export function SamplesPage() {
   useEffect(() => {
     void loadCustomers();
   }, [loadCustomers]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      setLoadingSuppliers(true);
+      try {
+        const data = await fetchJson<{ list: SupplierOpt[] }>("/api/suppliers", {
+          credentials: "include",
+        });
+        if (!cancelled) setSuppliers(data.list ?? []);
+      } catch {
+        if (!cancelled) setSuppliers([]);
+      } finally {
+        if (!cancelled) setLoadingSuppliers(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (tab === "add") void loadToday();
@@ -299,6 +344,7 @@ export function SamplesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerId: v.customerId,
+          supplierInfo: v.supplierInfo,
           model: v.model,
           materialNames: v.materialNames,
           quantity: v.quantity,
@@ -321,6 +367,7 @@ export function SamplesPage() {
     setEditing(r);
     editForm.setFieldsValue({
       customerId: r.customerId,
+      supplierInfo: r.supplierInfo ?? undefined,
       model: r.model,
       materialNames: r.materialNames,
       quantity: r.quantity,
@@ -341,6 +388,7 @@ export function SamplesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerId: v.customerId,
+          supplierInfo: v.supplierInfo,
           model: v.model,
           materialNames: v.materialNames,
           quantity: v.quantity,
@@ -416,6 +464,13 @@ export function SamplesPage() {
       width: 160,
       ellipsis: true,
       render: (_, r) => `${r.customer.code} ${r.customer.name}`,
+    },
+    {
+      title: "供应商信息",
+      dataIndex: "supplierInfo",
+      width: 170,
+      ellipsis: true,
+      render: (v: string | null) => v?.trim() || "—",
     },
     { title: "型号", dataIndex: "model", width: 150, ellipsis: true },
     {
@@ -517,26 +572,62 @@ export function SamplesPage() {
 
   const sampleForm = (form: typeof createForm) => (
     <Form form={form} layout="vertical" initialValues={{ quantity: 1 }}>
-      <Form.Item
-        name="customerId"
-        label="客户名称"
-        rules={[{ required: true, message: "请选择客户" }]}
-      >
-        <Select
-          showSearch
-          loading={loadingCustomers}
-          options={customerOptions}
-          optionFilterProp="searchText"
-          placeholder="选择客户"
-        />
-      </Form.Item>
-      <Form.Item
-        name="model"
-        label="型号"
-        rules={[{ required: true, message: "请填写型号" }]}
-      >
-        <Input allowClear placeholder="手动输入型号" />
-      </Form.Item>
+      <Space wrap align="start" size={12} style={{ width: "100%" }}>
+        <Form.Item
+          name="customerId"
+          label="客户名称"
+          rules={[{ required: true, message: "请选择客户" }]}
+          style={{ minWidth: 320, flex: "1 1 320px" }}
+        >
+          <Select
+            showSearch
+            loading={loadingCustomers}
+            options={customerOptions}
+            optionFilterProp="searchText"
+            placeholder="选择客户"
+          />
+        </Form.Item>
+        <Form.Item
+          name="model"
+          label="型号"
+          rules={[{ required: true, message: "请填写型号" }]}
+          style={{ minWidth: 280, flex: "1 1 280px" }}
+        >
+          <Input allowClear placeholder="手动输入型号" />
+        </Form.Item>
+      </Space>
+      <Space wrap align="start" size={12} style={{ width: "100%" }}>
+        <Form.Item
+          name="supplierInfo"
+          label="供应商信息"
+          style={{ minWidth: 320, flex: "1 1 320px" }}
+        >
+          <AutoComplete
+            options={supplierInfoOptions}
+            placeholder="可输入或自动搜索现有供应商"
+            filterOption={(input, option) =>
+              String((option as { searchText?: string } | undefined)?.searchText ?? "")
+                .includes(input.toLowerCase())
+            }
+          />
+        </Form.Item>
+        <Form.Item
+          name="quantity"
+          label="数量"
+          rules={[{ required: true, message: "请填写数量" }]}
+          style={{ width: 160 }}
+        >
+          <InputNumber min={1} precision={0} style={{ width: "100%" }} />
+        </Form.Item>
+        <Form.Item
+          name="sampleDueAt"
+          label="交样日期"
+          rules={[{ required: true, message: "请选择交样日期" }]}
+          style={{ width: 180 }}
+        >
+          <DatePicker style={{ width: "100%" }} />
+        </Form.Item>
+      </Space>
       <Form.Item
         name="materialNames"
         label="包含物料名称"
@@ -548,22 +639,6 @@ export function SamplesPage() {
           placeholder="手动输入，可多行；与物料档案无关联"
         />
       </Form.Item>
-      <Space wrap align="start">
-        <Form.Item
-          name="quantity"
-          label="数量"
-          rules={[{ required: true, message: "请填写数量" }]}
-        >
-          <InputNumber min={1} precision={0} style={{ width: 160 }} />
-        </Form.Item>
-        <Form.Item
-          name="sampleDueAt"
-          label="交样日期"
-          rules={[{ required: true, message: "请选择交样日期" }]}
-        >
-          <DatePicker style={{ width: 180 }} />
-        </Form.Item>
-      </Space>
       <Form.Item name="remark" label="备注">
         <Input.TextArea rows={2} allowClear />
       </Form.Item>
@@ -659,6 +734,9 @@ export function SamplesPage() {
                     </Form.Item>
                     <Form.Item name="keyword" label="关键字">
                       <Input allowClear placeholder="型号/物料/备注" />
+                    </Form.Item>
+                    <Form.Item name="supplierInfo" label="供应商信息">
+                      <Input allowClear placeholder="输入供应商信息" />
                     </Form.Item>
                     <Form.Item name="trackingNo" label="运单号">
                       <Input allowClear placeholder="输入运单号" />

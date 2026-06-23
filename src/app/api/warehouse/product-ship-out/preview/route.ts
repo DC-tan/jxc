@@ -1,0 +1,58 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import { prisma } from "@/lib/prisma";
+import { requirePermission } from "@/lib/api-auth";
+import {
+  WarehouseProductShipOutError,
+  previewProductShipOut,
+} from "@/lib/warehouse-product-ship-out";
+
+const lineSchema = z.object({
+  productId: z.string().min(1),
+  shipQty: z.union([z.number(), z.string()]),
+});
+
+const bodySchema = z.object({
+  customerId: z.string().min(1, "请选择客户"),
+  lines: z.array(lineSchema).min(1, "请至少添加一行商品"),
+});
+
+export async function POST(req: Request) {
+  const auth = await requirePermission("warehouse.view");
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.message }, { status: auth.status });
+  }
+
+  let json: unknown;
+  try {
+    json = await req.json();
+  } catch {
+    return NextResponse.json({ error: "请求格式错误" }, { status: 400 });
+  }
+
+  const parsed = bodySchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.flatten().fieldErrors },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const lines = await previewProductShipOut(
+      prisma,
+      parsed.data.customerId,
+      parsed.data.lines,
+    );
+    return NextResponse.json({ lines });
+  } catch (e) {
+    if (e instanceof WarehouseProductShipOutError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
+    }
+    console.error("[POST /api/warehouse/product-ship-out/preview]", e);
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "预检失败" },
+      { status: 500 },
+    );
+  }
+}

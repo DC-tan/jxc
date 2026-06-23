@@ -74,7 +74,9 @@ function splitLineRemaining(
   return Math.max(0, (l.bomNeedQty ?? l.suggestedQty) - (l.orderedQty ?? 0));
 }
 
-function shouldShowPurchaseLine(l: EditableLine): boolean {
+function shouldShowPurchaseLine(l: EditableLine, groupConfirmed: boolean): boolean {
+  // 未确认：展示仍有 BOM 待拆分的物料；已确认：全部保留（含库存已覆盖、数量为 0 的行）
+  if (groupConfirmed) return true;
   return splitLineRemaining(l) > 0 || l.quantity > 0;
 }
 
@@ -108,6 +110,7 @@ type BomLine = {
   usageQty: string;
   needQty: number;
   supplierName: string;
+  scope: "DEFAULT" | "OUTSOURCE" | "INHOUSE";
 };
 
 type BomProduct = {
@@ -118,7 +121,15 @@ type BomProduct = {
   unit: string;
   salesQty: number;
   productStockQty: number;
+  processingMode: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE";
   bomLines: BomLine[];
+};
+
+type ProcessorOption = {
+  id: string;
+  code: string;
+  name: string;
+  shortName: string | null;
 };
 
 type SplitPayload = {
@@ -134,6 +145,8 @@ type SplitPayload = {
   splitMode: "full_bom" | "redo_cancelled" | "partial_redo";
   orderedQtyByMaterial: Record<string, number>;
   supplierGroups: SplitGroup[];
+  processorOptions: ProcessorOption[];
+  outsourceStockByProcessorMaterial: Record<string, number>;
 };
 
 type PendingChangeReminder = {
@@ -277,12 +290,26 @@ function ceilQty(raw: number): number {
   return Math.max(1, Math.ceil(raw - 1e-9));
 }
 
+function isOutsourceMode(mode: BomProduct["processingMode"]): boolean {
+  return mode === "OUTSOURCE" || mode === "OUTSOURCE_INHOUSE";
+}
+
+function isOutsourceRelevantBomLine(
+  productMode: BomProduct["processingMode"],
+  line: BomLine,
+): boolean {
+  if (productMode === "OUTSOURCE") return true;
+  if (productMode === "OUTSOURCE_INHOUSE") return line.scope === "OUTSOURCE";
+  return false;
+}
+
 const WIZARD_GROUP_COL_OPTIONS: { label: string; value: string }[] = [
   { label: "物料编号", value: "code" },
   { label: "型号", value: "model" },
   { label: "规格", value: "spec" },
   { label: "单位", value: "unit" },
   { label: "物料库存数", value: "stockQty" },
+  { label: "外发库存", value: "outsourceStockQty" },
   { label: "数量", value: "quantity" },
   { label: "单价", value: "unitPrice" },
   { label: "总价", value: "total" },
@@ -296,6 +323,7 @@ const DEFAULT_WIZARD_GROUP_WIDTH: Record<string, number> = {
   spec: 280,
   unit: 56,
   stockQty: 108,
+  outsourceStockQty: 108,
   quantity: 100,
   unitPrice: 110,
   total: 100,
@@ -433,6 +461,10 @@ export function PurchaseFromSalesWizard({
   const [actualDemandByProductId, setActualDemandByProductId] = useState<Record<string, number>>(
     {},
   );
+  /** 商品 id -> 拆分时选定的外发加工方（仅外发/外发+自加工商品使用） */
+  const [processorByProductId, setProcessorByProductId] = useState<Record<string, string>>(
+    {},
+  );
 
   const [splitGroupColKeys, setSplitGroupColKeys] = useState<string[]>(() =>
     loadWizardColKeys(LS_WIZARD_GROUP_COLS, WIZARD_GROUP_ALL_KEYS, WIZARD_GROUP_ALL_KEYS),
@@ -489,6 +521,7 @@ export function PurchaseFromSalesWizard({
       setExtraFeesBySupplierId({});
       setMaterialStockById({});
       setActualDemandByProductId({});
+      setProcessorByProductId({});
       void loadEligible();
     }
   }, [open, loadEligible]);
@@ -546,6 +579,29 @@ export function PurchaseFromSalesWizard({
           ? { ...defaultDemand, ...draft.actualDemandByProductId }
           : defaultDemand;
       setActualDemandByProductId(demandMap);
+      const defaultProcessorId =
+        data.processorOptions.length === 1 ? data.processorOptions[0].id : undefined;
+      const hasOutsourceProduct = data.bomByProduct.some(
+        (bp) =>
+          bp.processingMode === "OUTSOURCE" ||
+          bp.processingMode === "OUTSOURCE_INHOUSE",
+      );
+      if (hasOutsourceProduct && data.processorOptions.length === 0) {
+        message.warning("未找到可用加工方，请先在供应商中维护“加工”属性。");
+      }
+      const initialProcessorMap: Record<string, string> = {};
+      if (defaultProcessorId) {
+        for (const bp of data.bomByProduct) {
+          if (
+            (bp.processingMode === "OUTSOURCE" ||
+              bp.processingMode === "OUTSOURCE_INHOUSE") &&
+            Math.max(0, Math.trunc(Number(demandMap[bp.productId] ?? bp.salesQty) || 0)) > 0
+          ) {
+            initialProcessorMap[bp.productId] = defaultProcessorId;
+          }
+        }
+      }
+      setProcessorByProductId(initialProcessorMap);
       const needByMaterialId = materialNeedMapByActualDemand(data, demandMap);
       setGroups(
         data.supplierGroups.map((g) => {
@@ -590,7 +646,10 @@ export function PurchaseFromSalesWizard({
         if (Object.keys(fees).length > 0) setExtraFeesBySupplierId(fees);
       }
       setSplitGroupColKeys((prev) =>
-        prev.includes("stockQty") ? prev : [...prev, "stockQty"],
+        ["stockQty", "outsourceStockQty"].reduce(
+          (acc, key) => (acc.includes(key) ? acc : [...acc, key]),
+          prev,
+        ),
       );
       const matIds = [
         ...new Set(
@@ -679,38 +738,6 @@ export function PurchaseFromSalesWizard({
     [split],
   );
 
-  const applyActualDemandToGroups = useCallback(
-    (demandMap: Record<string, number>) => {
-      if (
-        !split ||
-        split.splitMode === "redo_cancelled" ||
-        split.splitMode === "partial_redo"
-      ) {
-        return;
-      }
-      const needByMaterialId = materialNeedMapByActualDemand(split, demandMap);
-      setGroups((prev) =>
-        prev.map((g) => {
-          if (g.confirmed) return g;
-          return {
-            ...g,
-            lines: g.lines.map((l) => {
-              const bomNeed = needByMaterialId.get(l.materialId) ?? l.bomNeedQty;
-              const remaining = Math.max(0, bomNeed - (l.orderedQty ?? 0));
-              return {
-                ...l,
-                bomNeedQty: bomNeed,
-                quantity: remaining,
-              };
-            }),
-          };
-        }),
-      );
-      persistDraftDemand(demandMap);
-    },
-    [split, materialNeedMapByActualDemand, persistDraftDemand],
-  );
-
   const persistSupplierDraft = useCallback(
     (g: EditableGroup, confirmed: boolean) => {
       if (!split) return;
@@ -735,11 +762,33 @@ export function PurchaseFromSalesWizard({
           i === gi ? { ...g, confirmed: true } : g,
         );
         const g = next[gi];
-        if (g) persistSupplierDraft(g, true);
+        if (g) {
+          persistSupplierDraft(g, true);
+          if (split) {
+            const skipIds = g.lines
+              .filter((l) => l.quantity === 0)
+              .map((l) => l.materialId);
+            if (skipIds.length > 0) {
+              void fetchJson(
+                `/api/sales-orders/${split.salesOrder.id}/purchase-split/skip-materials`,
+                {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ materialIds: skipIds }),
+                },
+              ).catch((e) => {
+                message.error(
+                  e instanceof Error ? e.message : "记录无需采购物料失败",
+                );
+              });
+            }
+          }
+        }
         return next;
       });
     },
-    [persistSupplierDraft],
+    [message, persistSupplierDraft, split],
   );
 
   const modifySupplierGroup = useCallback(
@@ -749,11 +798,31 @@ export function PurchaseFromSalesWizard({
           i === gi ? { ...g, confirmed: false } : g,
         );
         const g = next[gi];
-        if (g) persistSupplierDraft(g, false);
+        if (g) {
+          persistSupplierDraft(g, false);
+          if (split) {
+            const skipIds = g.lines
+              .filter((l) => l.quantity === 0)
+              .map((l) => l.materialId);
+            if (skipIds.length > 0) {
+              void fetchJson(
+                `/api/sales-orders/${split.salesOrder.id}/purchase-split/skip-materials`,
+                {
+                  method: "POST",
+                  credentials: "include",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ materialIds: skipIds, revoke: true }),
+                },
+              ).catch(() => {
+                /* 撤销失败不阻断修改 */
+              });
+            }
+          }
+        }
         return next;
       });
     },
-    [persistSupplierDraft],
+    [persistSupplierDraft, split],
   );
 
   const updateLine = useCallback(
@@ -776,6 +845,68 @@ export function PurchaseFromSalesWizard({
       );
     },
     [],
+  );
+
+  const bomByProductForView = useMemo(() => {
+    if (!split) return [];
+    return split.bomByProduct.map((bp) => {
+      const demandQty = Math.max(
+        0,
+        Math.trunc(Number(actualDemandByProductId[bp.productId] ?? bp.salesQty) || 0),
+      );
+      return {
+        ...bp,
+        demandQty,
+        bomLines: bp.bomLines.map((bl) => ({
+          ...bl,
+          needQty: demandQty <= 0 ? 0 : ceilQty(Number(bl.usageQty) * demandQty),
+        })),
+      };
+    });
+  }, [split, actualDemandByProductId]);
+
+  const outsourceStockByMaterialId = useMemo(() => {
+    if (!split) return new Map<string, number>();
+    const keySet = new Set<string>();
+    for (const bp of bomByProductForView) {
+      if (!isOutsourceMode(bp.processingMode)) continue;
+      if (bp.demandQty <= 0) continue;
+      const processorId = processorByProductId[bp.productId];
+      if (!processorId) continue;
+      for (const bl of bp.bomLines) {
+        if (!isOutsourceRelevantBomLine(bp.processingMode, bl)) continue;
+        keySet.add(`${processorId}::${bl.materialId}`);
+      }
+    }
+    const matMap = new Map<string, number>();
+    for (const key of keySet) {
+      const qty = Math.max(
+        0,
+        Math.trunc(Number(split.outsourceStockByProcessorMaterial?.[key] ?? 0)),
+      );
+      if (qty <= 0) continue;
+      const materialId = key.split("::")[1] ?? "";
+      if (!materialId) continue;
+      matMap.set(materialId, (matMap.get(materialId) ?? 0) + qty);
+    }
+    return matMap;
+  }, [split, bomByProductForView, processorByProductId]);
+
+  const calcSuggestedQty = useCallback(
+    (materialId: string, bomNeedQty: number, orderedQty: number) => {
+      const need = Math.max(0, Math.trunc(Number(bomNeedQty) || 0));
+      const ordered = Math.max(0, Math.trunc(Number(orderedQty) || 0));
+      const stock = Math.max(
+        0,
+        Math.trunc(Number(materialStockById[materialId] ?? 0) || 0),
+      );
+      const outsource = Math.max(
+        0,
+        Math.trunc(Number(outsourceStockByMaterialId.get(materialId) ?? 0) || 0),
+      );
+      return Math.max(0, need - ordered - stock - outsource);
+    },
+    [materialStockById, outsourceStockByMaterialId],
   );
 
   const makeSplitGroupColumns = useCallback(
@@ -813,6 +944,17 @@ export function PurchaseFromSalesWizard({
           const q = materialStockById[r.materialId];
           if (typeof q !== "number" || !Number.isFinite(q)) return "—";
           return Math.trunc(q);
+        },
+      },
+      {
+        key: "outsourceStockQty",
+        title: "外发库存",
+        width: 108,
+        align: "right",
+        render: (_, r) => {
+          const q = outsourceStockByMaterialId.get(r.materialId);
+          if (typeof q !== "number" || !Number.isFinite(q)) return 0;
+          return Math.max(0, Math.trunc(q));
         },
       },
       {
@@ -881,7 +1023,7 @@ export function PurchaseFromSalesWizard({
       },
     ];
     },
-    [updateLine, materialStockById, groups],
+    [updateLine, materialStockById, outsourceStockByMaterialId, groups],
   );
 
   const getSplitGroupColumnsForTable = useCallback(
@@ -901,25 +1043,10 @@ export function PurchaseFromSalesWizard({
     [makeSplitGroupColumns, splitGroupColKeys, splitGroupColWidths],
   );
 
-  const bomByProductForView = useMemo(() => {
-    if (!split) return [];
-    return split.bomByProduct.map((bp) => {
-      const demandQty = Math.max(
-        0,
-        Math.trunc(Number(actualDemandByProductId[bp.productId] ?? bp.salesQty) || 0),
-      );
-      return {
-        ...bp,
-        demandQty,
-        bomLines: bp.bomLines.map((bl) => ({
-          ...bl,
-          needQty: demandQty <= 0 ? 0 : ceilQty(Number(bl.usageQty) * demandQty),
-        })),
-      };
-    });
-  }, [split, actualDemandByProductId]);
-
-  const orderedQtyByMaterial = split?.orderedQtyByMaterial ?? {};
+  const orderedQtyByMaterial = useMemo(
+    () => split?.orderedQtyByMaterial ?? {},
+    [split?.orderedQtyByMaterial],
+  );
 
   const materialFullyOrdered = useMemo(() => {
     const need = new Map<string, number>();
@@ -939,6 +1066,70 @@ export function PurchaseFromSalesWizard({
     }
     return set;
   }, [bomByProductForView, orderedQtyByMaterial]);
+
+  const missingProcessorProducts = useMemo(
+    () =>
+      bomByProductForView.filter(
+        (bp) =>
+          isOutsourceMode(bp.processingMode) &&
+          bp.demandQty > 0 &&
+          !processorByProductId[bp.productId],
+      ),
+    [bomByProductForView, processorByProductId],
+  );
+
+  const applyActualDemandToGroups = useCallback(
+    (demandMap: Record<string, number>) => {
+      if (
+        !split ||
+        split.splitMode === "redo_cancelled" ||
+        split.splitMode === "partial_redo"
+      ) {
+        return;
+      }
+      const needByMaterialId = materialNeedMapByActualDemand(split, demandMap);
+      setGroups((prev) =>
+        prev.map((g) => {
+          if (g.confirmed) return g;
+          return {
+            ...g,
+            lines: g.lines.map((l) => {
+              const bomNeed = needByMaterialId.get(l.materialId) ?? l.bomNeedQty;
+              const remaining = calcSuggestedQty(
+                l.materialId,
+                bomNeed,
+                l.orderedQty ?? 0,
+              );
+              return {
+                ...l,
+                bomNeedQty: bomNeed,
+                quantity: remaining,
+              };
+            }),
+          };
+        }),
+      );
+      persistDraftDemand(demandMap);
+    },
+    [split, materialNeedMapByActualDemand, persistDraftDemand, calcSuggestedQty],
+  );
+
+  useEffect(() => {
+    if (!split) return;
+    if (split.splitMode === "redo_cancelled") return;
+    setGroups((prev) =>
+      prev.map((g) => {
+        if (g.confirmed) return g;
+        return {
+          ...g,
+          lines: g.lines.map((l) => ({
+            ...l,
+            quantity: calcSuggestedQty(l.materialId, l.bomNeedQty, l.orderedQty ?? 0),
+          })),
+        };
+      }),
+    );
+  }, [split, calcSuggestedQty]);
 
   const bomRefAllColumns = useMemo((): ColumnsType<BomLine> => {
     const grayStyle = { color: ALREADY_ORDERED_GRAY };
@@ -999,6 +1190,14 @@ export function PurchaseFromSalesWizard({
 
   const openUnifiedPreview = useCallback(async (confirmedOnly = false) => {
     if (!split) return;
+    if (missingProcessorProducts.length > 0) {
+      message.warning(
+        `请先为以下商品选择加工方：${missingProcessorProducts
+          .map((bp) => bp.model?.trim() || bp.customerMaterialCode?.trim() || "未命名商品")
+          .join("、")}`,
+      );
+      return;
+    }
     const candidateGroups = confirmedOnly ? confirmedPositiveQtyGroups : positiveQtyGroups;
     if (candidateGroups.length === 0) {
       message.warning(
@@ -1010,7 +1209,7 @@ export function PurchaseFromSalesWizard({
     }
     if (!confirmedOnly) {
       const needConfirm = groups.filter((g) =>
-        g.lines.some((l) => shouldShowPurchaseLine(l)),
+        g.lines.some((l) => shouldShowPurchaseLine(l, g.confirmed)),
       );
       const unconfirmed = needConfirm.filter((g) => !g.confirmed);
       if (unconfirmed.length > 0) {
@@ -1046,7 +1245,15 @@ export function PurchaseFromSalesWizard({
     setPreviewConfirmedOnly(confirmedOnly);
     setPreviewSupplierId(candidateGroups[0]?.supplierId);
     setPreviewOpen(true);
-  }, [confirmedPositiveQtyGroups, groups, message, modal, positiveQtyGroups, split]);
+  }, [
+    confirmedPositiveQtyGroups,
+    groups,
+    message,
+    missingProcessorProducts,
+    modal,
+    positiveQtyGroups,
+    split,
+  ]);
 
   const submitNoPurchaseRequired = useCallback(() => {
     if (!split || !allQuantitiesAreZero) return;
@@ -1087,6 +1294,15 @@ export function PurchaseFromSalesWizard({
     }
     setSubmitting(true);
     try {
+      const skippedMaterialIds = [
+        ...new Set(
+          groups
+            .filter((g) => g.confirmed)
+            .flatMap((g) =>
+              g.lines.filter((l) => l.quantity === 0).map((l) => l.materialId),
+            ),
+        ),
+      ];
       await fetchJson("/api/purchase-orders/batch-from-sales", {
         method: "POST",
         credentials: "include",
@@ -1094,6 +1310,8 @@ export function PurchaseFromSalesWizard({
         body: JSON.stringify({
           salesOrderId: split.salesOrder.id,
           remark: "",
+          skippedMaterialIds:
+            skippedMaterialIds.length > 0 ? skippedMaterialIds : undefined,
           groups: toCreate.map((g) => ({
             supplierId: g.supplierId,
             lines: g.lines.map((l) => ({
@@ -1109,10 +1327,20 @@ export function PurchaseFromSalesWizard({
           })),
         }),
       });
+      const persistedSuppliers = Object.fromEntries(
+        groups.map((g) => [
+          g.supplierId,
+          {
+            confirmed: g.confirmed,
+            lines: groupToLineDrafts(g.lines),
+            extraFees: extraFeesBySupplierId[g.supplierId],
+          },
+        ]),
+      );
       savePurchaseWizardDraft({
         salesOrderId: split.salesOrder.id,
         actualDemandByProductId,
-        suppliers: {},
+        suppliers: persistedSuppliers,
         updatedAt: new Date().toISOString(),
       });
       message.success("采购订单已生成");
@@ -1299,8 +1527,13 @@ export function PurchaseFromSalesWizard({
                   options={WIZARD_GROUP_COL_OPTIONS}
                 />
               </div>
+              <Typography.Text type="secondary" style={{ display: "block", marginTop: 6 }}>
+                数量按「需求 - 物料库存 - 外发库存」自动计算（最小为 0）；外发库存仅统计所选加工方下的实际可用量。
+              </Typography.Text>
               {groups.map((g, gi) => {
-                const visibleLines = g.lines.filter(shouldShowPurchaseLine);
+                const visibleLines = g.lines.filter((l) =>
+                  shouldShowPurchaseLine(l, g.confirmed),
+                );
                 if (visibleLines.length === 0) return null;
                 return (
                 <div key={g.supplierId} style={{ marginBottom: 20 }}>
@@ -1339,7 +1572,7 @@ export function PurchaseFromSalesWizard({
                       <Button
                         size="small"
                         type="primary"
-                        disabled={g.confirmed}
+                        disabled={g.confirmed || missingProcessorProducts.length > 0}
                         onClick={() => confirmSupplierGroup(gi)}
                       >
                         确认
@@ -1418,6 +1651,37 @@ export function PurchaseFromSalesWizard({
                         <Typography.Text type="secondary">
                           现有商品库存数：<strong>{Math.trunc(Number(bp.productStockQty || 0))}</strong>
                         </Typography.Text>
+                        {isOutsourceMode(bp.processingMode) ? (
+                          <Space size={6} align="center">
+                            <Typography.Text type="secondary">加工方：</Typography.Text>
+                            <Select
+                              placeholder="必选"
+                              style={{ minWidth: 220 }}
+                              value={processorByProductId[bp.productId]}
+                              onChange={(v) => {
+                                const nextProcessorId = String(v);
+                                const next = {
+                                  ...processorByProductId,
+                                  [bp.productId]: nextProcessorId,
+                                };
+                                setProcessorByProductId(next);
+                                // 选加工方后立即刷新建议采购数量，避免等待下一次交互
+                                applyActualDemandToGroups(actualDemandByProductId);
+                              }}
+                              options={(split.processorOptions ?? []).map((s) => ({
+                                value: s.id,
+                                label: `${s.code} ${s.name}${s.shortName ? ` (${s.shortName})` : ""}`,
+                              }))}
+                              showSearch
+                              optionFilterProp="label"
+                              status={
+                                bp.demandQty > 0 && !processorByProductId[bp.productId]
+                                  ? "error"
+                                  : undefined
+                              }
+                            />
+                          </Space>
+                        ) : null}
                         {split.splitMode === "full_bom" ? (
                           <>
                             <Typography.Text type="secondary">
