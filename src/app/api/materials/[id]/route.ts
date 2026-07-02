@@ -118,6 +118,45 @@ export async function GET(
     const totalQty = qtyMap.get(m.id) ?? 0;
     const kd = kindDisplay(m);
 
+    const bomUsages = await prisma.productMaterial.findMany({
+      where: { materialId: id },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+      include: {
+        product: {
+          select: {
+            id: true,
+            customerMaterialCode: true,
+            model: true,
+            spec: true,
+            unit: true,
+            processingMode: true,
+            isDeprecated: true,
+            customer: { select: { id: true, code: true, name: true } },
+          },
+        },
+      },
+    });
+    const usedByProducts = bomUsages
+      .map((pm) => ({
+        productId: pm.product.id,
+        customerMaterialCode: pm.product.customerMaterialCode?.trim() || "",
+        model: pm.product.model?.trim() || "",
+        spec: pm.product.spec?.trim() || "",
+        unit: pm.product.unit?.trim() || "",
+        processingMode: pm.product.processingMode,
+        scope: pm.scope,
+        usageQty: pm.usageQty.toString(),
+        isDeprecated: pm.product.isDeprecated,
+        customer: pm.product.customer,
+      }))
+      .sort((a, b) => {
+        const cc = a.customer.code.localeCompare(b.customer.code, "zh-CN");
+        if (cc !== 0) return cc;
+        const ma = a.model || a.customerMaterialCode;
+        const mb = b.model || b.customerMaterialCode;
+        return ma.localeCompare(mb, "zh-CN");
+      });
+
     return NextResponse.json({
       id: m.id,
       code: m.code,
@@ -154,6 +193,7 @@ export async function GET(
         operatorName: i.operator?.name ?? null,
         operatorEmployeeNo: i.operator?.employeeNo ?? null,
       })),
+      usedByProducts,
     });
   } catch (e) {
     console.error("[GET /api/materials/[id]]", e);

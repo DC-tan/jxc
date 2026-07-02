@@ -37,6 +37,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import type { UploadProps } from "antd";
 import dayjs from "dayjs";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { Dispatch, SetStateAction, SyntheticEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -159,7 +160,39 @@ type DetailPayload = {
   createdAt: string;
   updatedAt: string;
   inbounds: InboundRow[];
+  usedByProducts: UsedByProductRow[];
 };
+
+type UsedByProductRow = {
+  productId: string;
+  customerMaterialCode: string;
+  model: string;
+  spec: string;
+  unit: string;
+  processingMode: "INHOUSE" | "OUTSOURCE" | "OUTSOURCE_INHOUSE";
+  scope: "DEFAULT" | "OUTSOURCE" | "INHOUSE";
+  usageQty: string;
+  isDeprecated: boolean;
+  customer: { id: string; code: string; name: string };
+};
+
+function productProcessingModeLabel(
+  mode: UsedByProductRow["processingMode"],
+): string {
+  if (mode === "OUTSOURCE") return "外发";
+  if (mode === "OUTSOURCE_INHOUSE") return "外发+自加工";
+  return "自加工";
+}
+
+function productBomScopeLabel(
+  scope: UsedByProductRow["scope"],
+  processingMode: UsedByProductRow["processingMode"],
+): string {
+  if (processingMode !== "OUTSOURCE_INHOUSE") return "—";
+  if (scope === "OUTSOURCE") return "外发";
+  if (scope === "INHOUSE") return "自加工";
+  return "—";
+}
 
 type CustomerSupplyMaterialOption = {
   id: string;
@@ -419,6 +452,7 @@ export function MaterialsPage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<DetailPayload | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [usedByProductsOpen, setUsedByProductsOpen] = useState(false);
 
   const [addOpen, setAddOpen] = useState(false);
 
@@ -1508,6 +1542,79 @@ export function MaterialsPage() {
 
   const showInventoryFilter =
     tab === "inventory" || tab === "stockAdjust" || tab === "deprecated";
+
+  const usedByProductUniqueCount = useMemo(() => {
+    if (!detail?.usedByProducts?.length) return 0;
+    return new Set(detail.usedByProducts.map((r) => r.productId)).size;
+  }, [detail?.usedByProducts]);
+
+  const usedByProductColumns: ColumnsType<UsedByProductRow> = useMemo(
+    () => [
+      {
+        title: "客户",
+        key: "customer",
+        width: 140,
+        ellipsis: true,
+        render: (_, r) => `${r.customer.code} ${r.customer.name}`.trim(),
+      },
+      {
+        title: "客户料号",
+        dataIndex: "customerMaterialCode",
+        width: 120,
+        ellipsis: true,
+        render: (t: string) => t?.trim() || "—",
+      },
+      {
+        title: "商品型号",
+        dataIndex: "model",
+        width: 140,
+        ellipsis: true,
+        render: (t: string, r) => {
+          const text = t?.trim() || "—";
+          if (!r.isDeprecated) return text;
+          return (
+            <Typography.Text type="secondary">{text}（已弃用）</Typography.Text>
+          );
+        },
+      },
+      {
+        title: "加工方式",
+        key: "mode",
+        width: 108,
+        render: (_, r) => productProcessingModeLabel(r.processingMode),
+      },
+      {
+        title: "BOM归属",
+        key: "scope",
+        width: 88,
+        render: (_, r) => productBomScopeLabel(r.scope, r.processingMode),
+      },
+      {
+        title: "用量",
+        dataIndex: "usageQty",
+        width: 80,
+        align: "right",
+      },
+      {
+        title: "单位",
+        dataIndex: "unit",
+        width: 56,
+      },
+      {
+        title: "操作",
+        key: "op",
+        width: 88,
+        render: (_, r) => (
+          <Link
+            href={`/dashboard/products?detailProductId=${encodeURIComponent(r.productId)}`}
+          >
+            查看商品
+          </Link>
+        ),
+      },
+    ],
+    [],
+  );
 
   const openStockAdjust = (r: InventoryRow) => {
     setStockAdjustTarget(r);
@@ -3005,7 +3112,10 @@ export function MaterialsPage() {
       <Modal
         title="物料详情"
         open={detailOpen}
-        onCancel={() => setDetailOpen(false)}
+        onCancel={() => {
+          setDetailOpen(false);
+          setUsedByProductsOpen(false);
+        }}
         footer={
           loadingDetail || !detail ? null : (
             <div
@@ -3094,6 +3204,23 @@ export function MaterialsPage() {
                   {detail.inspectionNotes ?? "—"}
                 </Typography.Paragraph>
               </Col>
+              <Col span={24}>
+                <Typography.Paragraph style={{ marginBottom: 0 }}>
+                  <strong>共用此物料商品数：</strong>
+                  {usedByProductUniqueCount === 0 ? (
+                    "0"
+                  ) : (
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, height: "auto", verticalAlign: "baseline" }}
+                      onClick={() => setUsedByProductsOpen(true)}
+                    >
+                      {usedByProductUniqueCount}
+                    </Button>
+                  )}
+                </Typography.Paragraph>
+              </Col>
             </Row>
             {detail.sampleImageUrls.length > 0 ? (
               <div>
@@ -3168,6 +3295,25 @@ export function MaterialsPage() {
         ) : (
           <Typography.Text type="secondary">无数据</Typography.Text>
         )}
+      </Modal>
+
+      <Modal
+        title="共用此物料的商品"
+        open={usedByProductsOpen}
+        onCancel={() => setUsedByProductsOpen(false)}
+        footer={<Button onClick={() => setUsedByProductsOpen(false)}>关闭</Button>}
+        width={760}
+        destroyOnHidden
+      >
+        <Table<UsedByProductRow>
+          size="small"
+          rowKey={(r) => `${r.productId}-${r.scope}`}
+          pagination={false}
+          locale={{ emptyText: "暂无商品 BOM 引用此物料" }}
+          dataSource={detail?.usedByProducts ?? []}
+          scroll={{ x: 880 }}
+          columns={usedByProductColumns}
+        />
       </Modal>
     </Card>
   );

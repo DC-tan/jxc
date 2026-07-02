@@ -1,4 +1,4 @@
-/** 分单对帐：按入库流水；整单对帐：按采购单号 + 物料 */
+/** 分单对帐 / 整单对帐：均按入库流水行；备注键为 split:{inboundId} */
 export function purchaseReconcileLineKeySplit(materialInboundId: string): string {
   return `split:${materialInboundId}`;
 }

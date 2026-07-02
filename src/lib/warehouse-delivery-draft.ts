@@ -7,7 +7,7 @@ export type WarehouseDeliveryLineDraft = {
   shipQty: number;
   /** 仅兼容旧草稿：曾在打印页改总数量时存在；新流程勿写 */
   lineTotal?: number;
-  /** 备品件数；总出库 = shipQty + spareQty（与备注「备品」行一致） */
+  /** 备品件数；只影响库存扣减与送货单备注，不计入订单已出货 */
   spareQty?: number;
   /** 用户「添加备注信息」的附加说明 */
   userRemark?: string;

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +11,6 @@ import {
   attachRemarksToPurchaseReconcileRows,
   loadPurchaseReconcileRemarks,
   purchaseReconcileLineKeySplit,
-  purchaseReconcileLineKeyWhole,
 } from "@/lib/purchase-reconcile-remark";
 
 const bodySchema = z.object({
@@ -95,10 +95,143 @@ function totalUniqueExtraFeeAmount(rows: PurchaseReconcileRow[]): number {
   return [...byOrderNo.values()].reduce((s, n) => s + n, 0);
 }
 
+const purchaseInboundWhere: Prisma.MaterialInboundWhereInput = {
+  quantity: { gt: 0 },
+  purchaseOrderNo: { not: null },
+  OR: [
+    { partDescription: null },
+    {
+      NOT: {
+        partDescription: { startsWith: PURCHASE_SPARE_PART_DESC_PREFIX },
+      },
+    },
+  ],
+};
+
+type PoWithLines = Awaited<
+  ReturnType<
+    typeof prisma.purchaseOrder.findMany<{
+      include: {
+        lines: {
+          include: {
+            material: {
+              select: {
+                name: true;
+                partDescription: true;
+                customerId: true;
+                isCustomerSupplied: true;
+                presetKind: { select: { namingMode: true } };
+              };
+            };
+          };
+        };
+        extraFees: { orderBy: { sortOrder: "asc" } };
+      };
+    }>
+  >
+>[number];
+
+async function buildRowsFromMaterialInbounds(
+  inbounds: {
+    id: string;
+    purchaseOrderNo: string | null;
+    materialId: string;
+    quantity: number;
+    receivedAt: Date;
+  }[],
+  options: {
+    supplierId?: string;
+    customerId?: string;
+    extraFeesFilter: "all" | "yes" | "no";
+    lineKeyOf: (inboundId: string) => string;
+  },
+): Promise<PurchaseReconcileRow[]> {
+  const orderNos = [
+    ...new Set(inbounds.map((i) => i.purchaseOrderNo).filter(Boolean) as string[]),
+  ];
+  if (orderNos.length === 0) return [];
+
+  const pos = await prisma.purchaseOrder.findMany({
+    where: {
+      orderNo: { in: orderNos },
+      status: { not: "CANCELLED" },
+      ...(options.supplierId ? { supplierId: options.supplierId } : {}),
+    },
+    include: {
+      lines: {
+        include: {
+          material: {
+            select: {
+              name: true,
+              partDescription: true,
+              customerId: true,
+              isCustomerSupplied: true,
+              presetKind: { select: { namingMode: true } },
+            },
+          },
+        },
+      },
+      extraFees: { orderBy: { sortOrder: "asc" } },
+    },
+  });
+  const byOrderNo = new Map<string, PoWithLines>(pos.map((p) => [p.orderNo, p]));
+  const lineMapByOrderNo = new Map<
+    string,
+    Awaited<ReturnType<typeof buildPurchaseReconcileLineMap>>
+  >();
+  for (const po of pos) {
+    lineMapByOrderNo.set(
+      po.orderNo,
+      await buildPurchaseReconcileLineMap(po.lines, po.orderNo),
+    );
+  }
+
+  const rows: PurchaseReconcileRow[] = [];
+  for (const m of inbounds) {
+    const on = m.purchaseOrderNo;
+    if (!on) continue;
+    const po = byOrderNo.get(on);
+    if (!po) continue;
+    const lineSrc = lineMapByOrderNo.get(on)?.get(m.materialId);
+    if (!lineSrc) continue;
+    if (options.customerId && lineSrc.material.customerId !== options.customerId) {
+      continue;
+    }
+    const u = lineSrc.unitPrice;
+    const amt = m.quantity * u;
+    const showsExtra = materialShowsExtraFees(lineSrc.material);
+    const feeSum = showsExtra ? poExtraFeeSum(po.extraFees) : 0;
+    const extraCol = showsExtra
+      ? formatPurchaseExtraFeesColumn(
+          po.extraFees.map((f) => ({
+            amount: Number(f.amount),
+            purpose: f.purpose,
+          })),
+        )
+      : "";
+    if (!passesExtraFeesFilter(extraCol, options.extraFeesFilter)) continue;
+    rows.push({
+      lineKey: options.lineKeyOf(m.id),
+      交货日期: m.receivedAt.toISOString(),
+      采购订单号: on,
+      订单数量: lineSrc.orderQty,
+      物料名称: lineSrc.material.name?.trim() || "—",
+      部件描述: lineSrc.material.partDescription?.trim() || "—",
+      交货数量: m.quantity,
+      单价: u,
+      金额: amt,
+      附加费用: extraCol,
+      extraFeeAmount: feeSum,
+      备注: "",
+    });
+  }
+  return rows;
+}
+
 /**
  * 采购对帐：以物料入库 `receivedAt` 为实收时间。
  * - split：区间内每笔收料各一行
- * - whole：仅整单已收料且 `actualDeliveredAt` 落在区间内的订单明细分行
+ * - whole：采购整单 `actualDeliveredAt` 落在区间内时，列出该单全部收料入库（含区间外批次）
  */
 export async function POST(req: Request) {
   const auth = await requirePermission("stats.view");
@@ -132,104 +265,19 @@ export async function POST(req: Request) {
       const inbounds = await prisma.materialInbound.findMany({
         where: {
           receivedAt: { gte: from, lte: to },
-          quantity: { gt: 0 },
-          purchaseOrderNo: { not: null },
-          OR: [
-            { partDescription: null },
-            {
-              NOT: {
-                partDescription: { startsWith: PURCHASE_SPARE_PART_DESC_PREFIX },
-              },
-            },
-          ],
+          ...purchaseInboundWhere,
         },
         orderBy: { receivedAt: "asc" },
         take: 10000,
       });
-
-      const orderNos = [
-        ...new Set(inbounds.map((i) => i.purchaseOrderNo).filter(Boolean) as string[]),
-      ];
-      if (orderNos.length === 0) {
-        return NextResponse.json({
-          rows: [],
-          totalAmount: 0,
-          range: { from: from.toISOString(), to: to.toISOString() },
-          mode,
-        });
-      }
-
-      const pos = await prisma.purchaseOrder.findMany({
-        where: {
-          orderNo: { in: orderNos },
-          status: { not: "CANCELLED" },
-          ...(supplierId ? { supplierId } : {}),
-        },
-        include: {
-          lines: {
-            include: {
-              material: {
-                select: {
-                  name: true,
-                  partDescription: true,
-                  customerId: true,
-                  isCustomerSupplied: true,
-                  presetKind: { select: { namingMode: true } },
-                },
-              },
-            },
-          },
-          extraFees: { orderBy: { sortOrder: "asc" } },
-        },
-      });
-      const byOrderNo = new Map(pos.map((p) => [p.orderNo, p]));
-      const lineMapByOrderNo = new Map<
-        string,
-        Awaited<ReturnType<typeof buildPurchaseReconcileLineMap>>
-      >();
-      for (const po of pos) {
-        lineMapByOrderNo.set(
-          po.orderNo,
-          await buildPurchaseReconcileLineMap(po.lines, po.orderNo),
-        );
-      }
-
-      for (const m of inbounds) {
-        const on = m.purchaseOrderNo;
-        if (!on) continue;
-        const po = byOrderNo.get(on);
-        if (!po) continue;
-        const lineSrc = lineMapByOrderNo.get(on)?.get(m.materialId);
-        if (!lineSrc) continue;
-        if (customerId && lineSrc.material.customerId !== customerId) continue;
-        const u = lineSrc.unitPrice;
-        const amt = m.quantity * u;
-        const showsExtra = materialShowsExtraFees(lineSrc.material);
-        const feeSum = showsExtra ? poExtraFeeSum(po.extraFees) : 0;
-        const extraCol = showsExtra
-          ? formatPurchaseExtraFeesColumn(
-              po.extraFees.map((f) => ({
-                amount: Number(f.amount),
-                purpose: f.purpose,
-              })),
-            )
-          : "";
-        if (!passesExtraFeesFilter(extraCol, extraFeesFilter)) continue;
-        rows.push({
-          lineKey: purchaseReconcileLineKeySplit(m.id),
-          交货日期: m.receivedAt.toISOString(),
-          采购订单号: on,
-          订单数量: lineSrc.orderQty,
-          物料名称: lineSrc.material.name?.trim() || "—",
-          部件描述: lineSrc.material.partDescription?.trim() || "—",
-          交货数量: m.quantity,
-          单价: u,
-          金额: amt,
-          附加费用: extraCol,
-          extraFeeAmount: feeSum,
-          备注: "",
-        });
-      }
+      rows.push(
+        ...(await buildRowsFromMaterialInbounds(inbounds, {
+          supplierId,
+          customerId,
+          extraFeesFilter,
+          lineKeyOf: purchaseReconcileLineKeySplit,
+        })),
+      );
     } else {
       const orders = await prisma.purchaseOrder.findMany({
         where: {
@@ -237,64 +285,34 @@ export async function POST(req: Request) {
           actualDeliveredAt: { gte: from, lte: to, not: null },
           ...(supplierId ? { supplierId } : {}),
         },
-        orderBy: { actualDeliveredAt: "asc" },
+        select: { orderNo: true },
         take: 2000,
-        include: {
-          lines: {
-            orderBy: { sortOrder: "asc" },
-            include: {
-              material: {
-                select: {
-                  name: true,
-                  partDescription: true,
-                  customerId: true,
-                  isCustomerSupplied: true,
-                  presetKind: { select: { namingMode: true } },
-                },
-              },
-            },
-          },
-          extraFees: { orderBy: { sortOrder: "asc" } },
-        },
       });
-
-      for (const po of orders) {
-        const delAt = po.actualDeliveredAt!.toISOString();
-        const poFeeSum = poExtraFeeSum(po.extraFees);
-        const poExtraFeesFormatted =
-          poFeeSum > 0
-            ? formatPurchaseExtraFeesColumn(
-                po.extraFees.map((f) => ({
-                  amount: Number(f.amount),
-                  purpose: f.purpose,
-                })),
-              )
-            : "";
-        const lineMap = await buildPurchaseReconcileLineMap(po.lines, po.orderNo);
-        for (const lineSrc of lineMap.values()) {
-          if (customerId && lineSrc.material.customerId !== customerId) continue;
-          const u = lineSrc.unitPrice;
-          const qty = lineSrc.orderQty;
-          const showsExtra = materialShowsExtraFees(lineSrc.material);
-          const extraCol = showsExtra ? poExtraFeesFormatted : "";
-          if (!passesExtraFeesFilter(extraCol, extraFeesFilter)) continue;
-          rows.push({
-            lineKey: purchaseReconcileLineKeyWhole(po.orderNo, lineSrc.materialId),
-            交货日期: delAt,
-            采购订单号: po.orderNo,
-            订单数量: qty,
-            物料名称: lineSrc.material.name?.trim() || "—",
-            部件描述: lineSrc.material.partDescription?.trim() || "—",
-            交货数量: qty,
-            单价: u,
-            金额: qty * u,
-            附加费用: extraCol,
-            extraFeeAmount: showsExtra ? poFeeSum : 0,
-            备注: "",
-          });
-        }
+      const orderNos = orders.map((o) => o.orderNo);
+      if (orderNos.length > 0) {
+        const inbounds = await prisma.materialInbound.findMany({
+          where: {
+            purchaseOrderNo: { in: orderNos },
+            ...purchaseInboundWhere,
+          },
+          orderBy: { receivedAt: "asc" },
+          take: 10000,
+        });
+        rows.push(
+          ...(await buildRowsFromMaterialInbounds(inbounds, {
+            supplierId,
+            customerId,
+            extraFeesFilter,
+            lineKeyOf: purchaseReconcileLineKeySplit,
+          })),
+        );
       }
     }
+
+    rows.sort(
+      (a, b) =>
+        new Date(a.交货日期).getTime() - new Date(b.交货日期).getTime(),
+    );
 
     const filtered = rows.filter((r) =>
       matchesPurchaseReconcileFilters(r, materialName, partDescription),

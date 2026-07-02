@@ -6,9 +6,9 @@ type LineForPreview = {
   quantityShipped: number;
   shipHistory?: {
     at: string;
-    /** 本批总出库（实出+备品） */
+    /** 本批正常出货数（送货单表身数量列），不含备品 */
     qty: number;
-    /** 本批备品；与 qty 同时存在时，实出(表身数量)= qty - spareQty */
+    /** 本批备品；只扣库存，不计入 qty */
     spareQty?: number;
     deliveryNoteNo?: string | null;
   }[];
@@ -83,20 +83,15 @@ export function buildShipmentQueryPreviewForBatchAt(
     let beforeMain = 0;
     for (const h of line.shipHistory ?? []) {
       if (h.at < batchAt) {
-        const spare = Math.max(0, Math.trunc(h.spareQty ?? 0));
-        const total = Math.max(0, Math.trunc(h.qty));
-        beforeMain += total - Math.min(spare, total);
+        beforeMain += Math.max(0, Math.trunc(h.qty));
       }
     }
     let thisMain = 0;
     let thisSpare = 0;
     for (const h of line.shipHistory ?? []) {
       if (h.at === batchAt) {
-        const spare = Math.max(0, Math.trunc(h.spareQty ?? 0));
-        const total = Math.max(0, Math.trunc(h.qty));
-        const s = Math.min(spare, total);
-        thisMain += total - s;
-        thisSpare += s;
+        thisMain += Math.max(0, Math.trunc(h.qty));
+        thisSpare += Math.max(0, Math.trunc(h.spareQty ?? 0));
       }
     }
     if (thisMain + thisSpare > 0) {

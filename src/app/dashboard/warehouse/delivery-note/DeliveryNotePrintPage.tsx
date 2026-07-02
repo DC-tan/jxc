@@ -752,7 +752,7 @@ export function DeliveryNotePrintPage() {
             lines: merged.lines
               .map((l) => ({
                 lineId: l.lineId,
-                shipQty: lineOutboundTotal(l),
+                shipQty: slipQuantityDisplay(l),
                 spareQty: Math.max(0, Math.trunc(l.spareQty ?? 0)),
               }))
               .filter((x) => x.shipQty > 0),
@@ -1114,7 +1114,8 @@ export function DeliveryNotePrintPage() {
         okText="确定"
       >
         <Typography.Paragraph type="secondary">
-          备品计入本行总出货，并写在备注中「备品 N」；填 <strong>0</strong> 表示本行不记备品。可与其它备注换行同列显示。
+          备品会额外扣减库存，并写在备注中「备品 N」；但不计入订单已出货、待出货与对帐数量。填{" "}
+          <strong>0</strong> 表示本行不记备品。可与其它备注换行同列显示。
         </Typography.Paragraph>
         <div style={{ marginTop: 8 }}>
           数量{" "}

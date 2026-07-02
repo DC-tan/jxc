@@ -57,6 +57,14 @@ function effectiveDeliveredAtMs(
   return Number.isNaN(t) ? 0 : t;
 }
 
+/** 待出货：要求交货日升序，未填交期排最后 */
+function pendingOrderBy(): Prisma.SalesOrderOrderByWithRelationInput[] {
+  return [
+    { deliveryDueAt: { sort: "asc", nulls: "last" } },
+    { createdAt: "asc" },
+  ];
+}
+
 /**
  * 仓库出货：待出货 / 已出货销售订单列表（与「销售订单」数据同源，权限走 warehouse.view）
  * `includePartialInquiry=1` 且 `tab=delivered`：含整单已交清 + 仅分批出货且整单未结单，按「实际交货 / 分批时间」区间筛选，按有效交货时间降序。
@@ -74,6 +82,7 @@ export async function GET(req: Request) {
   const createdTo = searchParams.get("createdTo")?.trim();
   const deliveredFrom = searchParams.get("deliveredFrom")?.trim();
   const deliveredTo = searchParams.get("deliveredTo")?.trim();
+  const customerId = searchParams.get("customerId")?.trim() || "";
   const includePartialInquiry =
     searchParams.get("includePartialInquiry") === "1" ||
     searchParams.get("includePartialInquiry") === "true";
@@ -148,15 +157,23 @@ export async function GET(req: Request) {
     });
   }
 
+  if (customerId) {
+    andParts.push({ customerId });
+  }
+
   const where: Prisma.SalesOrderWhereInput =
     andParts.length === 1 ? andParts[0]! : { AND: andParts };
 
   const sortByEffectiveDeliveredAt =
     tab === "delivered" && includePartialInquiry;
 
-  const orderBy: Prisma.SalesOrderOrderByWithRelationInput | undefined =
-    sortByEffectiveDeliveredAt
-      ? undefined
+  const orderBy:
+    | Prisma.SalesOrderOrderByWithRelationInput
+    | Prisma.SalesOrderOrderByWithRelationInput[]
+    | undefined = sortByEffectiveDeliveredAt
+    ? undefined
+    : tab === "pending"
+      ? pendingOrderBy()
       : tab === "delivered"
         ? { actualDeliveredAt: "desc" }
         : { createdAt: "desc" };

@@ -150,6 +150,7 @@ model Customer {
   changeReminders CustomerChangeReminder[]
   linkedCustomersAsSource CustomerRelation[] @relation("CustomerRelationSource")
   linkedCustomersAsTarget CustomerRelation[] @relation("CustomerRelationTarget")
+  deliveryNoteSerials DeliveryNoteSerial[]
 }
 
 /// 客户关联：用于共享客供料可见范围（双向按关系读取）
@@ -754,10 +755,14 @@ model ProductInbound {
   @@index([operatorUserId])
 }
 
-/// 送货单 NO 年流水（公历年从 1 自增，单号 001,002,…）
+/// 送货单 NO 年流水（按客户 + 公历年从 1 自增，单号 001,002,…）
 model DeliveryNoteSerial {
-  year    Int @id
-  lastSeq Int @default(0)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  year       Int
+  lastSeq    Int      @default(0)
+
+  @@id([customerId, year])
 }
 
 /// 收料/库存流水：采购收料、外发扣料（可为负数量）、或盘点手动调整

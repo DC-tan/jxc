@@ -3,6 +3,7 @@
 import { QuestionCircleOutlined } from "@ant-design/icons";
 import {
   App,
+  AutoComplete,
   Button,
   Card,
   DatePicker,
@@ -147,6 +148,7 @@ function buildQuery(
   tab: "pending" | "delivered",
   params: {
     keyword?: string;
+    customerId?: string;
     createdRange?: [dayjs.Dayjs, dayjs.Dayjs];
     deliveredRange?: [dayjs.Dayjs, dayjs.Dayjs];
     /** 含分批已出货但整单未结 */
@@ -156,6 +158,7 @@ function buildQuery(
   const sp = new URLSearchParams();
   sp.set("tab", tab);
   if (params.keyword?.trim()) sp.set("keyword", params.keyword.trim());
+  if (params.customerId?.trim()) sp.set("customerId", params.customerId.trim());
   if (tab === "pending" && params.createdRange?.[0] && params.createdRange[1]) {
     sp.set("createdFrom", params.createdRange[0].startOf("day").toISOString());
     sp.set("createdTo", params.createdRange[1].endOf("day").toISOString());
@@ -171,6 +174,62 @@ function buildQuery(
     sp.set("includePartialInquiry", "1");
   }
   return sp.toString();
+}
+
+type PendingCustomerOption = {
+  value: string;
+  label: string;
+  searchText: string;
+  code: string;
+  shortName: string;
+};
+
+function formatPendingCustomerLabel(c: {
+  code: string;
+  name: string;
+  shortName?: string | null;
+}): string {
+  const base = `${c.code} ${c.name}`.trim();
+  const sn = c.shortName?.trim();
+  return sn ? `${base}（${sn}）` : base;
+}
+
+function buildPendingCustomerSearchText(c: {
+  code: string;
+  name: string;
+  shortName?: string | null;
+}): string {
+  return `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase();
+}
+
+/** 编号或简称完全匹配 */
+function resolvePendingCustomerExact(
+  input: string,
+  options: PendingCustomerOption[],
+): PendingCustomerOption | null {
+  const q = input.trim().toLowerCase();
+  if (!q) return null;
+  return (
+    options.find(
+      (o) => o.code.toLowerCase() === q || o.shortName.toLowerCase() === q,
+    ) ?? null
+  );
+}
+
+/** 失焦时：完全匹配或唯一模糊匹配 */
+function resolvePendingCustomerByInput(
+  input: string,
+  options: PendingCustomerOption[],
+): PendingCustomerOption | null {
+  const q = input.trim().toLowerCase();
+  if (!q) return null;
+  const exact = resolvePendingCustomerExact(input, options);
+  if (exact) return exact;
+  const byLabel = options.filter((o) => o.label.toLowerCase() === q);
+  if (byLabel.length === 1) return byLabel[0]!;
+  const partial = options.filter((o) => o.searchText.includes(q));
+  if (partial.length === 1) return partial[0]!;
+  return null;
 }
 
 function HelpTip({ text }: { text: ReactNode }) {
@@ -197,6 +256,11 @@ export function WarehousePage() {
 
   const [pendingRows, setPendingRows] = useState<WarehouseSalesRow[]>([]);
   const [loadingPending, setLoadingPending] = useState(false);
+  const [pendingCustomerId, setPendingCustomerId] = useState<string | undefined>();
+  const [pendingCustomerInput, setPendingCustomerInput] = useState("");
+  const [pendingCustomerOptions, setPendingCustomerOptions] = useState<
+    PendingCustomerOption[]
+  >([]);
   const [pendingSelectMode, setPendingSelectMode] = useState(false);
   const [selectedPendingIds, setSelectedPendingIds] = useState<string[]>([]);
   const [closingPending, setClosingPending] = useState(false);
@@ -232,7 +296,7 @@ export function WarehousePage() {
   const loadPending = useCallback(async () => {
     setLoadingPending(true);
     try {
-      const qs = buildQuery("pending", {});
+      const qs = buildQuery("pending", { customerId: pendingCustomerId });
       const data = await fetchJson<{ list: WarehouseSalesRow[] }>(
         `/api/warehouse/sales-orders?${qs}`,
         { credentials: "include" },
@@ -246,7 +310,39 @@ export function WarehousePage() {
     } finally {
       setLoadingPending(false);
     }
-  }, [message]);
+  }, [message, pendingCustomerId]);
+
+  useEffect(() => {
+    if (tab !== "ship") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await fetchJson<{
+          list: {
+            id: string;
+            code: string;
+            name: string;
+            shortName?: string | null;
+          }[];
+        }>("/api/warehouse/customers", { credentials: "include" });
+        if (cancelled) return;
+        setPendingCustomerOptions(
+          (data.list ?? []).map((c) => ({
+            value: c.id,
+            label: formatPendingCustomerLabel(c),
+            searchText: buildPendingCustomerSearchText(c),
+            code: c.code,
+            shortName: c.shortName?.trim() ?? "",
+          })),
+        );
+      } catch {
+        if (!cancelled) setPendingCustomerOptions([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab]);
 
   const runDeliveredQuery = useCallback(async () => {
     setLoadingDelivered(true);
@@ -945,19 +1041,78 @@ export function WarehousePage() {
                               </Button>
                             ) : null}
                           </Space>
-                          <HelpTip
-                            text={
-                              <>
-                                以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
-                                <strong>本批实际出货</strong>
-                                （可超过待交/订单行数量）。自加工/外发+自加工须在弹窗填写
-                                <strong>本批自加工完工</strong>（默认=出货−商品库存）；若大于默认数，另经
-                                <strong>补产入库存</strong>后再进<strong>送货单打印</strong>
-                                。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>
-                                后登记库存；全部交清后写入<strong>实际交货时间</strong>。
-                              </>
-                            }
-                          />
+                          <Space wrap align="center">
+                            <AutoComplete
+                              allowClear
+                              style={{ minWidth: 260 }}
+                              placeholder="输入客户编号/全称/简称"
+                              value={pendingCustomerInput}
+                              options={pendingCustomerOptions.map((o) => ({
+                                value: o.value,
+                                label: o.label,
+                                searchText: o.searchText,
+                              }))}
+                              filterOption={(input, option) => {
+                                const q = (input ?? "").trim().toLowerCase();
+                                if (!q) return true;
+                                const text = String(
+                                  (option as { searchText?: string }).searchText ?? "",
+                                );
+                                return text.includes(q);
+                              }}
+                              onSelect={(value) => {
+                                const id = String(value);
+                                const opt = pendingCustomerOptions.find(
+                                  (o) => o.value === id,
+                                );
+                                setPendingCustomerId(id);
+                                setPendingCustomerInput(opt?.label ?? "");
+                              }}
+                              onChange={(text) => {
+                                const v = text ?? "";
+                                setPendingCustomerInput(v);
+                                if (!v.trim()) {
+                                  setPendingCustomerId(undefined);
+                                  return;
+                                }
+                                const hit = resolvePendingCustomerExact(
+                                  v,
+                                  pendingCustomerOptions,
+                                );
+                                if (hit) {
+                                  setPendingCustomerId(hit.value);
+                                  setPendingCustomerInput(hit.label);
+                                } else {
+                                  setPendingCustomerId(undefined);
+                                }
+                              }}
+                              onBlur={() => {
+                                const hit = resolvePendingCustomerByInput(
+                                  pendingCustomerInput,
+                                  pendingCustomerOptions,
+                                );
+                                if (hit) {
+                                  setPendingCustomerId(hit.value);
+                                  setPendingCustomerInput(hit.label);
+                                } else if (!pendingCustomerInput.trim()) {
+                                  setPendingCustomerId(undefined);
+                                }
+                              }}
+                            />
+                            <HelpTip
+                              text={
+                                <>
+                                  以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
+                                  <strong>本批实际出货</strong>
+                                  （可超过待交/订单行数量）。自加工/外发+自加工须在弹窗填写
+                                  <strong>本批自加工完工</strong>（默认=出货−商品库存）；若大于默认数，另经
+                                  <strong>补产入库存</strong>后再进<strong>送货单打印</strong>
+                                  。送货单上仅可添加备品/备注。点送货单<strong>完成</strong>
+                                  后登记库存；全部交清后写入<strong>实际交货时间</strong>。
+                                </>
+                              }
+                            />
+                          </Space>
                         </div>
                         <Table<WarehouseSalesRow>
                           rowKey="id"

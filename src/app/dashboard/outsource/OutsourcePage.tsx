@@ -1315,7 +1315,7 @@ export function OutsourcePage() {
         materialName: r.materialName,
         unit: r.unit,
         maxReturnQty: r.closedCarryQty,
-        returnQty: r.closedCarryQty,
+        returnQty: 0,
         scrapQty: 0,
       }));
     if (candidates.length === 0) {
@@ -2701,7 +2701,7 @@ export function OutsourcePage() {
             <HelpTip
               text={
                 <>
-                  默认按可退数量全退。修改退料数量时，剩余会自动填入报废数量；报废也可手工改。确认后：退料数量写入「物料信息
+                  退料数量、报废数量默认都为 0，需手动填写。确认后：退料数量写入「物料信息
                   → 物料库存」入库流水，报废数量仅冲减外发库存。
                 </>
               }
@@ -2751,7 +2751,6 @@ export function OutsourcePage() {
                           ? {
                               ...x,
                               returnQty: nextReturn,
-                              scrapQty: Math.max(0, x.maxReturnQty - nextReturn),
                             }
                           : x,
                       ),
@@ -2776,11 +2775,9 @@ export function OutsourcePage() {
                     setStockReturnLines((prev) =>
                       prev.map((x, i) => {
                         if (i !== idx) return x;
-                        const maxReturn = Math.max(0, x.maxReturnQty - nextScrap);
                         return {
                           ...x,
                           scrapQty: nextScrap,
-                          returnQty: Math.min(x.returnQty, maxReturn),
                         };
                       }),
                     );

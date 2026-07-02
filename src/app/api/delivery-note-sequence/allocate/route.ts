@@ -3,6 +3,10 @@ import { z } from "zod";
 import dayjs from "dayjs";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
+import {
+  allocateDeliveryNoteSerial,
+  resolveCustomerShortLabel,
+} from "@/lib/delivery-note-sequence";
 
 const bodySchema = z.object({
   orderId: z.string().min(1).optional(),
@@ -15,7 +19,7 @@ const bodySchema = z.object({
 
 /**
  * 分配送货单号：{客户简称}{YYYYMMDD}{三位年流水}
- * 无连字符；年流水按自然年重置，自 001 起每单 +1（如 APS20260424001）
+ * 无连字符；年流水按客户 + 自然年重置；有历史出货单从最大流水续编（如已有 005 则下一张 006）
  */
 export async function POST(req: Request) {
   const auth = await requirePermission("warehouse.edit");
@@ -48,49 +52,49 @@ export async function POST(req: Request) {
   const d = dayjs(at);
 
   try {
+    const customerIdInput = parsed.data.customerId?.trim();
     const customer =
-      parsed.data.customerId != null
+      customerIdInput != null
         ? await prisma.customer.findUnique({
-            where: { id: parsed.data.customerId.trim() },
-            select: { code: true, name: true, shortName: true },
+            where: { id: customerIdInput },
+            select: { id: true, code: true, name: true, shortName: true },
           })
         : null;
     const order =
       parsed.data.orderId != null
         ? await prisma.salesOrder.findUnique({
             where: { id: parsed.data.orderId.trim() },
-            include: {
-              customer: { select: { code: true, name: true, shortName: true } },
+            select: {
+              customerId: true,
+              customer: {
+                select: { id: true, code: true, name: true, shortName: true },
+              },
             },
           })
         : null;
 
     const c = order?.customer ?? customer;
-    if (!c) {
+    const customerId = order?.customerId ?? customer?.id;
+    if (!c || !customerId) {
       return NextResponse.json(
         { error: order ? "销售订单不存在" : "客户不存在" },
         { status: 404 },
       );
     }
 
-    const row = await prisma.deliveryNoteSerial.upsert({
-      where: { year },
-      create: { year, lastSeq: 1 },
-      update: { lastSeq: { increment: 1 } },
-    });
+    const seq = await allocateDeliveryNoteSerial(prisma, customerId, year);
 
-    const seqPadded = String(row.lastSeq).padStart(3, "0");
-    const rawLabel =
-      c.shortName?.trim() ||
-      c.name?.trim().replace(/\s+/g, "").slice(0, 4) ||
-      c.code?.trim() ||
-      "K";
-    /** 单号内不用连字符等分隔符，避免与流水、日期混淆 */
-    const shortLabel = rawLabel.replace(/[-\s_/\\]+/g, "") || "K";
+    const seqPadded = String(seq).padStart(3, "0");
+    const shortLabel = resolveCustomerShortLabel(c);
 
     const documentNo = `${shortLabel}${d.format("YYYYMMDD")}${seqPadded}`;
 
-    return NextResponse.json({ documentNo, year, seq: row.lastSeq });
+    return NextResponse.json({
+      documentNo,
+      year,
+      customerId,
+      seq,
+    });
   } catch (e) {
     console.error("[POST /api/delivery-note-sequence/allocate]", e);
     return NextResponse.json(

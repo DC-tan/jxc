@@ -21,9 +21,9 @@ import {
 
 const lineShipSchema = z.object({
   lineId: z.string().min(1),
-  /** 本行总出库 = 实出(送货单表身) + 备品；与打单页 lineOutboundTotal 一致 */
+  /** 本行正常出货数（送货单表身数量列），不含备品 */
   shipQty: z.union([z.number(), z.string()]),
-  /** 备品件数；与库存扣减、ship log 一并存档，供出货查询还原与当时送货单一致 */
+  /** 备品件数；参与库存扣减，但不计入订单已出货/对帐数量 */
   spareQty: z.union([z.number(), z.string()]).optional(),
 });
 
@@ -66,7 +66,8 @@ type InhouseBackfillItem = {
 };
 
 /**
- * 仓库分批出货：按行累加 quantityShipped；全部交清时写入 actualDeliveredAt
+ * 仓库分批出货：按行累加正常出货数量 quantityShipped；备品只扣库存不计交清。
+ * 全部交清时写入 actualDeliveredAt
  */
 export async function POST(
   req: Request,
@@ -164,16 +165,15 @@ export async function POST(
         return NextResponse.json({ error: "存在无效的明细行" }, { status: 400 });
       }
       const want = toNonNegInt(row.shipQty);
-      if (want === 0) continue;
-      const spareW = toNonNegInt(row.spareQty);
-      const spare = Math.min(spareW, want);
+      const spare = toNonNegInt(row.spareQty);
+      if (want === 0 && spare === 0) continue;
       increments.push({ lineId: row.lineId, add: want, spare });
     }
 
-    const totalAdd = increments.reduce((s, x) => s + x.add, 0);
-    if (totalAdd <= 0) {
+    const totalOutbound = increments.reduce((s, x) => s + x.add + x.spare, 0);
+    if (totalOutbound <= 0) {
       return NextResponse.json(
-        { error: "请填写大于 0 的本次发货数量" },
+        { error: "请填写大于 0 的本次发货或备品数量" },
         { status: 400 },
       );
     }
@@ -204,7 +204,7 @@ export async function POST(
         const label = productModel === "—" ? "商品" : productModel;
 
         if (prod.processingMode === "OUTSOURCE_INHOUSE") {
-          const shipQty = inc.add;
+          const shipQty = inc.add + inc.spare;
           const agg = await tx.productInbound.aggregate({
             where: { productId: pid },
             _sum: { quantity: true },
@@ -341,7 +341,7 @@ export async function POST(
         }
 
         if (prod.processingMode === "INHOUSE") {
-          const shipQty = inc.add;
+          const shipQty = inc.add + inc.spare;
           const agg = await tx.productInbound.aggregate({
             where: { productId: pid },
             _sum: { quantity: true },
@@ -460,14 +460,15 @@ export async function POST(
           _sum: { quantity: true },
         });
         const have = Number(agg._sum.quantity ?? 0);
-        const short = Math.max(0, inc.add - have);
+        const outboundQty = inc.add + inc.spare;
+        const short = Math.max(0, outboundQty - have);
         if (short > 0) {
           throw new Error(
             JSON.stringify({
               kind: "INVENTORY_SHORT" as const,
               productModel,
               have,
-              need: inc.add,
+              need: outboundQty,
               processingMode: prod.processingMode,
             }),
           );
@@ -484,7 +485,7 @@ export async function POST(
           _sum: { quantity: true },
         });
         const haveNow = Number(aggCheck._sum.quantity ?? 0);
-        if (haveNow < inc.add) {
+        if (haveNow < inc.add + inc.spare) {
           throw new Error("出货前商品库存校验失败，请重试或联系管理员");
         }
       }
@@ -515,7 +516,7 @@ export async function POST(
         await tx.productInbound.create({
           data: {
             productId: pid,
-            quantity: -inc.add,
+            quantity: -(inc.add + inc.spare),
             receivedAt: at,
             purchaseOrderNo: order.customerOrderNo?.trim() || null,
             partDescription: shipPartDescription,

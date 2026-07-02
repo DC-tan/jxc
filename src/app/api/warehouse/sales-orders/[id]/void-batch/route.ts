@@ -64,7 +64,12 @@ export async function POST(
       const productBackfill = new Map<string, number>();
       for (const ln of order.lines) {
         const batchQty = ln.shipLogs.reduce((s, x) => s + x.quantity, 0);
-        if (batchQty <= 0) continue;
+        const batchSpareQty = ln.shipLogs.reduce(
+          (s, x) => s + Math.max(0, Math.trunc(Number(x.spareQty ?? 0))),
+          0,
+        );
+        const batchOutboundQty = batchQty + batchSpareQty;
+        if (batchOutboundQty <= 0) continue;
         const nextShipped = Math.max(0, ln.quantityShipped - batchQty);
         await tx.salesOrderLine.update({
           where: { id: ln.id },
@@ -85,9 +90,9 @@ export async function POST(
         });
         productBackfill.set(
           ln.productId,
-          (productBackfill.get(ln.productId) ?? 0) + batchQty,
+          (productBackfill.get(ln.productId) ?? 0) + batchOutboundQty,
         );
-        revertedQty += batchQty;
+        revertedQty += batchOutboundQty;
       }
 
       if (revertedQty <= 0) {
