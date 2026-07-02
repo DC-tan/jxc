@@ -1,5 +1,9 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { shipmentProductModelLabel } from "@/lib/inhouse-bom-display";
+import {
+  isNoOrderShipOutInbound,
+  parseNoOrderDeliveryNoteNo,
+} from "@/lib/warehouse-no-order-ship-out-query";
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -330,16 +334,81 @@ export async function attachNoOrderShipOutDeliveryNote(
   return updated;
 }
 
-function isNoOrderShipOutInbound(row: {
-  quantity: number;
-  partDescription?: string | null;
-  remark?: string | null;
-}): boolean {
-  if (row.quantity >= 0) return false;
-  const part = row.partDescription?.trim() ?? "";
-  const remark = row.remark?.trim() ?? "";
-  if (part === WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK || part === "无单出库") {
-    return true;
+/** 按送货单号作废无单出货批次：回退库存并删除原出库流水 */
+export async function voidNoOrderShipOutByDeliveryNote(
+  db: PrismaClient,
+  deliveryNoteNo: string,
+  operatorUserId: string,
+): Promise<{ revertedQty: number }> {
+  const doc = deliveryNoteNo?.trim();
+  if (!doc) {
+    throw new WarehouseProductShipOutError("送货单号无效");
   }
-  return remark.includes(WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK) || remark.includes("无单出库");
+
+  const voucher = await db.deliveryNoteVoucher.findUnique({
+    where: { documentNo: doc },
+    select: { voidedAt: true },
+  });
+  if (voucher?.voidedAt) {
+    throw new WarehouseProductShipOutError("该送货单已作废", 409);
+  }
+
+  const candidates = await db.productInbound.findMany({
+    where: {
+      quantity: { lt: 0 },
+      remark: { contains: doc },
+    },
+    select: {
+      id: true,
+      quantity: true,
+      receivedAt: true,
+      purchaseOrderNo: true,
+      partDescription: true,
+      remark: true,
+      productId: true,
+    },
+    take: 500,
+  });
+
+  const rows = candidates.filter(
+    (r) =>
+      isNoOrderShipOutInbound(r) &&
+      parseNoOrderDeliveryNoteNo(r.remark)?.trim() === doc,
+  );
+  if (rows.length === 0) {
+    throw new WarehouseProductShipOutError("未找到可作废的无单出货记录", 404);
+  }
+
+  let revertedQty = 0;
+  const now = new Date();
+  await db.$transaction(async (tx) => {
+    for (const row of rows) {
+      const qty = Math.abs(Number(row.quantity) || 0);
+      if (qty <= 0) continue;
+      await tx.productInbound.create({
+        data: {
+          productId: row.productId,
+          quantity: qty,
+          receivedAt: now,
+          purchaseOrderNo: row.purchaseOrderNo?.trim() || null,
+          partDescription: "无单出货作废回退",
+          remark: `作废无单出货 · ${doc}`,
+          operatorUserId,
+        },
+      });
+      await tx.productInbound.delete({ where: { id: row.id } });
+      revertedQty += qty;
+    }
+
+    if (revertedQty <= 0) {
+      throw new WarehouseProductShipOutError("未找到可作废的无单出货记录", 400);
+    }
+
+    await tx.deliveryNoteVoucher.updateMany({
+      where: { documentNo: doc, voidedAt: null },
+      data: { voidedAt: now },
+    });
+  });
+
+  return { revertedQty };
 }

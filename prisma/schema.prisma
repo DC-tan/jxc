@@ -151,6 +151,7 @@ model Customer {
   linkedCustomersAsSource CustomerRelation[] @relation("CustomerRelationSource")
   linkedCustomersAsTarget CustomerRelation[] @relation("CustomerRelationTarget")
   deliveryNoteSerials DeliveryNoteSerial[]
+  deliveryNoteVouchers DeliveryNoteVoucher[]
 }
 
 /// 客户关联：用于共享客供料可见范围（双向按关系读取）
@@ -763,6 +764,23 @@ model DeliveryNoteSerial {
   lastSeq    Int      @default(0)
 
   @@id([customerId, year])
+}
+
+/// 送货单确认后存档（只读凭证；预览与打印一致，仅可作废不可改内容）
+model DeliveryNoteVoucher {
+  id           String    @id @default(cuid())
+  documentNo   String    @unique @db.VarChar(64)
+  customerId   String
+  customer     Customer  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  deliveredAt  DateTime
+  mergedShip   Boolean   @default(false)
+  /// 确认时送货单表身快照（客户、日期、行、备注等）
+  snapshot     Json
+  voidedAt     DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([customerId])
+  @@index([deliveredAt])
 }
 
 /// 收料/库存流水：采购收料、外发扣料（可为负数量）、或盘点手动调整

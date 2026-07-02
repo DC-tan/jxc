@@ -100,6 +100,22 @@ export async function POST(
       }
 
       const now = new Date();
+      if (deliveryNoteNo) {
+        await (
+          tx as unknown as {
+            deliveryNoteVoucher: {
+              updateMany: (args: {
+                where: object;
+                data: object;
+              }) => Promise<unknown>;
+            };
+          }
+        ).deliveryNoteVoucher.updateMany({
+          where: { documentNo: deliveryNoteNo, voidedAt: null },
+          data: { voidedAt: now },
+        });
+      }
+
       for (const [productId, qty] of productBackfill.entries()) {
         await tx.productInbound.create({
           data: {

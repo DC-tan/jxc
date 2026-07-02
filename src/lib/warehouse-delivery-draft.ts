@@ -23,6 +23,12 @@ export type WarehouseNoOrderLineMeta = {
 
 export type WarehouseDeliveryDraft = {
   orderId: string;
+  /** 同一客户多张销售订单合并出货 */
+  mergedShip?: boolean;
+  /** 合并出货涉及的全部销售订单 ID */
+  orderIds?: string[];
+  /** 明细行 → 所属销售订单（行 id 全局唯一） */
+  lineOrderIdByLineId?: Record<string, string>;
   actualDeliveredAt: string;
   lines: WarehouseDeliveryLineDraft[];
   /**
@@ -46,6 +52,39 @@ export type WarehouseDeliveryDraft = {
   /** 无单出货备注；空则落库时默认「无单出货」 */
   noOrderShipOutRemark?: string;
 };
+
+export function isMergedDeliveryDraft(draft: WarehouseDeliveryDraft): boolean {
+  return Boolean(
+    draft.mergedShip && draft.orderIds && draft.orderIds.length > 1,
+  );
+}
+
+export function deliveryDraftOrderIds(draft: WarehouseDeliveryDraft): string[] {
+  if (draft.orderIds?.length) return draft.orderIds;
+  return draft.orderId ? [draft.orderId] : [];
+}
+
+export function draftLinesForOrder(
+  draft: WarehouseDeliveryDraft,
+  orderId: string,
+): WarehouseDeliveryLineDraft[] {
+  const map = draft.lineOrderIdByLineId ?? {};
+  return draft.lines.filter(
+    (l) => (map[l.lineId] ?? draft.orderId) === orderId && l.shipQty > 0,
+  );
+}
+
+export function buildLineOrderIdMap(
+  orders: { id: string; lines: { id: string }[] }[],
+): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const o of orders) {
+    for (const ln of o.lines) {
+      map[ln.id] = o.id;
+    }
+  }
+  return map;
+}
 
 export function buildNoOrderDeliveryDraft(input: {
   customerId: string;

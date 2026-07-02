@@ -15,7 +15,9 @@ import {
 import {
   WAREHOUSE_DELIVERY_DRAFT_KEY,
   type WarehouseDeliveryDraft,
+  isMergedDeliveryDraft,
 } from "@/lib/warehouse-delivery-draft";
+import { runMergedDeliverPreview } from "@/lib/warehouse-merged-deliver";
 
 type BomRow = {
   materialId: string;
@@ -47,7 +49,8 @@ function readDraft(): WarehouseDeliveryDraft | null {
     const raw = sessionStorage.getItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
     if (!raw) return null;
     const j = JSON.parse(raw) as WarehouseDeliveryDraft;
-    if (!j?.orderId || !Array.isArray(j.lines)) return null;
+    if (!Array.isArray(j.lines)) return null;
+    if (!j.orderId && !(j.orderIds?.length ?? 0)) return null;
     return j;
   } catch {
     return null;
@@ -65,19 +68,30 @@ export function DeliveryInhousePage() {
   const load = useCallback(async (d: WarehouseDeliveryDraft) => {
     setLoading(true);
     try {
-      const res = await fetchJson<PreviewOk>(
-        `/api/warehouse/sales-orders/${d.orderId}/deliver-preview`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lines: d.lines.filter((x) => x.shipQty > 0),
-            inhouseProduceByLineId: d.inhouseProduceByLineId,
-            hybridInhouseProduceByLineId: d.hybridInhouseProduceByLineId,
-          }),
-        },
-      );
+      const fetchPreview = (orderId: string, body: object) =>
+        fetchJson<PreviewOk>(
+          `/api/warehouse/sales-orders/${orderId}/deliver-preview`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          },
+        );
+      let res: PreviewOk;
+      if (isMergedDeliveryDraft(d)) {
+        const merged = await runMergedDeliverPreview(d, fetchPreview);
+        res = {
+          needsInhouseStep: merged.needsInhouseStep,
+          lines: merged.lines as PreviewLine[],
+        };
+      } else {
+        res = await fetchPreview(d.orderId, {
+          lines: d.lines.filter((x) => x.shipQty > 0),
+          inhouseProduceByLineId: d.inhouseProduceByLineId,
+          hybridInhouseProduceByLineId: d.hybridInhouseProduceByLineId,
+        });
+      }
       setPreview(res);
       const shipByLine = Object.fromEntries(
         d.lines.map((row) => [row.lineId, row.shipQty]),

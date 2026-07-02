@@ -46,6 +46,24 @@ function latestBatchIso(p: {
   return new Date(Math.max(...times)).toISOString();
 }
 
+function latestDeliveryNoteNo(p: {
+  lines: { shipLogs: { batchDeliveredAt: Date; deliveryNoteNo: string | null }[] }[];
+}): string | null {
+  let latestAt = 0;
+  let note: string | null = null;
+  for (const l of p.lines) {
+    for (const s of l.shipLogs) {
+      const t = s.batchDeliveredAt.getTime();
+      const doc = s.deliveryNoteNo?.trim();
+      if (doc && t >= latestAt) {
+        latestAt = t;
+        note = doc;
+      }
+    }
+  }
+  return note;
+}
+
 /** 整单已交清用 actualDeliveredAt，未结单分批用最近一批时间 */
 function effectiveDeliveredAtMs(
   actualDeliveredAtIso: string | null,
@@ -190,7 +208,12 @@ export async function GET(req: Request) {
           ? {
               lines: {
                 select: {
-                  shipLogs: { select: { batchDeliveredAt: true } },
+                  shipLogs: {
+                    select: {
+                      batchDeliveredAt: true,
+                      deliveryNoteNo: true,
+                    },
+                  },
                 },
               },
             }
@@ -206,6 +229,13 @@ export async function GET(req: Request) {
         includePartialInquiry && tab === "delivered" && pWithLines.lines
           ? latestBatchIso(pWithLines)
           : null;
+      const linesWithLogs = pWithLines.lines as unknown as
+        | { shipLogs: { batchDeliveredAt: Date; deliveryNoteNo: string | null }[] }[]
+        | undefined;
+      const deliveryNoteNo =
+        includePartialInquiry && tab === "delivered" && linesWithLogs
+          ? latestDeliveryNoteNo({ lines: linesWithLogs })
+          : null;
       return {
         id: p.id,
         customerOrderNo: p.customerOrderNo,
@@ -213,6 +243,7 @@ export async function GET(req: Request) {
         deliveryDueAt: p.deliveryDueAt?.toISOString() ?? null,
         actualDeliveredAt: p.actualDeliveredAt?.toISOString() ?? null,
         latestBatchDeliveredAt,
+        deliveryNoteNo,
         totalAmount: p.totalAmount.toString(),
         remark: p.remark,
         customer: p.customer,

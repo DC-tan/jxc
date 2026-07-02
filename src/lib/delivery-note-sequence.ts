@@ -68,6 +68,40 @@ export async function getMaxDeliveryNoteSeqForCustomerYear(
   return max;
 }
 
+/** 预览下一流水（不写库）；与 {@link allocateDeliveryNoteSerial} 即将分配的值一致 */
+export async function previewNextDeliveryNoteSerial(
+  db: DbClient,
+  customerId: string,
+  year: number,
+): Promise<number> {
+  const seedMax = await getMaxDeliveryNoteSeqForCustomerYear(
+    db,
+    customerId,
+    year,
+  );
+  const existing = await db.deliveryNoteSerial.findUnique({
+    where: { customerId_year: { customerId, year } },
+  });
+  if (!existing) {
+    return seedMax + 1;
+  }
+  return Math.max(existing.lastSeq, seedMax) + 1;
+}
+
+export function formatDeliveryDocumentNo(
+  customer: { shortName?: string | null; name?: string | null; code?: string | null },
+  at: Date,
+  seq: number,
+): string {
+  const seqPadded = String(seq).padStart(3, "0");
+  const shortLabel = resolveCustomerShortLabel(customer);
+  const d = at;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${shortLabel}${yyyy}${mm}${dd}${seqPadded}`;
+}
+
 /**
  * 分配下一流水号（按客户 + 自然年）。
  * 若库内已有出货单号，从其最大流水继续递增；新年份从 001 起。

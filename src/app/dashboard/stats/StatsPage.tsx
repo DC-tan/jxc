@@ -23,14 +23,19 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useSearchParams } from "next/navigation";
+import type { ResizeCallbackData } from "react-resizable";
 import {
   useCallback,
   useEffect,
   useMemo,
   useState,
+  type Dispatch,
   type Key,
   type ReactNode,
+  type SetStateAction,
+  type SyntheticEvent,
 } from "react";
+import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
 import { exclusiveStatLabel, moneyColumnLabels } from "@/lib/price-tax";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
@@ -1093,6 +1098,59 @@ function warehouseReconcileRowKey(r: WarehouseReconcileRow): string {
   ].join("|");
 }
 
+const DEFAULT_PURCHASE_RECONCILE_COL_WIDTH: Record<string, number> = {
+  交货日期: 120,
+  采购订单号: 150,
+  订单数量: 100,
+  物料名称: 160,
+  部件描述: 160,
+  交货数量: 100,
+  单价: 120,
+  金额: 130,
+  附加费用: 200,
+  备注: 160,
+};
+
+const DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH: Record<string, number> = {
+  送货日期: 120,
+  送货单号: 120,
+  项目型号: 120,
+  订单数量: 100,
+  订单编号: 130,
+  商品型号: 120,
+  物料料号: 120,
+  单位: 72,
+  送货数量: 100,
+  单价: 120,
+  金额: 130,
+  备品数量: 90,
+};
+
+function attachResizeReconcileColumns<T extends object>(
+  columns: ColumnsType<T>,
+  widths: Record<string, number>,
+  setWidths: Dispatch<SetStateAction<Record<string, number>>>,
+  defaults: Record<string, number>,
+): ColumnsType<T> {
+  return columns.map((col) => {
+    const key = col.key != null ? String(col.key) : "";
+    if (!key) {
+      return { ...col, width: (col.width as number) ?? 120 };
+    }
+    const w = widths[key] ?? defaults[key] ?? 120;
+    return {
+      ...col,
+      width: w,
+      onHeaderCell: () => ({
+        width: w,
+        onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+          setWidths((prev) => ({ ...prev, [key]: data.size.width }));
+        },
+      }),
+    };
+  });
+}
+
 function ReconcileTabContent({
   kind,
   active,
@@ -1128,6 +1186,12 @@ function ReconcileTabContent({
   const [remarkModalOpen, setRemarkModalOpen] = useState(false);
   const [remarkSaving, setRemarkSaving] = useState(false);
   const [remarkDraft, setRemarkDraft] = useState("");
+  const [purchaseColWidths, setPurchaseColWidths] = useState(
+    DEFAULT_PURCHASE_RECONCILE_COL_WIDTH,
+  );
+  const [warehouseColWidths, setWarehouseColWidths] = useState(
+    DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH,
+  );
 
   const patchPurchaseRemarks = useCallback((lineKeys: string[], remark: string) => {
     const set = new Set(lineKeys);
@@ -1379,110 +1443,186 @@ function ReconcileTabContent({
     );
   }, [message, totalAmount, warehouseMoneyLabels, warehouseRows]);
 
-  const purchaseColumns: ColumnsType<PurchaseReconcileRow> = useMemo(
-    () => [
-    {
-      title: "交货日期",
-      dataIndex: "交货日期",
-      width: 120,
-      render: (v: string) => formatReconcileDate(v),
-    },
-    { title: "采购订单号", dataIndex: "采购订单号", width: 150, ellipsis: true },
-    {
-      title: "订单数量",
-      dataIndex: "订单数量",
-      width: 100,
-      align: "right",
-    },
-    { title: "物料名称", dataIndex: "物料名称", ellipsis: true },
-    { title: "部件描述", dataIndex: "部件描述", width: 160, ellipsis: true },
-    {
-      title: "交货数量",
-      dataIndex: "交货数量",
-      width: 100,
-      align: "right",
-    },
-    {
-      title: purchaseMoneyLabels.unitPrice,
-      dataIndex: "单价",
-      width: 120,
-      align: "right",
-      render: (v: number) => money(v),
-    },
-    {
-      title: purchaseMoneyLabels.amount,
-      dataIndex: "金额",
-      width: 130,
-      align: "right",
-      render: (v: number) => money(v),
-    },
-    {
-      title: "附加费用",
-      dataIndex: "附加费用",
-      width: 200,
-      ellipsis: true,
-      render: (v: string) => v || "—",
-    },
-    {
-      title: "备注",
-      dataIndex: "备注",
-      width: 160,
-      ellipsis: true,
-      render: (v: string) => v?.trim() || "—",
-    },
-  ],
-    [purchaseMoneyLabels],
-  );
+  const purchaseColumns: ColumnsType<PurchaseReconcileRow> = useMemo(() => {
+    const base: ColumnsType<PurchaseReconcileRow> = [
+      {
+        title: "交货日期",
+        key: "交货日期",
+        dataIndex: "交货日期",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.交货日期,
+        render: (v: string) => formatReconcileDate(v),
+      },
+      {
+        title: "采购订单号",
+        key: "采购订单号",
+        dataIndex: "采购订单号",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.采购订单号,
+        ellipsis: true,
+      },
+      {
+        title: "订单数量",
+        key: "订单数量",
+        dataIndex: "订单数量",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.订单数量,
+        align: "right",
+      },
+      {
+        title: "物料名称",
+        key: "物料名称",
+        dataIndex: "物料名称",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.物料名称,
+        ellipsis: true,
+      },
+      {
+        title: "部件描述",
+        key: "部件描述",
+        dataIndex: "部件描述",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.部件描述,
+        ellipsis: true,
+      },
+      {
+        title: "交货数量",
+        key: "交货数量",
+        dataIndex: "交货数量",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.交货数量,
+        align: "right",
+      },
+      {
+        title: purchaseMoneyLabels.unitPrice,
+        key: "单价",
+        dataIndex: "单价",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.单价,
+        align: "right",
+        render: (v: number) => money(v),
+      },
+      {
+        title: purchaseMoneyLabels.amount,
+        key: "金额",
+        dataIndex: "金额",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.金额,
+        align: "right",
+        render: (v: number) => money(v),
+      },
+      {
+        title: "附加费用",
+        key: "附加费用",
+        dataIndex: "附加费用",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.附加费用,
+        ellipsis: true,
+        render: (v: string) => v || "—",
+      },
+      {
+        title: "备注",
+        key: "备注",
+        dataIndex: "备注",
+        width: DEFAULT_PURCHASE_RECONCILE_COL_WIDTH.备注,
+        ellipsis: true,
+        render: (v: string) => v?.trim() || "—",
+      },
+    ];
+    return attachResizeReconcileColumns(
+      base,
+      purchaseColWidths,
+      setPurchaseColWidths,
+      DEFAULT_PURCHASE_RECONCILE_COL_WIDTH,
+    );
+  }, [purchaseColWidths, purchaseMoneyLabels]);
 
-  const warehouseColumns: ColumnsType<WarehouseReconcileRow> = useMemo(
-    () => [
-    {
-      title: "送货日期",
-      dataIndex: "送货日期",
-      width: 120,
-      render: (v: string) => formatReconcileDate(v),
-    },
-    { title: "送货单号", dataIndex: "送货单号", width: 120, ellipsis: true },
-    { title: "项目型号", dataIndex: "项目型号", width: 120, ellipsis: true },
-    {
-      title: "订单数量",
-      dataIndex: "订单数量",
-      width: 100,
-      align: "right",
-    },
-    { title: "订单编号", dataIndex: "订单编号", width: 130, ellipsis: true },
-    { title: "商品型号", dataIndex: "商品型号", width: 120, ellipsis: true },
-    { title: "物料料号", dataIndex: "物料料号", width: 120, ellipsis: true },
-    { title: "单位", dataIndex: "单位", width: 72 },
-    {
-      title: "送货数量",
-      dataIndex: "送货数量",
-      width: 100,
-      align: "right",
-    },
-    {
-      title: warehouseMoneyLabels.unitPrice,
-      dataIndex: "单价",
-      width: 120,
-      align: "right",
-      render: (v: number) => money(v),
-    },
-    {
-      title: warehouseMoneyLabels.amount,
-      dataIndex: "金额",
-      width: 130,
-      align: "right",
-      render: (v: number) => money(v),
-    },
-    {
-      title: "备品数量",
-      dataIndex: "备品数量",
-      width: 90,
-      align: "right",
-    },
-  ],
-    [warehouseMoneyLabels],
-  );
+  const warehouseColumns: ColumnsType<WarehouseReconcileRow> = useMemo(() => {
+    const base: ColumnsType<WarehouseReconcileRow> = [
+      {
+        title: "送货日期",
+        key: "送货日期",
+        dataIndex: "送货日期",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.送货日期,
+        render: (v: string) => formatReconcileDate(v),
+      },
+      {
+        title: "送货单号",
+        key: "送货单号",
+        dataIndex: "送货单号",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.送货单号,
+        ellipsis: true,
+      },
+      {
+        title: "项目型号",
+        key: "项目型号",
+        dataIndex: "项目型号",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.项目型号,
+        ellipsis: true,
+      },
+      {
+        title: "订单数量",
+        key: "订单数量",
+        dataIndex: "订单数量",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.订单数量,
+        align: "right",
+      },
+      {
+        title: "订单编号",
+        key: "订单编号",
+        dataIndex: "订单编号",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.订单编号,
+        ellipsis: true,
+      },
+      {
+        title: "商品型号",
+        key: "商品型号",
+        dataIndex: "商品型号",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.商品型号,
+        ellipsis: true,
+      },
+      {
+        title: "物料料号",
+        key: "物料料号",
+        dataIndex: "物料料号",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.物料料号,
+        ellipsis: true,
+      },
+      {
+        title: "单位",
+        key: "单位",
+        dataIndex: "单位",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.单位,
+      },
+      {
+        title: "送货数量",
+        key: "送货数量",
+        dataIndex: "送货数量",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.送货数量,
+        align: "right",
+      },
+      {
+        title: warehouseMoneyLabels.unitPrice,
+        key: "单价",
+        dataIndex: "单价",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.单价,
+        align: "right",
+        render: (v: number) => money(v),
+      },
+      {
+        title: warehouseMoneyLabels.amount,
+        key: "金额",
+        dataIndex: "金额",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.金额,
+        align: "right",
+        render: (v: number) => money(v),
+      },
+      {
+        title: "备品数量",
+        key: "备品数量",
+        dataIndex: "备品数量",
+        width: DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH.备品数量,
+        align: "right",
+      },
+    ];
+    return attachResizeReconcileColumns(
+      base,
+      warehouseColWidths,
+      setWarehouseColWidths,
+      DEFAULT_WAREHOUSE_RECONCILE_COL_WIDTH,
+    );
+  }, [warehouseColWidths, warehouseMoneyLabels]);
 
   if (!active) {
     return null;
@@ -1666,7 +1806,11 @@ function ReconcileTabContent({
             columns={purchaseColumns}
             dataSource={purchaseRows}
             pagination={{ defaultPageSize: 20, showSizeChanger: true }}
-            scroll={{ x: 1280 }}
+            scroll={{ x: "max-content" }}
+            tableLayout="fixed"
+            components={{
+              header: { cell: ResizableTableTitle },
+            }}
             locale={{ emptyText: "暂无对帐行" }}
             summary={() => (
               <Table.Summary fixed>
@@ -1722,7 +1866,11 @@ function ReconcileTabContent({
             columns={warehouseColumns}
             dataSource={warehouseRows}
             pagination={{ defaultPageSize: 20, showSizeChanger: true }}
-            scroll={{ x: 1300 }}
+            scroll={{ x: "max-content" }}
+            tableLayout="fixed"
+            components={{
+              header: { cell: ResizableTableTitle },
+            }}
             locale={{ emptyText: "暂无对帐行" }}
             summary={() => (
               <Table.Summary fixed>

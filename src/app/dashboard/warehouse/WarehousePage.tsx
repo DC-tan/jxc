@@ -34,6 +34,7 @@ import {
 } from "@/lib/warehouse-delivery-inhouse-step";
 import { WAREHOUSE_DELIVERY_DRAFT_KEY } from "@/lib/warehouse-delivery-draft";
 import type { WarehouseDeliveryDraft } from "@/lib/warehouse-delivery-draft";
+import { buildMergedDeliveryDraft } from "@/lib/warehouse-merged-deliver";
 import { WarehouseNoOrderShipPanel } from "./WarehouseNoOrderShipPanel";
 import { WarehouseSettingsTab } from "./WarehouseSettingsTab";
 
@@ -94,6 +95,11 @@ type DetailLine = {
     /** 外发回收库库存（仅外发+自加工） */
     recoveryStockQuantity?: number;
   };
+};
+
+type DeliverModalLine = DetailLine & {
+  sourceOrderId: string;
+  sourceOrderNo: string;
 };
 
 type DetailPayload = {
@@ -274,10 +280,10 @@ export function WarehousePage() {
   const [voidingDelivered, setVoidingDelivered] = useState(false);
 
   const [deliverOpen, setDeliverOpen] = useState(false);
-  const [deliverOrderId, setDeliverOrderId] = useState<string | null>(null);
+  const [deliverOrderIds, setDeliverOrderIds] = useState<string[]>([]);
   const [deliverOrderLabel, setDeliverOrderLabel] = useState("");
   const [deliverFetchLoading, setDeliverFetchLoading] = useState(false);
-  const [deliverDetail, setDeliverDetail] = useState<DetailPayload | null>(null);
+  const [deliverDetails, setDeliverDetails] = useState<DetailPayload[]>([]);
   const [deliverShipByLine, setDeliverShipByLine] = useState<Record<string, number>>(
     {},
   );
@@ -379,9 +385,9 @@ export function WarehousePage() {
 
   const openDeliver = useCallback(
     async (r: WarehouseSalesRow) => {
-      setDeliverOrderId(r.id);
+      setDeliverOrderIds([r.id]);
       setDeliverOrderLabel(`${r.customer.name} · ${r.customerOrderNo || "—"}`);
-      setDeliverDetail(null);
+      setDeliverDetails([]);
       setDeliverShipByLine({});
       setDeliverInhouseProduceByLine({});
       setDeliverAt(dayjs());
@@ -392,7 +398,7 @@ export function WarehousePage() {
           `/api/warehouse/sales-orders/${r.id}`,
           { credentials: "include" },
         );
-        setDeliverDetail(d);
+        setDeliverDetails([d]);
         const init: Record<string, number> = {};
         for (const ln of d.lines) {
           init[ln.id] = ln.remaining;
@@ -411,7 +417,7 @@ export function WarehousePage() {
       } catch (e) {
         message.error(e instanceof Error ? e.message : "加载订单失败");
         setDeliverOpen(false);
-        setDeliverOrderId(null);
+        setDeliverOrderIds([]);
       } finally {
         setDeliverFetchLoading(false);
       }
@@ -419,14 +425,85 @@ export function WarehousePage() {
     [message],
   );
 
+  const openMergedDeliver = useCallback(async () => {
+    if (selectedPendingIds.length < 2) {
+      message.warning("请至少勾选 2 张销售订单");
+      return;
+    }
+    const picked = pendingRows.filter((r) => selectedPendingIds.includes(r.id));
+    const customerId = picked[0]?.customer.id;
+    if (!customerId || picked.some((r) => r.customer.id !== customerId)) {
+      message.warning("合并出货仅支持同一客户的订单");
+      return;
+    }
+    const orderIds = picked.map((r) => r.id);
+    setDeliverOrderIds(orderIds);
+    setDeliverOrderLabel(
+      `${picked[0]!.customer.name} · 合并 ${orderIds.length} 单`,
+    );
+    setDeliverDetails([]);
+    setDeliverShipByLine({});
+    setDeliverInhouseProduceByLine({});
+    setDeliverAt(dayjs());
+    setDeliverOpen(true);
+    setDeliverFetchLoading(true);
+    try {
+      const details = await Promise.all(
+        orderIds.map((id) =>
+          fetchJson<DetailPayload>(`/api/warehouse/sales-orders/${id}`, {
+            credentials: "include",
+          }),
+        ),
+      );
+      setDeliverDetails(details);
+      const init: Record<string, number> = {};
+      const inhouseProduceInit: Record<string, number> = {};
+      for (const d of details) {
+        for (const ln of d.lines) {
+          init[ln.id] = ln.remaining;
+          const mode = ln.product.processingMode;
+          const shipQty = ln.remaining;
+          if (mode === "INHOUSE" || mode === "OUTSOURCE_INHOUSE") {
+            const stock = ln.product.stockQuantity ?? 0;
+            inhouseProduceInit[ln.id] = defaultInhouseProduceQty(shipQty, stock);
+          }
+        }
+      }
+      setDeliverShipByLine(init);
+      setDeliverInhouseProduceByLine(inhouseProduceInit);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "加载订单失败");
+      setDeliverOpen(false);
+      setDeliverOrderIds([]);
+    } finally {
+      setDeliverFetchLoading(false);
+    }
+  }, [selectedPendingIds, pendingRows, message]);
+
+  const mergedDeliverMode = deliverOrderIds.length > 1;
+
+  const deliverModalLines = useMemo((): DeliverModalLine[] => {
+    const out: DeliverModalLine[] = [];
+    for (const o of deliverDetails) {
+      for (const ln of o.lines) {
+        out.push({
+          ...ln,
+          sourceOrderId: o.id,
+          sourceOrderNo: o.customerOrderNo?.trim() || "—",
+        });
+      }
+    }
+    return out;
+  }, [deliverDetails]);
+
   const submitDeliver = useCallback(async () => {
-    if (!deliverOrderId || !deliverDetail) return;
+    if (deliverOrderIds.length === 0 || deliverDetails.length === 0) return;
     if (!deliverAt) {
       message.warning("请选择本批交货时间");
       return;
     }
     const at = deliverAt;
-    const lines = deliverDetail.lines
+    const lines = deliverModalLines
       .map((l) => ({
         lineId: l.id,
         shipQty: deliverShipByLine[l.id] ?? 0,
@@ -437,7 +514,7 @@ export function WarehousePage() {
       return;
     }
     const inhouseProduceByLineId: Record<string, number> = {};
-    for (const l of deliverDetail.lines) {
+    for (const l of deliverModalLines) {
       const mode = l.product.processingMode;
       if (mode !== "INHOUSE" && mode !== "OUTSOURCE_INHOUSE") continue;
       const shipQty = deliverShipByLine[l.id] ?? 0;
@@ -459,48 +536,62 @@ export function WarehousePage() {
       inhouseProduceByLineId[l.id] = produce;
     }
     try {
-      const pre = await fetchJson<{ needsInhouseStep: boolean }>(
-        `/api/warehouse/sales-orders/${deliverOrderId}/deliver-preview`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            lines,
-            inhouseProduceByLineId,
-            hybridInhouseProduceByLineId: inhouseProduceByLineId,
-          }),
-        },
-      );
-      const stepLines = deliverDetail.lines
-        .filter((l) => (deliverShipByLine[l.id] ?? 0) > 0)
-        .map((l) => ({
-          lineId: l.id,
-          processingMode: l.product.processingMode,
-          productStock: l.product.stockQuantity,
-        }));
-      const needsInhouseStep =
-        pre.needsInhouseStep &&
-        shipmentNeedsInhouseStep(
-          stepLines,
-          deliverShipByLine,
-          deliverInhouseProduceByLine,
+      let needsInhouseStep = false;
+      for (const orderId of deliverOrderIds) {
+        const orderLines = lines.filter((x) => {
+          const ln = deliverModalLines.find((l) => l.id === x.lineId);
+          return ln?.sourceOrderId === orderId;
+        });
+        if (orderLines.length === 0) continue;
+        const orderInhouse: Record<string, number> = {};
+        for (const x of orderLines) {
+          const v = inhouseProduceByLineId[x.lineId];
+          if (v != null) orderInhouse[x.lineId] = v;
+        }
+        const pre = await fetchJson<{ needsInhouseStep: boolean }>(
+          `/api/warehouse/sales-orders/${orderId}/deliver-preview`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              lines: orderLines,
+              inhouseProduceByLineId: orderInhouse,
+              hybridInhouseProduceByLineId: orderInhouse,
+            }),
+          },
         );
-      const draft: WarehouseDeliveryDraft = {
-        orderId: deliverOrderId,
+        const stepLines = deliverModalLines
+          .filter((l) => l.sourceOrderId === orderId && (deliverShipByLine[l.id] ?? 0) > 0)
+          .map((l) => ({
+            lineId: l.id,
+            processingMode: l.product.processingMode,
+            productStock: l.product.stockQuantity,
+          }));
+        if (
+          pre.needsInhouseStep &&
+          shipmentNeedsInhouseStep(stepLines, deliverShipByLine, inhouseProduceByLineId)
+        ) {
+          needsInhouseStep = true;
+        }
+      }
+      const draft = buildMergedDeliveryDraft({
+        orders: deliverDetails.map((o) => ({ id: o.id, lines: o.lines })),
         actualDeliveredAt: at.toISOString(),
         lines,
         inhouseProduceByLineId,
         hybridInhouseProduceByLineId: inhouseProduceByLineId,
         needsInhouseStep,
-      };
+      });
       sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(draft));
       setDeliverOpen(false);
-      setDeliverOrderId(null);
-      setDeliverDetail(null);
+      setDeliverOrderIds([]);
+      setDeliverDetails([]);
       setDeliverShipByLine({});
       setDeliverInhouseProduceByLine({});
       setDeliverAt(null);
+      setPendingSelectMode(false);
+      setSelectedPendingIds([]);
       if (needsInhouseStep) {
         router.push("/dashboard/warehouse/delivery-inhouse");
       } else {
@@ -510,8 +601,9 @@ export function WarehousePage() {
       message.error(e instanceof Error ? e.message : "出货预检失败");
     }
   }, [
-    deliverOrderId,
-    deliverDetail,
+    deliverOrderIds,
+    deliverDetails,
+    deliverModalLines,
     deliverShipByLine,
     deliverInhouseProduceByLine,
     deliverAt,
@@ -551,18 +643,17 @@ export function WarehousePage() {
 
   const deliverHasInhouseBom = useMemo(
     () =>
-      deliverDetail?.lines.some((l) => {
+      deliverModalLines.some((l) => {
         const mode = l.product.processingMode;
         return (
           (mode === "INHOUSE" || mode === "OUTSOURCE_INHOUSE") &&
           (l.product.inhouseBom?.length ?? 0) > 0
         );
-      }) ?? false,
-    [deliverDetail],
+      }),
+    [deliverModalLines],
   );
 
   const deliverInhouseHints = useMemo(() => {
-    if (!deliverDetail) return [];
     const hints: {
       lineId: string;
       productLabel: string;
@@ -570,7 +661,7 @@ export function WarehousePage() {
       isHybrid: boolean;
       rows: ReturnType<typeof inhouseMaterialRowsForProductSets>;
     }[] = [];
-    for (const ln of deliverDetail.lines) {
+    for (const ln of deliverModalLines) {
       const mode = ln.product.processingMode;
       if (mode !== "INHOUSE" && mode !== "OUTSOURCE_INHOUSE") continue;
       const bom = ln.product.inhouseBom;
@@ -594,7 +685,7 @@ export function WarehousePage() {
       });
     }
     return hints;
-  }, [deliverDetail, deliverShipByLine, deliverInhouseProduceByLine]);
+  }, [deliverModalLines, deliverShipByLine, deliverInhouseProduceByLine]);
 
   const baseColumns: ColumnsType<WarehouseSalesRow> = useMemo(
     () => [
@@ -767,13 +858,28 @@ export function WarehousePage() {
       width: 140,
       align: "center",
       ellipsis: true,
-      render: (_, r) => (
-        <Link
-          href={`/dashboard/warehouse/delivery-note?orderId=${encodeURIComponent(r.id)}&view=shipment`}
-        >
-          打开预览
-        </Link>
-      ),
+      render: (_, r) => {
+        const doc = r.deliveryNoteNo?.trim();
+        if (doc) {
+          return (
+            <Link
+              href={`/dashboard/warehouse/delivery-note?view=voucher&documentNo=${encodeURIComponent(doc)}`}
+            >
+              {doc}
+            </Link>
+          );
+        }
+        if (r.rowKind === "sales") {
+          return (
+            <Link
+              href={`/dashboard/warehouse/delivery-note?orderId=${encodeURIComponent(r.id)}&view=shipment`}
+            >
+              打开预览
+            </Link>
+          );
+        }
+        return "—";
+      },
     };
 
   const deliveredQueryAmountTotal = useMemo(
@@ -1030,15 +1136,24 @@ export function WarehousePage() {
                               {pendingSelectMode ? "取消选择" : "选择"}
                             </Button>
                             {pendingSelectMode ? (
-                              <Button
-                                danger
-                                type="primary"
-                                onClick={() => void closeSelectedPending()}
-                                disabled={selectedPendingIds.length === 0}
-                                loading={closingPending}
-                              >
-                                结单
-                              </Button>
+                              <>
+                                <Button
+                                  danger
+                                  type="primary"
+                                  onClick={() => void closeSelectedPending()}
+                                  disabled={selectedPendingIds.length === 0}
+                                  loading={closingPending}
+                                >
+                                  结单
+                                </Button>
+                                <Button
+                                  type="primary"
+                                  onClick={() => void openMergedDeliver()}
+                                  disabled={selectedPendingIds.length < 2}
+                                >
+                                  合并出货
+                                </Button>
+                              </>
                             ) : null}
                           </Space>
                           <Space wrap align="center">
@@ -1102,7 +1217,9 @@ export function WarehousePage() {
                             <HelpTip
                               text={
                                 <>
-                                  以下为尚未交清的销售订单。点<strong>确认出货</strong>后，在弹窗中填写
+                                  以下为尚未交清的销售订单。可勾选同一客户的多张订单后点
+                                  <strong>合并出货</strong>，打印在一张送货单上；或逐单点
+                                  <strong>确认出货</strong>。在弹窗中填写
                                   <strong>本批实际出货</strong>
                                   （可超过待交/订单行数量）。自加工/外发+自加工须在弹窗填写
                                   <strong>本批自加工完工</strong>（默认=出货−商品库存）；若大于默认数，另经
@@ -1314,8 +1431,8 @@ export function WarehousePage() {
         open={deliverOpen}
         onCancel={() => {
           setDeliverOpen(false);
-          setDeliverOrderId(null);
-          setDeliverDetail(null);
+          setDeliverOrderIds([]);
+          setDeliverDetails([]);
           setDeliverShipByLine({});
           setDeliverInhouseProduceByLine({});
           setDeliverAt(null);
@@ -1327,14 +1444,24 @@ export function WarehousePage() {
       >
         {deliverFetchLoading ? (
           <Spin />
-        ) : deliverDetail ? (
-          <Table<DetailLine>
+        ) : deliverDetails.length > 0 ? (
+          <Table<DeliverModalLine>
             size="small"
             rowKey="id"
             pagination={false}
             style={{ marginBottom: 16 }}
-            dataSource={deliverDetail.lines}
+            dataSource={deliverModalLines}
             columns={[
+              ...(mergedDeliverMode
+                ? [
+                    {
+                      title: "客户订单号",
+                      dataIndex: "sourceOrderNo",
+                      width: 120,
+                      ellipsis: true,
+                    } as const,
+                  ]
+                : []),
               {
                 title: "物料编号",
                 width: 110,
@@ -1508,7 +1635,7 @@ export function WarehousePage() {
                       {deliverInhouseProduceByLine[h.lineId] ??
                         defaultInhouseProduceQty(
                           h.shipQty,
-                          deliverDetail?.lines.find((x) => x.id === h.lineId)
+                          deliverModalLines.find((x) => x.id === h.lineId)
                             ?.product.stockQuantity ?? 0,
                         )}{" "}
                       件）

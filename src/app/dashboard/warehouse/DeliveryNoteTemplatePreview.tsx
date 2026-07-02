@@ -88,6 +88,31 @@ export function lineToCellsFromLine(l: DeliveryNotePreviewLine): string[] {
   return [l.orderNo, l.materialCode, l.nameSpec, l.unit, l.quantity, l.remark];
 }
 
+/** 相邻且订单号相同（非空、非 —）时合并首列单元格 */
+function computeOrderNoRowSpans(
+  lines: DeliveryNotePreviewLine[],
+): { rowSpan: number; render: boolean }[] {
+  const out: { rowSpan: number; render: boolean }[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const key = lines[i]!.orderNo?.trim() ?? "";
+    const mergeable = key !== "" && key !== "—";
+    let j = i + 1;
+    if (mergeable) {
+      while (j < lines.length && (lines[j]!.orderNo?.trim() ?? "") === key) {
+        j += 1;
+      }
+    }
+    const span = j - i;
+    out[i] = { rowSpan: span, render: true };
+    for (let k = i + 1; k < j; k += 1) {
+      out[k] = { rowSpan: 0, render: false };
+    }
+    i = j;
+  }
+  return out;
+}
+
 function patchPreviewLine(
   cfg: DeliveryNoteTemplateConfig,
   index: number,
@@ -208,6 +233,9 @@ export function DeliveryNoteTemplatePreview({
   const headers = cfg.tableColumnHeaders;
   const sampleCells = lineToCells(cfg);
   const liveLineCount = liveSlip?.lines.length ?? 0;
+  const orderNoRowSpans = liveSlip
+    ? computeOrderNoRowSpans(liveSlip.lines)
+    : [];
   const tc = !liveSlip
     ? cell
     : liveLineCount < 1
@@ -391,9 +419,14 @@ export function DeliveryNoteTemplatePreview({
                   }
                 >
                   {lineToCellsFromLine(lineRow).map((cellVal, ci) => {
+                    if (ci === 0 && !orderNoRowSpans[ri]?.render) {
+                      return null;
+                    }
                     const cellSt = liveSlipColStyle(ci, tc);
+                    const rowSpan =
+                      ci === 0 ? orderNoRowSpans[ri]?.rowSpan : undefined;
                     return (
-                      <td key={ci} style={cellSt}>
+                      <td key={ci} style={cellSt} rowSpan={rowSpan}>
                         {ci === 4 && liveSlipQuantityOverride
                           ? liveSlipQuantityOverride(ri, cellSt, cellVal)
                           : cellVal}

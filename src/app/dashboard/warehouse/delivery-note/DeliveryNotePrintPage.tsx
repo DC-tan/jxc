@@ -17,7 +17,16 @@ import type { WarehouseDeliveryLineDraft } from "@/lib/warehouse-delivery-draft"
 import {
   WAREHOUSE_DELIVERY_DRAFT_KEY,
   buildNoOrderDeliveryDraft,
+  deliveryDraftOrderIds,
+  isMergedDeliveryDraft,
 } from "@/lib/warehouse-delivery-draft";
+import {
+  pickInhouseMapsForOrder,
+} from "@/lib/warehouse-merged-deliver";
+import {
+  liveSlipToVoucherSnapshot,
+  type DeliveryNoteLiveSlip,
+} from "@/lib/delivery-note-voucher";
 import { WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK } from "@/lib/warehouse-product-ship-out";
 import {
   buildShipmentQueryPreview,
@@ -32,7 +41,6 @@ import {
 } from "@/lib/warehouse-delivery-remark";
 import {
   DeliveryNoteTemplatePreview,
-  type DeliveryNoteLiveSlip,
 } from "../DeliveryNoteTemplatePreview";
 import "./print.css";
 
@@ -120,8 +128,10 @@ function readDraft(): WarehouseDeliveryDraft | null {
     const raw = sessionStorage.getItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
     if (!raw) return null;
     const j = JSON.parse(raw) as WarehouseDeliveryDraft;
-    if (!j?.orderId || !Array.isArray(j.lines)) return null;
-    return j;
+    if (!Array.isArray(j.lines)) return null;
+    if (!j.orderId && !(j.orderIds?.length ?? 0)) return null;
+    const { documentNo: _previewNo, ...rest } = j;
+    return rest;
   } catch {
     return null;
   }
@@ -129,11 +139,15 @@ function readDraft(): WarehouseDeliveryDraft | null {
 
 function saveDraftToSession(next: WarehouseDeliveryDraft) {
   try {
-    sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(next));
+    const { documentNo: _previewNo, ...payload } = next;
+    sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(payload));
   } catch {
     /* */
   }
 }
+
+/** 预览阶段占位（加载失败时） */
+const PENDING_SLIP_DOCUMENT_NO = "（单号加载中…）";
 
 function initLineStateFromDraft(d: WarehouseDeliveryDraft): Record<string, LineState> {
   const o: Record<string, LineState> = {};
@@ -190,13 +204,18 @@ export function DeliveryNotePrintPage() {
   const [userRemarkInput, setUserRemarkInput] = useState("");
   const [cfg, setCfg] = useState<DeliveryNoteTemplateConfig | null>(null);
   const [order, setOrder] = useState<DetailPayload | null>(null);
+  const [mergedOrdersById, setMergedOrdersById] = useState<
+    Map<string, DetailPayload>
+  >(() => new Map());
   const [issuerName, setIssuerName] = useState("");
   const [loading, setLoading] = useState(true);
   const [completing, setCompleting] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [voidingBatch, setVoidingBatch] = useState(false);
-  const [allocatingNo, setAllocatingNo] = useState(false);
   const [docNo, setDocNo] = useState("");
+  /** 预览单号（不占用流水；点「完成」时 allocate 才正式生效） */
+  const [previewDocNo, setPreviewDocNo] = useState("");
+  const [previewDocLoading, setPreviewDocLoading] = useState(false);
   /** 从「出货查询」进入，只读预览（含分批） */
   const [shipmentQueryPreview, setShipmentQueryPreview] = useState(false);
   /** 出货查询拉取的整单，用于多批切换 */
@@ -205,9 +224,24 @@ export function DeliveryNotePrintPage() {
     () => new Map(),
   );
   const [bootstrapDone, setBootstrapDone] = useState(false);
+  /** 已确认存档的送货单凭证（只读，与打印时一致） */
+  const [voucherLiveSlip, setVoucherLiveSlip] = useState<DeliveryNoteLiveSlip | null>(
+    null,
+  );
+  const [voucherVoidedAt, setVoucherVoidedAt] = useState<string | null>(null);
+  /** 凭证来源：存档 / 历史出货还原 */
+  const [voucherSource, setVoucherSource] = useState<
+    "voucher" | "ship_logs" | "no_order" | null
+  >(null);
+  const [voucherLoadFailed, setVoucherLoadFailed] = useState(false);
+  /** 凭证对应出货批次时间与关联订单（作废本批用） */
+  const [voucherDeliveredAt, setVoucherDeliveredAt] = useState<string | null>(null);
+  const [voucherOrderIds, setVoucherOrderIds] = useState<string[]>([]);
 
   const orderIdFromQuery = searchParams.get("orderId");
+  const documentNoFromQuery = searchParams.get("documentNo");
   const viewShipment = searchParams.get("view") === "shipment";
+  const viewVoucher = searchParams.get("view") === "voucher";
   const batchQ = searchParams.get("batch");
   const pathname = usePathname();
 
@@ -221,10 +255,70 @@ export function DeliveryNotePrintPage() {
     [shipmentBatchAts, batchQ],
   );
 
-  /** 出货查询：只拉单；批次由 URL `batch` 下标在下一 effect 应用 */
+  /** 出货查询 / 凭证预览：只拉单或凭证 */
   useEffect(() => {
     let cancelled = false;
     const sessionDraft = readDraft();
+
+    if (viewVoucher && documentNoFromQuery?.trim()) {
+      setDraft(null);
+      setLineState({});
+      setVoucherLoadFailed(false);
+      setVoucherSource(null);
+      setVoucherLiveSlip(null);
+      setVoucherVoidedAt(null);
+      setVoucherDeliveredAt(null);
+      setVoucherOrderIds([]);
+      setShipmentQueryPreview(false);
+      (async () => {
+        try {
+          setLoading(true);
+          const tpl = await fetchJson<{ config: unknown }>(
+            "/api/delivery-note-print-template",
+            { credentials: "include" },
+          );
+          if (cancelled) return;
+          setCfg(mergeDeliveryNotePrintConfig(tpl.config));
+
+          const voucher = await fetchJson<{
+            liveSlip: DeliveryNoteLiveSlip;
+            voidedAt: string | null;
+            documentNo: string;
+            deliveredAt: string;
+            orderIds?: string[];
+            source?: "voucher" | "ship_logs" | "no_order";
+          }>(
+            `/api/warehouse/delivery-notes/voucher?documentNo=${encodeURIComponent(documentNoFromQuery.trim())}`,
+            { credentials: "include" },
+          );
+          if (cancelled) return;
+          setVoucherLiveSlip(voucher.liveSlip);
+          setVoucherVoidedAt(voucher.voidedAt);
+          setVoucherDeliveredAt(voucher.deliveredAt);
+          setVoucherOrderIds(voucher.orderIds ?? []);
+          setDocNo(voucher.documentNo);
+          setVoucherSource(voucher.source ?? "voucher");
+          setDraft(null);
+          setShipmentPreviewOrder(null);
+          setShipmentQueryPreview(true);
+          setEffShippedBeforeByLine(new Map());
+        } catch (e) {
+          if (!cancelled) {
+            message.error(e instanceof Error ? e.message : "加载送货单凭证失败");
+            setVoucherLiveSlip(null);
+            setVoucherLoadFailed(true);
+          }
+        } finally {
+          if (!cancelled) {
+            setLoading(false);
+            setBootstrapDone(true);
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
 
     if (
       !viewShipment &&
@@ -233,7 +327,7 @@ export function DeliveryNotePrintPage() {
     ) {
       setDraft(sessionDraft);
       setLineState(initLineStateFromDraft(sessionDraft));
-      if (sessionDraft.documentNo) setDocNo(sessionDraft.documentNo);
+      setDocNo("");
       setShipmentPreviewOrder(null);
       setShipmentQueryPreview(false);
       setEffShippedBeforeByLine(new Map());
@@ -306,14 +400,14 @@ export function DeliveryNotePrintPage() {
     if (d) {
       setDraft(d);
       setLineState(initLineStateFromDraft(d));
-      if (d.documentNo) setDocNo(d.documentNo);
+      setDocNo("");
     } else {
       setDraft(null);
     }
     setShipmentQueryPreview(false);
     setEffShippedBeforeByLine(new Map());
     setBootstrapDone(true);
-  }, [viewShipment, orderIdFromQuery, message]);
+  }, [viewShipment, viewVoucher, documentNoFromQuery, orderIdFromQuery, message]);
 
   /** 按 `batch` 下标生成本批送货单草稿；URL 中 `batch` 为 0 起。 */
   useEffect(() => {
@@ -341,6 +435,7 @@ export function DeliveryNotePrintPage() {
   }, []);
 
   useEffect(() => {
+    if (viewVoucher) return;
     if (!draft) {
       setLoading(false);
       return;
@@ -377,6 +472,30 @@ export function DeliveryNotePrintPage() {
           setCfg(mergeDeliveryNotePrintConfig(tpl.config));
           setOrder(buildNoOrderDetailPayload(draft));
           setIssuerName(me.name?.trim() || me.loginName || "—");
+        } else if (isMergedDeliveryDraft(draft)) {
+          const orderIds = deliveryDraftOrderIds(draft);
+          const [tpl, ...orders] = await Promise.all([
+            fetchJson<{ config: unknown }>("/api/delivery-note-print-template", {
+              credentials: "include",
+            }),
+            ...orderIds.map((id) =>
+              fetchJson<DetailPayload>(`/api/warehouse/sales-orders/${id}`, {
+                credentials: "include",
+              }),
+            ),
+            fetchJson<{ name: string; loginName: string }>("/api/me", {
+              credentials: "include",
+            }),
+          ]);
+          const me = orders.pop() as { name: string; loginName: string };
+          const orderPayloads = orders as DetailPayload[];
+          if (cancelled) return;
+          const byId = new Map(orderPayloads.map((o) => [o.id, o]));
+          setMergedOrdersById(byId);
+          const primary = orderPayloads[0] ?? null;
+          setCfg(mergeDeliveryNotePrintConfig(tpl.config));
+          setOrder(primary);
+          setIssuerName(me.name?.trim() || me.loginName || "—");
         } else {
           const [tpl, ord, me] = await Promise.all([
             fetchJson<{ config: unknown }>("/api/delivery-note-print-template", {
@@ -390,6 +509,7 @@ export function DeliveryNotePrintPage() {
             }),
           ]);
           if (cancelled) return;
+          setMergedOrdersById(new Map([[ord.id, ord]]));
           setCfg(mergeDeliveryNotePrintConfig(tpl.config));
           setOrder(ord);
           setIssuerName(me.name?.trim() || me.loginName || "—");
@@ -405,64 +525,121 @@ export function DeliveryNotePrintPage() {
     return () => {
       cancelled = true;
     };
-  }, [draft, message, shipmentQueryPreview, shipmentPreviewOrder]);
+  }, [draft, message, shipmentQueryPreview, shipmentPreviewOrder, viewVoucher]);
 
-  /** 分配送货单 NO（与销售订单出货相同：进入打印页自动分配） */
-  const [docNoTick, setDocNoTick] = useState(0);
-  useEffect(() => {
-    if (!draft) return;
-    if (shipmentQueryPreview) return;
-
-    const existing = docNo.trim() || draft.documentNo?.trim() || "";
-    if (existing) {
-      if (!docNo.trim() && draft.documentNo?.trim()) {
-        setDocNo(draft.documentNo.trim());
+  const persistDeliveryVoucher = useCallback(
+    async (slip: DeliveryNoteLiveSlip, input: {
+      customerId: string;
+      deliveredAt: string;
+      mergedShip?: boolean;
+      orderIds?: string[];
+    }) => {
+      const documentNo = slip.documentNo.trim();
+      if (!documentNo || documentNo === "—") {
+        throw new Error("送货单号无效，无法存档");
       }
+      await fetchJson("/api/warehouse/delivery-notes/voucher", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentNo,
+          customerId: input.customerId,
+          deliveredAt: input.deliveredAt,
+          mergedShip: input.mergedShip ?? false,
+          snapshot: liveSlipToVoucherSnapshot(slip, input.orderIds),
+        }),
+      });
+    },
+    [],
+  );
+
+  const allocateDeliveryDocumentNo = useCallback(
+    async (d: WarehouseDeliveryDraft, ord: DetailPayload | null): Promise<string> => {
+      const res = await fetchJson<{ documentNo: string }>(
+        "/api/delivery-note-sequence/allocate",
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            d.noOrderShipOut && d.customerId
+              ? {
+                  customerId: d.customerId,
+                  atIso: d.actualDeliveredAt,
+                }
+              : isMergedDeliveryDraft(d)
+                ? {
+                    customerId: ord?.customer.id,
+                    atIso: d.actualDeliveredAt,
+                  }
+                : {
+                    orderId: d.orderId,
+                    atIso: d.actualDeliveredAt,
+                  },
+          ),
+        },
+      );
+      return res.documentNo.trim();
+    },
+    [],
+  );
+
+  const deliveryNoRequestBody = useCallback(
+    (d: WarehouseDeliveryDraft, ord: DetailPayload | null) =>
+      d.noOrderShipOut && d.customerId
+        ? {
+            customerId: d.customerId,
+            atIso: d.actualDeliveredAt,
+          }
+        : isMergedDeliveryDraft(d)
+          ? {
+              customerId: ord?.customer.id,
+              atIso: d.actualDeliveredAt,
+            }
+          : {
+              orderId: d.orderId,
+              atIso: d.actualDeliveredAt,
+            },
+    [],
+  );
+
+  /** 预览下一送货单号（不写库） */
+  useEffect(() => {
+    if (!draft || shipmentQueryPreview || viewVoucher) {
+      setPreviewDocNo("");
+      setPreviewDocLoading(false);
+      return;
+    }
+    const ready = draft.noOrderShipOut
+      ? Boolean(draft.customerId && draft.actualDeliveredAt)
+      : Boolean(order);
+    if (!ready) {
+      setPreviewDocNo("");
       return;
     }
 
-    const readyToAllocate = draft.noOrderShipOut
-      ? Boolean(draft.customerId && draft.actualDeliveredAt)
-      : Boolean(order);
-    if (!readyToAllocate) return;
-
     let cancelled = false;
     (async () => {
-      setAllocatingNo(true);
+      setPreviewDocLoading(true);
       try {
         const res = await fetchJson<{ documentNo: string }>(
-          "/api/delivery-note-sequence/allocate",
+          "/api/delivery-note-sequence/preview",
           {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(
-              draft.noOrderShipOut && draft.customerId
-                ? {
-                    customerId: draft.customerId,
-                    atIso: draft.actualDeliveredAt,
-                  }
-                : {
-                    orderId: draft.orderId,
-                    atIso: draft.actualDeliveredAt,
-                  },
-            ),
+            body: JSON.stringify(deliveryNoRequestBody(draft, order)),
           },
         );
-        if (cancelled) return;
-        setDocNo(res.documentNo);
-        setDraft((d) => {
-          if (!d) return d;
-          const n = { ...d, documentNo: res.documentNo };
-          saveDraftToSession(n);
-          return n;
-        });
+        if (!cancelled) setPreviewDocNo(res.documentNo.trim());
       } catch (e) {
         if (!cancelled) {
-          message.error(e instanceof Error ? e.message : "分配单号失败");
+          setPreviewDocNo("");
+          message.error(e instanceof Error ? e.message : "预览单号失败");
         }
       } finally {
-        if (!cancelled) setAllocatingNo(false);
+        if (!cancelled) setPreviewDocLoading(false);
       }
     })();
     return () => {
@@ -470,11 +647,11 @@ export function DeliveryNotePrintPage() {
     };
   }, [
     draft,
-    order?.id,
-    docNo,
-    message,
-    docNoTick,
+    order,
     shipmentQueryPreview,
+    viewVoucher,
+    deliveryNoRequestBody,
+    message,
   ]);
 
   const goShipmentBatch = useCallback(
@@ -492,9 +669,25 @@ export function DeliveryNotePrintPage() {
 
   const byLine = useMemo(() => {
     const m = new Map<string, DetailLine>();
+    if (isMergedDeliveryDraft(draft ?? { orderId: "", actualDeliveredAt: "", lines: [] })) {
+      for (const o of mergedOrdersById.values()) {
+        for (const l of o.lines) m.set(l.id, l);
+      }
+      return m;
+    }
     for (const l of order?.lines ?? []) m.set(l.id, l);
     return m;
-  }, [order]);
+  }, [order, mergedOrdersById, draft]);
+
+  const orderNoForLine = useCallback(
+    (lineId: string): string => {
+      const map = draft?.lineOrderIdByLineId ?? {};
+      const oid = map[lineId] ?? draft?.orderId ?? order?.id;
+      if (!oid) return order?.customerOrderNo?.trim() || "—";
+      return mergedOrdersById.get(oid)?.customerOrderNo?.trim() || "—";
+    },
+    [draft, order, mergedOrdersById],
+  );
 
   /** 出货查询预览：与完成出货时落库的送货单号一致 */
   const shipmentQueryDocumentNo = useMemo(() => {
@@ -525,23 +718,24 @@ export function DeliveryNotePrintPage() {
   const slipDocumentNo = useMemo(() => {
     const saved =
       docNo.trim() ||
-      draft?.documentNo?.trim() ||
+      previewDocNo.trim() ||
       shipmentQueryDocumentNo?.trim() ||
       "";
     if (saved) return saved;
     if (shipmentQueryPreview) return "—";
-    if (allocatingNo) return "分配中…";
-    return "（单号待分配，请稍候或点重试）";
+    if (previewDocLoading) return "单号加载中…";
+    return PENDING_SLIP_DOCUMENT_NO;
   }, [
     shipmentQueryPreview,
     shipmentQueryDocumentNo,
     docNo,
-    draft?.documentNo,
-    allocatingNo,
+    previewDocNo,
+    previewDocLoading,
   ]);
 
-  const liveSlip: DeliveryNoteLiveSlip | null = useMemo(() => {
-    if (!draft || !order || !cfg) return null;
+  const buildCurrentLiveSlip = useCallback(
+    (documentNoOverride?: string): DeliveryNoteLiveSlip | null => {
+    if (!draft || !order) return null;
     const at = dayjs(draft.actualDeliveredAt);
     const merged = mergeLineIntoDraft(draft, lineState);
     const slipLines = merged.lines
@@ -561,7 +755,7 @@ export function DeliveryNotePrintPage() {
           effShippedBefore: effBefore,
         });
         return {
-          orderNo: order.customerOrderNo?.trim() || "—",
+          orderNo: orderNoForLine(row.lineId),
           materialCode: l.product.customerMaterialCode?.trim() || "—",
           nameSpec: nameSpec || "—",
           unit: l.product.unit || "—",
@@ -574,21 +768,28 @@ export function DeliveryNotePrintPage() {
     return {
       customerName: order.customer.name || order.customer.code,
       dateStr: at.format("YYYY-MM-DD"),
-      documentNo: slipDocumentNo,
+      documentNo: documentNoOverride?.trim() || slipDocumentNo,
       issuerName,
       lines: slipLines,
     };
   }, [
     draft,
     order,
-    cfg,
-    issuerName,
-    byLine,
     lineState,
-    slipDocumentNo,
+    byLine,
+    orderNoForLine,
     shipmentQueryPreview,
     effShippedBeforeByLine,
+    slipDocumentNo,
+    issuerName,
   ]);
+
+  const liveSlip: DeliveryNoteLiveSlip | null = useMemo(
+    () => buildCurrentLiveSlip(),
+    [buildCurrentLiveSlip],
+  );
+
+  const effectiveLiveSlip = voucherLiveSlip ?? liveSlip;
 
   const cfgForPrint = useMemo(() => {
     if (!cfg) return null;
@@ -685,19 +886,25 @@ export function DeliveryNotePrintPage() {
 
   const handleComplete = useCallback(async () => {
     if (!draft || shipmentQueryPreview) return;
-    if (draft.noOrderShipOut) {
-      const doc = draft.documentNo?.trim() || docNo.trim();
-      if (!doc) {
-        message.error("送货单号尚未分配，请稍候或点重试");
-        return;
-      }
-      if (!draft.customerId) {
-        message.error("缺少客户信息，请从无单出货重新进入");
-        return;
-      }
-      setCompleting(true);
-      const merged = mergeLineIntoDraft(draft, lineState);
-      try {
+    if (!draft.customerId && draft.noOrderShipOut) {
+      message.error("缺少客户信息，请从无单出货重新进入");
+      return;
+    }
+    if (!draft.noOrderShipOut && !order) {
+      message.error("订单数据尚未加载完成");
+      return;
+    }
+
+    setCompleting(true);
+    const merged = mergeLineIntoDraft(draft, lineState);
+    try {
+      const doc = await allocateDeliveryDocumentNo(draft, order);
+
+      if (draft.noOrderShipOut) {
+        if (!draft.customerId) {
+          message.error("缺少客户信息，请从无单出货重新进入");
+          return;
+        }
         if (draft.noOrderInboundIds?.length) {
           await fetchJson("/api/warehouse/product-ship-out/attach-delivery-note", {
             method: "POST",
@@ -728,18 +935,62 @@ export function DeliveryNotePrintPage() {
           });
         }
         sessionStorage.removeItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
+        const slipToSave = buildCurrentLiveSlip(doc);
+        if (slipToSave && draft.customerId) {
+          await persistDeliveryVoucher(slipToSave, {
+            customerId: draft.customerId,
+            deliveredAt: merged.actualDeliveredAt,
+          });
+        }
         message.success("无单出货已完成，库存已扣减");
         router.push("/dashboard/warehouse?tab=query");
-      } catch (e) {
-        message.error(e instanceof Error ? e.message : "提交失败");
-      } finally {
-        setCompleting(false);
+        return;
       }
-      return;
-    }
-    setCompleting(true);
-    const merged = mergeLineIntoDraft(draft, lineState);
-    try {
+
+      if (isMergedDeliveryDraft(draft)) {
+        const orderIds = deliveryDraftOrderIds(draft);
+        for (const orderId of orderIds) {
+          const lineMap = merged.lineOrderIdByLineId ?? {};
+          const orderLines = merged.lines
+            .filter((l) => (lineMap[l.lineId] ?? merged.orderId) === orderId)
+            .map((l) => ({
+              lineId: l.lineId,
+              shipQty: slipQuantityDisplay(l),
+              spareQty: Math.max(0, Math.trunc(l.spareQty ?? 0)),
+            }))
+            .filter((x) => x.shipQty > 0 || x.spareQty > 0);
+          if (orderLines.length === 0) continue;
+          const inhMaps = pickInhouseMapsForOrder(merged, orderId);
+          await fetchJson<DeliverOkResponse>(
+            `/api/warehouse/sales-orders/${orderId}/deliver`,
+            {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                actualDeliveredAt: merged.actualDeliveredAt,
+                documentNo: doc,
+                lines: orderLines,
+                ...inhMaps,
+              }),
+            },
+          );
+        }
+        const slipToSave = buildCurrentLiveSlip(doc);
+        if (slipToSave && order?.customer.id) {
+          await persistDeliveryVoucher(slipToSave, {
+            customerId: order.customer.id,
+            deliveredAt: merged.actualDeliveredAt,
+            mergedShip: true,
+            orderIds: deliveryDraftOrderIds(draft),
+          });
+        }
+        sessionStorage.removeItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
+        message.success("合并出货已完成，库存已扣减");
+        router.push("/dashboard/warehouse");
+        return;
+      }
+
       const res = await fetchJson<DeliverOkResponse>(
         `/api/warehouse/sales-orders/${draft.orderId}/deliver`,
         {
@@ -748,7 +999,7 @@ export function DeliveryNotePrintPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             actualDeliveredAt: draft.actualDeliveredAt,
-            documentNo: draft.documentNo?.trim() || null,
+            documentNo: doc,
             lines: merged.lines
               .map((l) => ({
                 lineId: l.lineId,
@@ -770,34 +1021,51 @@ export function DeliveryNotePrintPage() {
           }),
         },
       );
+      const slipToSave = buildCurrentLiveSlip(doc);
+      if (slipToSave && order?.customer.id) {
+        await persistDeliveryVoucher(slipToSave, {
+          customerId: order.customer.id,
+          deliveredAt: merged.actualDeliveredAt,
+          mergedShip: false,
+          orderIds: [draft.orderId],
+        });
+      }
       sessionStorage.removeItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
-
-      const goWarehouse = () => router.push("/dashboard/warehouse");
 
       if (res.fullyDelivered) {
         message.success("出货已完成，库存已扣减");
       } else {
         message.success("本批出货已确认，库存已扣减");
       }
-      goWarehouse();
+      router.push("/dashboard/warehouse");
     } catch (e) {
       message.error(e instanceof Error ? e.message : "提交失败");
     } finally {
       setCompleting(false);
     }
-  }, [draft, docNo, lineState, message, router, shipmentQueryPreview]);
+  }, [
+    draft,
+    lineState,
+    message,
+    router,
+    shipmentQueryPreview,
+    order,
+    buildCurrentLiveSlip,
+    persistDeliveryVoucher,
+    allocateDeliveryDocumentNo,
+  ]);
 
   const handleCancel = useCallback(() => {
-    if (shipmentQueryPreview) {
+    if (shipmentQueryPreview || viewVoucher) {
       router.push("/dashboard/warehouse?tab=query");
       return;
     }
     sessionStorage.removeItem(WAREHOUSE_DELIVERY_DRAFT_KEY);
     router.push("/dashboard/warehouse");
-  }, [router, shipmentQueryPreview]);
+  }, [router, shipmentQueryPreview, viewVoucher]);
 
   const handleBackStep = useCallback(() => {
-    if (shipmentQueryPreview) {
+    if (shipmentQueryPreview || viewVoucher) {
       router.push("/dashboard/warehouse?tab=query");
       return;
     }
@@ -812,36 +1080,172 @@ export function DeliveryNotePrintPage() {
     } else {
       router.push("/dashboard/warehouse");
     }
-  }, [draft, lineState, router, shipmentQueryPreview]);
+  }, [draft, lineState, router, shipmentQueryPreview, viewVoucher]);
+
+  const isNoOrderVoidContext = useMemo(() => {
+    if (viewVoucher && voucherSource === "no_order") return true;
+    return Boolean(draft?.noOrderShipOut && shipmentQueryPreview);
+  }, [viewVoucher, voucherSource, draft?.noOrderShipOut, shipmentQueryPreview]);
+
+  const canVoidCurrentBatch = useMemo(() => {
+    if (voucherVoidedAt) return false;
+    if (isNoOrderVoidContext) {
+      const doc = (
+        documentNoFromQuery ||
+        docNo ||
+        draft?.documentNo
+      )?.trim();
+      return Boolean(doc);
+    }
+    if (viewVoucher) {
+      const doc = (documentNoFromQuery || docNo)?.trim();
+      return Boolean(doc && voucherDeliveredAt && voucherOrderIds.length > 0);
+    }
+    return Boolean(
+      shipmentQueryPreview && shipmentPreviewOrder && currentBatchAt,
+    );
+  }, [
+    voucherVoidedAt,
+    isNoOrderVoidContext,
+    viewVoucher,
+    documentNoFromQuery,
+    docNo,
+    draft?.documentNo,
+    voucherDeliveredAt,
+    voucherOrderIds.length,
+    shipmentQueryPreview,
+    shipmentPreviewOrder,
+    currentBatchAt,
+  ]);
 
   const voidCurrentBatch = useCallback(() => {
-    if (!shipmentQueryPreview || !shipmentPreviewOrder || !currentBatchAt) {
+    const noteNo = (
+      documentNoFromQuery ||
+      docNo ||
+      draft?.documentNo ||
+      shipmentQueryDocumentNo
+    )?.trim() || null;
+    const batchAt = viewVoucher ? voucherDeliveredAt : currentBatchAt;
+    const orderIds = viewVoucher
+      ? voucherOrderIds
+      : isMergedDeliveryDraft(draft ?? { orderId: "", actualDeliveredAt: "", lines: [] })
+        ? (draft?.orderIds ?? [])
+        : shipmentPreviewOrder
+          ? [shipmentPreviewOrder.id]
+          : [];
+    const mergedOrderCount = orderIds.length;
+
+    const salesVoidConfirmContent =
+      mergedOrderCount > 1
+        ? `此送货单包含 ${mergedOrderCount} 张销售订单，确认作废？作废后回退本送货单出货数量并恢复库存；若有存档凭证将标记为已作废，送货单内容不可再改。`
+        : viewVoucher
+          ? "作废后回退本送货单对应出货数量并恢复库存；存档凭证将标记为已作废，送货单内容不可再改。"
+          : "作废后仅回退当前批次出货数量，其他批次不受影响；对应订单会按剩余出货情况自动回到可出货状态。";
+
+    const applyVoidedVoucherState = () => {
+      setVoucherVoidedAt(new Date().toISOString());
+    };
+
+    const reloadVoucherAfterVoid = async () => {
+      if (!viewVoucher || !documentNoFromQuery?.trim()) return;
+      try {
+        const voucher = await fetchJson<{
+          voidedAt: string | null;
+          deliveredAt: string;
+          orderIds?: string[];
+        }>(
+          `/api/warehouse/delivery-notes/voucher?documentNo=${encodeURIComponent(documentNoFromQuery.trim())}`,
+          { credentials: "include" },
+        );
+        setVoucherVoidedAt(voucher.voidedAt);
+        setVoucherDeliveredAt(voucher.deliveredAt);
+        setVoucherOrderIds(voucher.orderIds ?? []);
+      } catch {
+        // 作废已成功，出货记录可能已删；保留当前预览并标记已作废
+        applyVoidedVoucherState();
+      }
+    };
+
+    if (isNoOrderVoidContext) {
+      if (!noteNo) {
+        message.warning("缺少送货单号，无法作废");
+        return;
+      }
+      modal.confirm({
+        title: "作废此无单出货送货单？",
+        content:
+          "作废后回退本批出库数量并恢复库存；若有存档凭证将标记为已作废，送货单内容不可再改。",
+        okType: "danger",
+        okText: "确认作废",
+        cancelText: "取消",
+        onOk: async () => {
+          setVoidingBatch(true);
+          try {
+            const res = await fetchJson<{ revertedQty?: number }>(
+              "/api/warehouse/product-ship-out/void-batch",
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ deliveryNoteNo: noteNo }),
+              },
+            );
+            message.success(
+              `已作废本批，回退数量 ${Math.max(0, Number(res.revertedQty ?? 0))}`,
+            );
+            if (viewVoucher && documentNoFromQuery?.trim()) {
+              setVoucherVoidedAt(new Date().toISOString());
+            } else {
+              router.push("/dashboard/warehouse?tab=query");
+            }
+          } catch (e) {
+            message.error(e instanceof Error ? e.message : "作废失败");
+          } finally {
+            setVoidingBatch(false);
+          }
+        },
+      });
+      return;
+    }
+
+    if (!batchAt || orderIds.length === 0) {
       message.warning("当前批次信息缺失，无法作废");
       return;
     }
     modal.confirm({
-      title: "作废当前送货单批次？",
-      content:
-        "作废后仅回退当前批次出货数量，其他批次不受影响；对应订单会按剩余出货情况自动回到可出货状态。",
+      title:
+        mergedOrderCount > 1 ? "确认作废合并出货送货单？" : "作废当前送货单批次？",
+      content: salesVoidConfirmContent,
       okType: "danger",
       okText: "确认作废",
       cancelText: "取消",
       onOk: async () => {
         setVoidingBatch(true);
         try {
-          const res = await fetchJson<{ revertedQty?: number }>(
-            `/api/warehouse/sales-orders/${shipmentPreviewOrder.id}/void-batch`,
-            {
-              method: "POST",
-              credentials: "include",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                batchDeliveredAt: currentBatchAt,
-                deliveryNoteNo: shipmentQueryDocumentNo,
-              }),
-            },
-          );
-          message.success(`已作废本批，回退数量 ${Math.max(0, Number(res.revertedQty ?? 0))}`);
+          let totalReverted = 0;
+          for (const orderId of orderIds) {
+            const res = await fetchJson<{ revertedQty?: number }>(
+              `/api/warehouse/sales-orders/${orderId}/void-batch`,
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  batchDeliveredAt: batchAt,
+                  deliveryNoteNo: noteNo,
+                }),
+              },
+            );
+            totalReverted += Math.max(0, Number(res.revertedQty ?? 0));
+          }
+          message.success(`已作废本批，回退数量 ${totalReverted}`);
+
+          if (viewVoucher && documentNoFromQuery?.trim()) {
+            await reloadVoucherAfterVoid();
+            return;
+          }
+
+          if (!shipmentPreviewOrder) return;
           const ord = await fetchJson<DetailPayload>(
             `/api/warehouse/sales-orders/${shipmentPreviewOrder.id}`,
             { credentials: "include" },
@@ -861,17 +1265,22 @@ export function DeliveryNotePrintPage() {
           }
         } catch (e) {
           message.error(e instanceof Error ? e.message : "作废失败");
-          throw e;
         } finally {
           setVoidingBatch(false);
         }
       },
     });
   }, [
-    shipmentQueryPreview,
-    shipmentPreviewOrder,
+    isNoOrderVoidContext,
+    viewVoucher,
+    voucherDeliveredAt,
+    voucherOrderIds,
     currentBatchAt,
+    documentNoFromQuery,
+    docNo,
+    draft,
     shipmentQueryDocumentNo,
+    shipmentPreviewOrder,
     message,
     modal,
     router,
@@ -928,9 +1337,13 @@ export function DeliveryNotePrintPage() {
   }, [getLineIdForRow, activeRow, userRemarkInput, persistLineState]);
 
   const isBootingShipmentQuery = viewShipment && orderIdFromQuery && !bootstrapDone;
-  if (isBootingShipmentQuery) {
+  const isBootingVoucher = viewVoucher && documentNoFromQuery?.trim() && !bootstrapDone;
+  if (isBootingShipmentQuery || isBootingVoucher) {
     return (
-      <Card className="warehouse-delivery-slip-print-scope" title="送货单预览（出货查询）">
+      <Card
+        className="warehouse-delivery-slip-print-scope"
+        title={isBootingVoucher ? "送货单预览（存档凭证）" : "送货单预览（出货查询）"}
+      >
         {/** tip 仅支持嵌套或全屏，需有子节点 */}
         <Spin tip="加载中…" size="large">
           <div style={{ minHeight: 200 }} />
@@ -939,16 +1352,35 @@ export function DeliveryNotePrintPage() {
     );
   }
 
-  if (!draft && !loading && bootstrapDone) {
+  if (
+    !draft &&
+    !loading &&
+    bootstrapDone &&
+    !(viewVoucher && (voucherLiveSlip || voucherLoadFailed))
+  ) {
     return (
       <Card className="warehouse-delivery-slip-print-scope" title="送货单打印">
         <Typography.Paragraph>
           {viewShipment && orderIdFromQuery
             ? "无法根据出货记录打开送货单预览。若订单有分批出货，请确认已保存分批记录。"
-            : "没有待打印的出货草稿，请从仓库出货流程进入。"}
+            : viewVoucher && documentNoFromQuery?.trim()
+              ? `无法加载送货单「${documentNoFromQuery.trim()}」，未找到存档或出货记录。`
+              : "没有待打印的出货草稿，请从仓库出货流程进入。"}
         </Typography.Paragraph>
-        <Link href={viewShipment && orderIdFromQuery ? "/dashboard/warehouse?tab=query" : "/dashboard/warehouse"}>
-          {viewShipment && orderIdFromQuery ? "返回出货查询" : "返回仓库出货"}
+        <Link
+          href={
+            viewShipment && orderIdFromQuery
+              ? "/dashboard/warehouse?tab=query"
+              : viewVoucher
+                ? "/dashboard/warehouse?tab=query"
+                : "/dashboard/warehouse"
+          }
+        >
+          {viewShipment && orderIdFromQuery
+            ? "返回出货查询"
+            : viewVoucher
+              ? "返回出货查询"
+              : "返回仓库出货"}
         </Link>
       </Card>
     );
@@ -959,14 +1391,16 @@ export function DeliveryNotePrintPage() {
       className="warehouse-delivery-slip-print-scope"
       title={
         shipmentQueryPreview
-          ? "送货单预览（出货查询，只读）"
+          ? viewVoucher
+            ? "送货单预览（存档凭证，只读）"
+            : "送货单预览（出货查询，只读）"
           : draft?.noOrderShipOut
             ? "无单出货 · 送货单打印（A5 横向）"
             : "送货单打印（A5 横向）"
       }
       styles={{ body: { overflow: "visible" } }}
       extra={
-        shipmentQueryPreview ? null : (
+        shipmentQueryPreview || viewVoucher ? null : (
           <Space>
             <Button onClick={openAddSpare}>备品数量</Button>
             <Button onClick={openAddUserRemark}>备注信息</Button>
@@ -1016,44 +1450,49 @@ export function DeliveryNotePrintPage() {
             </Space>
           </div>
         ) : null}
-        {shipmentQueryPreview ? (
-          <div style={{ marginBottom: 10 }}>
-            <Typography.Text>
-              送货单号（与完成出货时一致）：
-              {shipmentQueryDocumentNo?.trim() ? (
-                <strong style={{ marginLeft: 8 }}>{shipmentQueryDocumentNo.trim()}</strong>
-              ) : (
-                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                  无存档（历史数据或未带单号完成出货）
-                </Typography.Text>
-              )}
-            </Typography.Text>
-          </div>
-        ) : draft?.noOrderShipOut ? (
-          <div style={{ marginBottom: 10 }}>
-            <Typography.Text>
-              送货单号：
-              {slipDocumentNo && !slipDocumentNo.startsWith("（") && slipDocumentNo !== "分配中…" ? (
-                <strong style={{ marginLeft: 8 }}>{slipDocumentNo}</strong>
-              ) : (
-                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                  {allocatingNo ? "分配中…" : "待分配"}
-                </Typography.Text>
-              )}
-            </Typography.Text>
-          </div>
+        {viewVoucher && voucherVoidedAt ? (
+          <Typography.Text type="danger" style={{ display: "block", marginBottom: 10 }}>
+            此送货单已于 {dayjs(voucherVoidedAt).format("YYYY-MM-DD HH:mm")} 作废；以下为确认时存档内容，不可修改。
+          </Typography.Text>
         ) : null}
+        {viewVoucher || shipmentQueryPreview ? (
+          <div style={{ marginBottom: 10 }}>
+            <Typography.Text>
+              送货单号（存档凭证）：
+              {(documentNoFromQuery || docNo || draft?.documentNo)?.trim() ? (
+                <strong style={{ marginLeft: 8 }}>
+                  {(documentNoFromQuery || docNo || draft?.documentNo)?.trim()}
+                </strong>
+              ) : (
+                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                  无存档
+                </Typography.Text>
+              )}
+            </Typography.Text>
+          </div>
+        ) : (
+          <div style={{ marginBottom: 10 }}>
+            <Typography.Text>
+              送货单号（预览）：
+              {previewDocNo ? (
+                <strong style={{ marginLeft: 8 }}>{previewDocNo}</strong>
+              ) : (
+                <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+                  {previewDocLoading ? "加载中…" : "—"}
+                </Typography.Text>
+              )}
+              <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                尚未占用流水，点「{draft?.noOrderShipOut ? "确定" : "完成"}」后正式生效
+              </Typography.Text>
+            </Typography.Text>
+          </div>
+        )}
         <Space wrap>
-          {shipmentQueryPreview ? null : (
+          {shipmentQueryPreview || viewVoucher ? null : (
             <Button
               type="primary"
               onClick={() => void handleComplete()}
               loading={completing}
-              disabled={
-                draft?.noOrderShipOut
-                  ? !(docNo.trim() || draft.documentNo?.trim()) || allocatingNo
-                  : false
-              }
             >
               {draft?.noOrderShipOut ? "确定" : "完成"}
             </Button>
@@ -1061,19 +1500,22 @@ export function DeliveryNotePrintPage() {
           <Button onClick={handleBackStep}>
             {shipmentQueryPreview ? "返回出货查询" : "返回上一步"}
           </Button>
-          <Button onClick={handlePrint}>打印</Button>
-          <Button
-            onClick={() => void handlePdf()}
-            loading={pdfLoading}
-            disabled={!liveSlip}
-          >
-            导出 PDF
-          </Button>
-          {shipmentQueryPreview && !draft?.noOrderShipOut ? (
+          {shipmentQueryPreview || viewVoucher ? (
+            <>
+              <Button onClick={handlePrint}>打印</Button>
+              <Button
+                onClick={() => void handlePdf()}
+                loading={pdfLoading}
+                disabled={!effectiveLiveSlip}
+              >
+                导出 PDF
+              </Button>
+            </>
+          ) : null}
+          {canVoidCurrentBatch ? (
             <Button
               danger
               onClick={voidCurrentBatch}
-              disabled={!currentBatchAt}
               loading={voidingBatch}
             >
               作废本批
@@ -1082,25 +1524,27 @@ export function DeliveryNotePrintPage() {
           <Button onClick={handleCancel}>
             {shipmentQueryPreview ? "关闭" : "取消"}
           </Button>
-          {shipmentQueryPreview ? null : !docNo && !allocatingNo && !loading && order && draft ? (
-            <Button type="link" onClick={() => setDocNoTick((n) => n + 1)}>
-              重试分配单号
-            </Button>
-          ) : null}
-          {allocatingNo ? <Typography.Text type="secondary">单号分配中…</Typography.Text> : null}
-          {shipmentQueryPreview ? (
+          {viewVoucher || shipmentQueryPreview ? (
             <Typography.Text type="secondary">
-              {draft?.noOrderShipOut
-                ? "无单出货送货单只读预览；送货单号与打印完成时一致。可打印、导出 PDF。"
-                : "送货单号按本批出货写入记录显示，与当时点击「完成」时一致；无存档时见灰字说明。按每批出货时间还原行数量与日期；多批可用「上一批/下一批」或下拉。当批备品/附加备注未存档时本页不显示。可打印、导出 PDF。"}
+              {viewVoucher
+                ? voucherSource === "voucher"
+                  ? "以下为确认出货时存档的送货单凭证，内容与当时打印一致，不可修改；可打印、导出 PDF，也可作废本批（作废后凭证标记为已作废）。"
+                  : voucherSource === "ship_logs"
+                    ? "该出货未写入存档凭证，以下按出货记录还原预览，可能与当时打印略有差异；可打印、导出 PDF、作废本批（与出货查询一致）。"
+                    : voucherSource === "no_order"
+                      ? "无单出货送货单只读预览；可打印、导出 PDF、作废本批（作废后回退库存）。"
+                      : "以下为送货单只读预览。可打印、导出 PDF。"
+                : draft?.noOrderShipOut
+                  ? "无单出货送货单只读预览；送货单号与打印完成时一致。可打印、导出 PDF。"
+                  : "历史出货未存档时按订单还原预览；新出货请从出货查询点送货单号查看存档凭证。可打印、导出 PDF。"}
             </Typography.Text>
           ) : draft?.noOrderShipOut ? (
             <Typography.Text type="secondary">
-              可设置备品/备注后打印或导出 PDF；点「确定」后扣减库存并登记出库。点「取消」不扣库存。
+              可设置备品/备注；预览单号点「确定」后正式占用并扣减库存。点「取消」不占用单号、不扣库存。
             </Typography.Text>
           ) : (
             <Typography.Text type="secondary">
-              出货物量在仓库「确认出货」中已填；在左侧点选一行后可设置「备品数量」「备注信息」（可反复修改）。点「完成」后登记出库存。点「取消」不记档。
+              出货物量在仓库「确认出货」中已填；可设置备品/备注。预览单号点「完成」后正式占用并登记出库；点「取消」不占用单号、不记档。
             </Typography.Text>
           )}
         </Space>
@@ -1146,11 +1590,15 @@ export function DeliveryNotePrintPage() {
           placeholder="多行可换行；留空则仅显示系统自动生成的内容"
         />
       </Modal>
-      {loading || !cfgForPrint || !order ? (
+      {loading || !cfgForPrint || (!viewVoucher && !order) ? (
         <Spin tip="加载中…">
           <div style={{ minHeight: 240 }} />
         </Spin>
-      ) : !liveSlip ? (
+      ) : viewVoucher && voucherLoadFailed ? (
+        <Typography.Text type="danger">
+          无法加载送货单「{documentNoFromQuery?.trim() || "—"}」：未找到存档凭证或出货记录。若刚完成出货，请确认已点「完成」；也可在出货查询中通过「打开预览」查看。
+        </Typography.Text>
+      ) : !effectiveLiveSlip ? (
         <Typography.Text type="danger">
           无法生成送货单：本批无有效行（出货数为 0）或数据异常。请「返回上一步」检查。
         </Typography.Text>
@@ -1158,10 +1606,10 @@ export function DeliveryNotePrintPage() {
         <div id="delivery-note-print-area" className="delivery-note-print-area-wrap">
           <DeliveryNoteTemplatePreview
             cfg={cfgForPrint}
-            liveSlip={liveSlip}
+            liveSlip={effectiveLiveSlip}
             rootClassName="delivery-note-a5-landscape"
-            liveSlipActiveRow={shipmentQueryPreview ? undefined : activeRow}
-            onLiveSlipRowClick={shipmentQueryPreview ? undefined : setActiveRow}
+            liveSlipActiveRow={shipmentQueryPreview || viewVoucher ? undefined : activeRow}
+            onLiveSlipRowClick={shipmentQueryPreview || viewVoucher ? undefined : setActiveRow}
           />
         </div>
       )}

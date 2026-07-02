@@ -3,25 +3,23 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requirePermission } from "@/lib/api-auth";
 import {
-  allocateDeliveryNoteSerial,
   formatDeliveryDocumentNo,
+  previewNextDeliveryNoteSerial,
 } from "@/lib/delivery-note-sequence";
 
-const bodySchema = z.object({
-  orderId: z.string().min(1).optional(),
-  customerId: z.string().min(1).optional(),
-  /** 以该时间所在自然年作流水年；与送货单日期一致 */
-  atIso: z.string().optional(),
-}).refine((d) => d.orderId || d.customerId, {
-  message: "请提供销售订单或客户",
-});
+const bodySchema = z
+  .object({
+    orderId: z.string().min(1).optional(),
+    customerId: z.string().min(1).optional(),
+    atIso: z.string().optional(),
+  })
+  .refine((d) => d.orderId || d.customerId, {
+    message: "请提供销售订单或客户",
+  });
 
-/**
- * 分配送货单号：{客户简称}{YYYYMMDD}{三位年流水}
- * 无连字符；年流水按客户 + 自然年重置；有历史出货单从最大流水续编（如已有 005 则下一张 006）
- */
+/** 预览下一送货单号（不占用流水；点「完成」时 POST allocate 才正式生效） */
 export async function POST(req: Request) {
-  const auth = await requirePermission("warehouse.edit");
+  const auth = await requirePermission("warehouse.view");
   if (!auth.ok) {
     return NextResponse.json({ error: auth.message }, { status: auth.status });
   }
@@ -40,9 +38,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const at = parsed.data.atIso
-    ? new Date(parsed.data.atIso)
-    : new Date();
+  const at = parsed.data.atIso ? new Date(parsed.data.atIso) : new Date();
   if (Number.isNaN(at.getTime())) {
     return NextResponse.json({ error: "时间无效" }, { status: 400 });
   }
@@ -80,7 +76,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const seq = await allocateDeliveryNoteSerial(prisma, customerId, year);
+    const seq = await previewNextDeliveryNoteSerial(prisma, customerId, year);
     const documentNo = formatDeliveryDocumentNo(c, at, seq);
 
     return NextResponse.json({
@@ -88,11 +84,12 @@ export async function POST(req: Request) {
       year,
       customerId,
       seq,
+      preview: true as const,
     });
   } catch (e) {
-    console.error("[POST /api/delivery-note-sequence/allocate]", e);
+    console.error("[POST /api/delivery-note-sequence/preview]", e);
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "分配单号失败" },
+      { error: e instanceof Error ? e.message : "预览单号失败" },
       { status: 500 },
     );
   }
