@@ -9,6 +9,11 @@ import {
   computeOutsourceLineStockSplit,
   perSetFromProductMaterials,
 } from "@/lib/outsource-material-stock-balance";
+import {
+  loadSupplierConfirmStates,
+  listCompletedPurchaseSupplierIds,
+  syncSupplierConfirmFromActivePurchaseOrders,
+} from "@/lib/purchase-sales-supplier-confirm";
 
 type MatWithSup = Prisma.MaterialGetPayload<{
   include: {
@@ -145,6 +150,13 @@ export async function GET(
     if (!order) {
       return NextResponse.json({ error: "销售订单不存在" }, { status: 404 });
     }
+
+    await syncSupplierConfirmFromActivePurchaseOrders(prisma, order.id);
+    const supplierConfirms = await loadSupplierConfirmStates(prisma, order.id);
+    const completedSupplierIds = await listCompletedPurchaseSupplierIds(
+      prisma,
+      order.id,
+    );
 
     const cancelledOrders = await prisma.purchaseOrder.findMany({
       where: { salesOrderId: order.id, status: "CANCELLED" },
@@ -333,6 +345,7 @@ export async function GET(
 
       for (const { qty, material: m } of needMap.values()) {
         if (skippedMaterialIds.has(m.id)) continue;
+        if (completedSupplierIds.has(m.supplierId)) continue;
         const orderedQty = orderedByMaterial.get(m.id) ?? 0;
         const remaining = Math.max(0, qty - orderedQty);
         if (remaining <= 0) continue;
@@ -365,6 +378,18 @@ export async function GET(
         hasActiveCoverage && supplierGroups.length > 0
           ? "partial_redo"
           : "full_bom";
+    }
+
+    const materialSupplierId = new Map<string, string>();
+    for (const { material } of needMap.values()) {
+      materialSupplierId.set(material.id, material.supplierId);
+    }
+    for (const item of bomByProduct) {
+      item.bomLines = item.bomLines.filter((bl) => {
+        const sid = materialSupplierId.get(bl.materialId);
+        if (!sid) return true;
+        return !completedSupplierIds.has(sid);
+      });
     }
 
     const relevantMaterialIds = [
@@ -540,6 +565,8 @@ export async function GET(
           Math.max(0, Math.trunc(v)),
         ]),
       ),
+      supplierConfirms,
+      completedSupplierIds: [...completedSupplierIds],
     });
   } catch (e) {
     console.error("[GET /api/sales-orders/[id]/purchase-split]", e);

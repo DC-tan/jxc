@@ -231,6 +231,7 @@ model Supplier {
   materials    Material[]
   purchaseOrders PurchaseOrder[]
   outsourceOrders OutsourceOrder[]
+  purchaseSupplierConfirms SalesOrderPurchaseSupplierConfirm[]
 }
 
 /// 物料种类（历史枚举，迁移完成后可删除列 kind）
@@ -385,6 +386,7 @@ model PurchaseOrder {
   updatedAt  DateTime            @updatedAt
   lines      PurchaseOrderLine[]
   extraFees  PurchaseOrderExtraFee[]
+  salesOrderSupplierConfirms SalesOrderPurchaseSupplierConfirm[]
 
   @@index([supplierId])
   @@index([createdAt])
@@ -477,6 +479,7 @@ model SalesOrder {
   lines      SalesOrderLine[]
   purchaseOrders PurchaseOrder[]
   purchaseSkipMaterials SalesOrderPurchaseSkipMaterial[]
+  purchaseSupplierConfirms SalesOrderPurchaseSupplierConfirm[]
 
   @@index([customerId])
   @@index([createdAt])
@@ -495,6 +498,21 @@ model SalesOrderPurchaseSkipMaterial {
 
   @@id([salesOrderId, materialId])
   @@index([materialId])
+}
+
+/// 销售单拆采购：按供应商「确认」拆分结果；全部供应商确认且已生成采购单后不再出现在新建采购列表
+model SalesOrderPurchaseSupplierConfirm {
+  salesOrderId      String
+  salesOrder        SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  supplierId        String
+  supplier          Supplier   @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  confirmedAt       DateTime?
+  purchaseOrderId   String?
+  purchaseOrder     PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+
+  @@id([salesOrderId, supplierId])
+  @@index([supplierId])
+  @@index([purchaseOrderId])
 }
 
 /// 销售订单明细（行项目为系统商品档案）

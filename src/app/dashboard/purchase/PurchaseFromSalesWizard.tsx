@@ -30,6 +30,7 @@ import { fetchJson } from "@/lib/fetch-json";
 import { moneyColumnLabels } from "@/lib/price-tax";
 import { computePurchaseOrderDeliveryDue } from "@/lib/purchase-order-delivery";
 import {
+  clearWizardActualDemandDraft,
   loadPurchaseWizardDraft,
   savePurchaseWizardDraft,
   upsertWizardSupplierDraft,
@@ -147,6 +148,11 @@ type SplitPayload = {
   supplierGroups: SplitGroup[];
   processorOptions: ProcessorOption[];
   outsourceStockByProcessorMaterial: Record<string, number>;
+  supplierConfirms?: Record<
+    string,
+    { confirmed: boolean; confirmedAt: string | null; purchaseOrderId: string | null }
+  >;
+  completedSupplierIds?: string[];
 };
 
 type PendingChangeReminder = {
@@ -563,7 +569,11 @@ export function PurchaseFromSalesWizard({
       );
       setSplit(data);
       if (data.supplierGroups.length === 0) {
-        message.warning("该销售订单未产生物料需求（请检查商品 BOM）");
+        if ((data.completedSupplierIds?.length ?? 0) > 0) {
+          message.info("本单待采供应商均已确认并生成采购单，无需继续拆分");
+        } else {
+          message.warning("该销售订单未产生物料需求（请检查商品 BOM）");
+        }
         return;
       }
       const draft = loadPurchaseWizardDraft(data.salesOrder.id);
@@ -573,11 +583,7 @@ export function PurchaseFromSalesWizard({
           Math.max(0, Math.trunc(bp.salesQty)),
         ]),
       );
-      const demandMap =
-        draft?.actualDemandByProductId &&
-        Object.keys(draft.actualDemandByProductId).length > 0
-          ? { ...defaultDemand, ...draft.actualDemandByProductId }
-          : defaultDemand;
+      const demandMap = defaultDemand;
       setActualDemandByProductId(demandMap);
       const defaultProcessorId =
         data.processorOptions.length === 1 ? data.processorOptions[0].id : undefined;
@@ -610,9 +616,12 @@ export function PurchaseFromSalesWizard({
             const lineDraft = sd?.lines.find(
               (x) => x.materialId === l.materialId,
             );
+            const bomNeed =
+              needByMaterialId.get(l.materialId) ?? l.bomNeedQty;
             if (sd?.confirmed) {
               return {
                 ...l,
+                bomNeedQty: bomNeed,
                 quantity: lineDraft?.quantity ?? 0,
                 unitPriceNum: lineDraft?.unitPriceNum ?? Number(l.unitPrice || 0),
                 remark: lineDraft?.remark ?? "",
@@ -620,8 +629,8 @@ export function PurchaseFromSalesWizard({
             }
             return {
               ...l,
+              bomNeedQty: bomNeed,
               quantity:
-                lineDraft?.quantity ??
                 needByMaterialId.get(l.materialId) ??
                 l.suggestedQty,
               unitPriceNum:
@@ -633,7 +642,10 @@ export function PurchaseFromSalesWizard({
             supplierId: g.supplier.id,
             supplier: g.supplier,
             lines: mergeLinesWithDraft(baseLines, sd?.lines),
-            confirmed: sd?.confirmed ?? false,
+            confirmed:
+              data.supplierConfirms?.[g.supplier.id]?.confirmed ??
+              sd?.confirmed ??
+              false,
             redoCancelledOrderNos: g.redoCancelledOrderNos,
           };
         }),
@@ -674,7 +686,7 @@ export function PurchaseFromSalesWizard({
         data.splitMode === "partial_redo"
       ) {
         if (data.supplierGroups.length === 0) {
-          message.warning("没有可补开的已取消采购明细");
+          message.info("本单待采供应商均已确认并生成采购单，无需继续拆分");
           return;
         }
       } else {
@@ -765,6 +777,19 @@ export function PurchaseFromSalesWizard({
         if (g) {
           persistSupplierDraft(g, true);
           if (split) {
+            void fetchJson(
+              `/api/sales-orders/${split.salesOrder.id}/purchase-split/confirm-supplier`,
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ supplierId: g.supplierId }),
+              },
+            ).catch((e) => {
+              message.error(
+                e instanceof Error ? e.message : "记录供应商确认失败",
+              );
+            });
             const skipIds = g.lines
               .filter((l) => l.quantity === 0)
               .map((l) => l.materialId);
@@ -801,6 +826,20 @@ export function PurchaseFromSalesWizard({
         if (g) {
           persistSupplierDraft(g, false);
           if (split) {
+            void fetchJson(
+              `/api/sales-orders/${split.salesOrder.id}/purchase-split/confirm-supplier`,
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  supplierId: g.supplierId,
+                  revoke: true,
+                }),
+              },
+            ).catch(() => {
+              /* 撤销失败不阻断修改 */
+            });
             const skipIds = g.lines
               .filter((l) => l.quantity === 0)
               .map((l) => l.materialId);
@@ -1116,20 +1155,42 @@ export function PurchaseFromSalesWizard({
 
   useEffect(() => {
     if (!split) return;
-    if (split.splitMode === "redo_cancelled") return;
+    if (
+      split.splitMode === "redo_cancelled" ||
+      split.splitMode === "partial_redo"
+    ) {
+      return;
+    }
+    const needByMaterialId = materialNeedMapByActualDemand(
+      split,
+      actualDemandByProductId,
+    );
     setGroups((prev) =>
       prev.map((g) => {
         if (g.confirmed) return g;
         return {
           ...g,
-          lines: g.lines.map((l) => ({
-            ...l,
-            quantity: calcSuggestedQty(l.materialId, l.bomNeedQty, l.orderedQty ?? 0),
-          })),
+          lines: g.lines.map((l) => {
+            const bomNeed = needByMaterialId.get(l.materialId) ?? l.bomNeedQty;
+            return {
+              ...l,
+              bomNeedQty: bomNeed,
+              quantity: calcSuggestedQty(
+                l.materialId,
+                bomNeed,
+                l.orderedQty ?? 0,
+              ),
+            };
+          }),
         };
       }),
     );
-  }, [split, calcSuggestedQty]);
+  }, [
+    split,
+    actualDemandByProductId,
+    calcSuggestedQty,
+    materialNeedMapByActualDemand,
+  ]);
 
   const bomRefAllColumns = useMemo((): ColumnsType<BomLine> => {
     const grayStyle = { color: ALREADY_ORDERED_GRAY };
@@ -1474,7 +1535,7 @@ export function PurchaseFromSalesWizard({
             size="middle"
           >
             <Typography.Text type="secondary">
-              列出尚未出货且仍需采购的销售订单：从未下过采购、或删除/作废部分采购单后尚有未覆盖物料、或存在已取消单需补开。进入后仅显示待采明细（已删单按 BOM 缺口，已取消单按原单明细）。
+              列出尚未出货且仍需采购的销售订单：从未下过采购、或仅部分供应商已确认/已下单、或存在已取消单需补开。进入后仅显示待采明细（已删单按 BOM 缺口，已取消单按原单明细）；全部供应商点「确认」并生成采购单后本单不再出现。
               汇总物料并按供应商拆成多张采购单。下拉项为：客户名称 · 客户机型 · 订单编号。
             </Typography.Text>
             <Select
@@ -1590,7 +1651,17 @@ export function PurchaseFromSalesWizard({
                 );
               })}
               <Space style={{ marginTop: 8 }} wrap>
-                <Button onClick={() => setStep(0)}>上一步</Button>
+                <Button
+                  onClick={() => {
+                    if (split) {
+                      clearWizardActualDemandDraft(split.salesOrder.id);
+                    }
+                    setActualDemandByProductId({});
+                    setStep(0);
+                  }}
+                >
+                  上一步
+                </Button>
                 {allQuantitiesAreZero && (
                   <Button
                     type="primary"

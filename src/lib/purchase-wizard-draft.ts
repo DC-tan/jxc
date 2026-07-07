@@ -96,3 +96,14 @@ export function clearWizardSupplierDraft(
     updatedAt: new Date().toISOString(),
   });
 }
+
+/** 返回上一步时清除「实际需求商品数」草稿，避免与重新计算的采购数量不一致 */
+export function clearWizardActualDemandDraft(salesOrderId: string): void {
+  const base = loadPurchaseWizardDraft(salesOrderId);
+  if (!base) return;
+  savePurchaseWizardDraft({
+    ...base,
+    actualDemandByProductId: {},
+    updatedAt: new Date().toISOString(),
+  });
+}

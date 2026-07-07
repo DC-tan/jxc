@@ -9,6 +9,7 @@ import {
   syncPurchaseOrderExtraFees,
 } from "@/lib/purchase-extra-fees";
 import { ackPurchaseSkipMaterials } from "@/lib/purchase-sales-skip-material";
+import { markSupplierPurchaseOrderGenerated } from "@/lib/purchase-sales-supplier-confirm";
 
 const lineInSchema = z.object({
   materialId: z.string().min(1),
@@ -142,6 +143,23 @@ export async function POST(req: Request) {
   }
 
   for (const g of groups) {
+    const existingPo = await prisma.purchaseOrder.findFirst({
+      where: {
+        salesOrderId,
+        supplierId: g.supplierId,
+        status: { not: "CANCELLED" },
+      },
+      select: { orderNo: true },
+    });
+    if (existingPo) {
+      return NextResponse.json(
+        {
+          error: `该销售单下供应商已有有效采购单「${existingPo.orderNo}」，请勿重复生成；若需调整请先取消原单或点「修改」撤销确认`,
+        },
+        { status: 400 },
+      );
+    }
+
     const sup = await prisma.supplier.findUnique({
       where: { id: g.supplierId },
     });
@@ -211,6 +229,12 @@ export async function POST(req: Request) {
           },
         });
         await syncPurchaseOrderExtraFees(tx, row.id, g.extraFees);
+        await markSupplierPurchaseOrderGenerated(
+          tx,
+          salesOrderId,
+          g.supplierId,
+          row.id,
+        );
         out.push({
           id: row.id,
           orderNo: row.orderNo,

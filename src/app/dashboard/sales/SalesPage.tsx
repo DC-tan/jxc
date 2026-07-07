@@ -3,6 +3,7 @@
 import { PlusOutlined, QuestionCircleOutlined, SettingOutlined } from "@ant-design/icons";
 import {
   App,
+  AutoComplete,
   Button,
   Card,
   Checkbox,
@@ -49,6 +50,60 @@ const SALES_TAB_PERM: Record<string, string> = {
 };
 
 type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
+
+type PendingCustomerOption = {
+  value: string;
+  label: string;
+  searchText: string;
+  code: string;
+  shortName: string;
+};
+
+function formatPendingCustomerLabel(c: {
+  code: string;
+  name: string;
+  shortName?: string | null;
+}): string {
+  const base = `${c.code} ${c.name}`.trim();
+  const sn = c.shortName?.trim();
+  return sn ? `${base}（${sn}）` : base;
+}
+
+function buildPendingCustomerSearchText(c: {
+  code: string;
+  name: string;
+  shortName?: string | null;
+}): string {
+  return `${c.code} ${c.name} ${c.shortName ?? ""}`.toLowerCase();
+}
+
+function resolvePendingCustomerExact(
+  input: string,
+  options: PendingCustomerOption[],
+): PendingCustomerOption | null {
+  const q = input.trim().toLowerCase();
+  if (!q) return null;
+  return (
+    options.find(
+      (o) => o.code.toLowerCase() === q || o.shortName.toLowerCase() === q,
+    ) ?? null
+  );
+}
+
+function resolvePendingCustomerByInput(
+  input: string,
+  options: PendingCustomerOption[],
+): PendingCustomerOption | null {
+  const q = input.trim().toLowerCase();
+  if (!q) return null;
+  const exact = resolvePendingCustomerExact(input, options);
+  if (exact) return exact;
+  const byLabel = options.filter((o) => o.label.toLowerCase() === q);
+  if (byLabel.length === 1) return byLabel[0]!;
+  const partial = options.filter((o) => o.searchText.includes(q));
+  if (partial.length === 1) return partial[0]!;
+  return null;
+}
 
 type ProductOpt = {
   id: string;
@@ -1081,6 +1136,8 @@ export function SalesPage() {
 
   const [pendingRows, setPendingRows] = useState<SalesOrderRow[]>([]);
   const [loadingPending, setLoadingPending] = useState(false);
+  const [pendingCustomerId, setPendingCustomerId] = useState<string | undefined>();
+  const [pendingCustomerInput, setPendingCustomerInput] = useState("");
 
   const [queryForm] = Form.useForm();
   const [queryRows, setQueryRows] = useState<SalesOrderRow[]>([]);
@@ -1122,6 +1179,18 @@ export function SalesPage() {
   const [todaySelectedKeys, setTodaySelectedKeys] = useState<Key[]>([]);
   const [pendingSelectedKeys, setPendingSelectedKeys] = useState<Key[]>([]);
   const [querySelectedKeys, setQuerySelectedKeys] = useState<Key[]>([]);
+
+  const pendingCustomerOptions = useMemo<PendingCustomerOption[]>(
+    () =>
+      (presets?.customers ?? []).map((c) => ({
+        value: c.id,
+        label: formatPendingCustomerLabel(c),
+        searchText: buildPendingCustomerSearchText(c),
+        code: c.code,
+        shortName: c.shortName?.trim() ?? "",
+      })),
+    [presets?.customers],
+  );
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
@@ -1279,6 +1348,7 @@ export function SalesPage() {
     try {
       const p = new URLSearchParams();
       p.set("pending", "1");
+      if (pendingCustomerId) p.set("customerId", pendingCustomerId);
       const data = await fetchJson<{ list: SalesOrderRow[] }>(
         `/api/sales-orders?${p.toString()}`,
         { credentials: "include" },
@@ -1290,7 +1360,7 @@ export function SalesPage() {
     } finally {
       setLoadingPending(false);
     }
-  }, [message]);
+  }, [message, pendingCustomerId]);
 
   const loadQueryOrders = useCallback(
     async (v: Record<string, unknown>) => {
@@ -1355,6 +1425,10 @@ export function SalesPage() {
   useEffect(() => {
     if (tab === "pending") void loadPendingOrders();
   }, [tab, loadPendingOrders]);
+
+  useEffect(() => {
+    setPendingSelectedKeys([]);
+  }, [pendingCustomerId]);
 
   useEffect(() => {
     if (tab !== "query") return;
@@ -1700,7 +1774,9 @@ export function SalesPage() {
 
   return (
     <Card title="销售订单">
-      {!tabPermLoading && !hasQueryTab ? <Form form={queryForm} component={false} /> : null}
+      {!tabPermLoading && (tab !== "query" || !hasQueryTab) ? (
+        <Form form={queryForm} component={false} />
+      ) : null}
       {!createOpen ? <Form form={createForm} component={false} /> : null}
       {tabPermLoading ? (
         <div style={{ padding: 56, textAlign: "center" }}>
@@ -1807,8 +1883,65 @@ export function SalesPage() {
                     gap: 8,
                   }}
                 >
-                  <div style={{ flex: "1 1 280px" }} />
-                  <Space size={8}>
+                  <Button onClick={() => void loadPendingOrders()}>刷新</Button>
+                  <Space size={8} wrap align="center">
+                    <AutoComplete
+                      allowClear
+                      style={{ minWidth: 260 }}
+                      placeholder="输入客户编号/全称/简称"
+                      value={pendingCustomerInput}
+                      options={pendingCustomerOptions.map((o) => ({
+                        value: o.value,
+                        label: o.label,
+                        searchText: o.searchText,
+                      }))}
+                      filterOption={(input, option) => {
+                        const q = (input ?? "").trim().toLowerCase();
+                        if (!q) return true;
+                        const text = String(
+                          (option as { searchText?: string }).searchText ?? "",
+                        );
+                        return text.includes(q);
+                      }}
+                      onSelect={(value) => {
+                        const id = String(value);
+                        const opt = pendingCustomerOptions.find(
+                          (o) => o.value === id,
+                        );
+                        setPendingCustomerId(id);
+                        setPendingCustomerInput(opt?.label ?? "");
+                      }}
+                      onChange={(text) => {
+                        const v = text ?? "";
+                        setPendingCustomerInput(v);
+                        if (!v.trim()) {
+                          setPendingCustomerId(undefined);
+                          return;
+                        }
+                        const hit = resolvePendingCustomerExact(
+                          v,
+                          pendingCustomerOptions,
+                        );
+                        if (hit) {
+                          setPendingCustomerId(hit.value);
+                          setPendingCustomerInput(hit.label);
+                        } else {
+                          setPendingCustomerId(undefined);
+                        }
+                      }}
+                      onBlur={() => {
+                        const hit = resolvePendingCustomerByInput(
+                          pendingCustomerInput,
+                          pendingCustomerOptions,
+                        );
+                        if (hit) {
+                          setPendingCustomerId(hit.value);
+                          setPendingCustomerInput(hit.label);
+                        } else if (!pendingCustomerInput.trim()) {
+                          setPendingCustomerId(undefined);
+                        }
+                      }}
+                    />
                     <SalesOrderListColumnSettingButton
                       value={pendingListColKeys}
                       onChange={setPendingListColKeys}

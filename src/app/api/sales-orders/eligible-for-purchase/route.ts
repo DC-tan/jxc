@@ -7,8 +7,8 @@ import { salesOrderEligibleForNewPurchase } from "@/lib/purchase-sales-eligibili
  * 可选作采购源的销售订单：
  * - 未整单出货、未标记无需采购
  * - 从未下过采购单 → 显示
- * - 有效采购单已覆盖全部 BOM 需求 → 不显示
- * - 删除了部分采购单 / 仍有未覆盖物料 / 存在已取消单需补开 → 显示
+ * - 全部需采供应商均已点「确认」且已生成有效采购单 → 不显示
+ * - 存在已取消单需补开 / 仅部分供应商确认或下单 → 显示
  */
 export async function GET() {
   const auth = await requirePermission("purchase.create");
