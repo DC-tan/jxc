@@ -375,8 +375,8 @@ export async function GET() {
       const hotProductIds = [
         ...new Set(
           seedLines
-            .filter((l) => l.quantity - l.quantityShipped > 0)
-            .map((l) => l.productId),
+            .filter((l) => l.quantity - l.quantityShipped > 0 && l.productId)
+            .map((l) => l.productId as string),
         ),
       ];
       if (hotProductIds.length === 0) {
@@ -386,6 +386,7 @@ export async function GET() {
           where: {
             productId: { in: hotProductIds },
             salesOrder: { actualDeliveredAt: null },
+            lineKind: "PRODUCT",
           },
           include: {
             salesOrder: {
@@ -400,8 +401,28 @@ export async function GET() {
           },
         });
         const activeCompeting = competing.filter(
-          (l) => l.quantity - l.quantityShipped > 0,
-        );
+          (l) =>
+            l.productId &&
+            l.product &&
+            l.quantity - l.quantityShipped > 0,
+        ) as Array<{
+          id: string;
+          productId: string;
+          quantity: number;
+          quantityShipped: number;
+          salesOrderId: string;
+          salesOrder: {
+            id: string;
+            createdAt: Date;
+            customerOrderNo: string;
+            customer: { name: string };
+          };
+          product: {
+            id: string;
+            model: string;
+            processingMode: import("@prisma/client").ProductProcessingMode;
+          };
+        }>;
         const stockGroups = await prisma.productInbound.groupBy({
           by: ["productId"],
           where: { productId: { in: hotProductIds } },
@@ -410,7 +431,7 @@ export async function GET() {
         const stockByProduct = new Map(
           stockGroups.map((g) => [
             g.productId,
-            Math.trunc(Number(g._sum.quantity ?? 0)),
+            Math.trunc(Number(g._sum?.quantity ?? 0)),
           ]),
         );
         const unmet = outsourceUnmetAfterStockAllocation(

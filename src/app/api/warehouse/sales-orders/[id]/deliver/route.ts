@@ -164,6 +164,16 @@ export async function POST(
       if (!ln) {
         return NextResponse.json({ error: "存在无效的明细行" }, { status: 400 });
       }
+      if (
+        (ln as { lineKind?: string }).lineKind === "EXTRA" ||
+        !ln.productId ||
+        !ln.product
+      ) {
+        return NextResponse.json(
+          { error: "其它费用行不可出货" },
+          { status: 400 },
+        );
+      }
       const want = toNonNegInt(row.shipQty);
       const spare = toNonNegInt(row.spareQty);
       if (want === 0 && spare === 0) continue;
@@ -532,9 +542,13 @@ export async function POST(
       });
       if (!fresh) throw new Error("订单不存在");
 
-      const allClear = fresh.lines.every(
-        (l) => storedQuantityShipped(l) >= l.quantity,
-      );
+      const allClear = fresh.lines
+        .filter(
+          (l) =>
+            (l as { lineKind?: string }).lineKind !== "EXTRA" &&
+            Boolean(l.productId),
+        )
+        .every((l) => storedQuantityShipped(l) >= l.quantity);
 
       let closedAt: string | null = null;
       if (allClear) {

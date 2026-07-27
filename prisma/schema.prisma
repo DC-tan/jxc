@@ -515,15 +515,25 @@ model SalesOrderPurchaseSupplierConfirm {
   @@index([purchaseOrderId])
 }
 
-/// 销售订单明细（行项目为系统商品档案）
+/// 销售订单行类型：常规商品 / 其它费用（不作出货）
+enum SalesOrderLineKind {
+  PRODUCT
+  EXTRA
+}
+
+/// 销售订单明细（行项目为系统商品档案；EXTRA 为手填其它费用）
 model SalesOrderLine {
   id           String      @id @default(cuid())
   salesOrderId String
   salesOrder   SalesOrder  @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
-  productId    String
-  product      Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+  /// PRODUCT 必填；EXTRA 无商品
+  productId    String?
+  product      Product?    @relation(fields: [productId], references: [id], onDelete: Restrict)
+  lineKind     SalesOrderLineKind @default(PRODUCT)
+  /// EXTRA 手填内容（对帐/明细展示）
+  title        String?     @db.VarChar(200)
   quantity     Int
-  /// 累计已出货数量（分批出货累加；交清后整单写入 actualDeliveredAt）
+  /// 累计已出货数量（分批出货累加；交清后整单写入 actualDeliveredAt）；EXTRA 不参与出货
   quantityShipped Int      @default(0)
   unitPrice    Decimal     @db.Decimal(14, 4) @default(0)
   remark       String?     @db.Text
@@ -532,6 +542,7 @@ model SalesOrderLine {
 
   @@index([salesOrderId])
   @@index([productId])
+  @@index([lineKind])
 }
 
 /// 销售订单行分批出货记录（仓库确认送货单后写入）

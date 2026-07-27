@@ -209,6 +209,7 @@ export async function GET(
 
     for (const line of order.lines) {
       const p = line.product;
+      if (!p) continue;
       const bomLines: (typeof bomByProduct)[0]["bomLines"] = [];
       for (const pm of p.productMaterials) {
         const raw = Number(pm.usageQty) * line.quantity;
@@ -251,7 +252,13 @@ export async function GET(
       });
     }
 
-    const productIds = [...new Set(order.lines.map((l) => l.product.id))];
+    const productIds = [
+      ...new Set(
+        order.lines
+          .map((l) => l.product?.id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
     if (productIds.length > 0) {
       const productStockAgg = await prisma.productInbound.groupBy({
         by: ["productId"],

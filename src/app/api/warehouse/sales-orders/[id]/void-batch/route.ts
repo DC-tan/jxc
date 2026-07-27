@@ -63,6 +63,7 @@ export async function POST(
       let revertedQty = 0;
       const productBackfill = new Map<string, number>();
       for (const ln of order.lines) {
+        if (!ln.productId) continue;
         const batchQty = ln.shipLogs.reduce((s, x) => s + x.quantity, 0);
         const batchSpareQty = ln.shipLogs.reduce(
           (s, x) => s + Math.max(0, Math.trunc(Number(x.spareQty ?? 0))),
@@ -135,7 +136,13 @@ export async function POST(
         include: { lines: true },
       });
       if (fresh) {
-        const allClear = fresh.lines.every((l) => l.quantityShipped >= l.quantity);
+        const allClear = fresh.lines
+          .filter(
+            (l) =>
+              (l as { lineKind?: string }).lineKind !== "EXTRA" &&
+              Boolean(l.productId),
+          )
+          .every((l) => l.quantityShipped >= l.quantity);
         if (!allClear) {
           await tx.salesOrder.update({
             where: { id: fresh.id },

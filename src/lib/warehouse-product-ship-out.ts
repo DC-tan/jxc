@@ -3,6 +3,7 @@ import { shipmentProductModelLabel } from "@/lib/inhouse-bom-display";
 import {
   WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK,
   formatNoOrderShipOutRemark,
+  parseNoOrderShipOutRemarkExtra,
 } from "@/lib/warehouse-no-order-constants";
 import {
   isNoOrderShipOutInbound,

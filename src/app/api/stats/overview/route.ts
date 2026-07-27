@@ -163,6 +163,7 @@ export async function GET(req: Request) {
       }
     >();
     for (const line of salesLinesForFinance) {
+      if (!line.product) continue;
       const k = line.salesOrder.customerId;
       const c = line.salesOrder.customer;
       const q = line.quantity;

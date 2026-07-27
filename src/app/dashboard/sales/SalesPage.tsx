@@ -142,6 +142,9 @@ type SalesOrderRow = {
 
 type SoLine = {
   key: string;
+  lineKind: "PRODUCT" | "EXTRA";
+  /** EXTRA 手填内容 */
+  title: string;
   productId: string | undefined;
   quantity: number;
   unitPrice: number;
@@ -152,6 +155,8 @@ type SoLine = {
 
 type DetailLine = {
   id: string;
+  lineKind?: "PRODUCT" | "EXTRA";
+  title?: string | null;
   quantity: string;
   unitPrice: string;
   remark: string | null;
@@ -164,7 +169,7 @@ type DetailLine = {
     price: string;
     inspectionNotes: string | null;
     imageUrls: string[];
-  };
+  } | null;
 };
 
 type DetailPayload = {
@@ -825,6 +830,23 @@ function SoLinesEditor({
       ...prev,
       {
         key: newLineKey(),
+        lineKind: "PRODUCT",
+        title: "",
+        productId: undefined,
+        quantity: 1,
+        unitPrice: 0,
+        remark: "",
+      },
+    ]);
+  }, [setLines]);
+
+  const addExtraLine = useCallback(() => {
+    setLines((prev) => [
+      ...prev,
+      {
+        key: newLineKey(),
+        lineKind: "EXTRA",
+        title: "",
         productId: undefined,
         quantity: 1,
         unitPrice: 0,
@@ -855,6 +877,18 @@ function SoLinesEditor({
 
   const renderProductFieldSelect = useCallback(
     (field: ProductMatchField, row: SoLine) => {
+      if (row.lineKind === "EXTRA") {
+        if (field === "material") {
+          return (
+            <Input
+              value={row.title}
+              onChange={(e) => updateLine(row.key, { title: e.target.value })}
+              placeholder="内容（其它费用）"
+            />
+          );
+        }
+        return "—";
+      }
       if (!customerId) {
         return (
           <Typography.Text type="secondary">请先选择客户</Typography.Text>
@@ -927,6 +961,7 @@ function SoLinesEditor({
         key: "productImages",
         title: "商品图片",
         render: (_, row) => {
+          if (row.lineKind === "EXTRA") return "—";
           const pr = lineProduct(row);
           return renderLineProductThumbs(pr?.imageUrls ?? []);
         },
@@ -935,6 +970,7 @@ function SoLinesEditor({
         key: "unit",
         title: "单位",
         render: (_, row) => {
+          if (row.lineKind === "EXTRA") return "项";
           const pr = lineProduct(row);
           return pr?.unit ?? "—";
         },
@@ -944,6 +980,7 @@ function SoLinesEditor({
         title: "注意事项",
         ellipsis: true,
         render: (_, row) => {
+          if (row.lineKind === "EXTRA") return "—";
           const pr = lineProduct(row);
           const t = pr?.inspectionNotes?.trim();
           return t || "—";
@@ -994,8 +1031,27 @@ function SoLinesEditor({
         key: "lineAmount",
         title: "金额",
         render: (_, row) => {
-          if (!row.productId) return "—";
-          return (row.quantity * row.unitPrice).toFixed(4);
+          const ready =
+            row.lineKind === "EXTRA"
+              ? Boolean(row.title.trim())
+              : Boolean(row.productId);
+          if (!ready) return "—";
+          return (
+            <InputNumber
+              min={0}
+              precision={4}
+              style={{ width: "100%" }}
+              value={Number((row.quantity * row.unitPrice).toFixed(4))}
+              onChange={(v) => {
+                const amount =
+                  typeof v === "number" && !Number.isNaN(v) ? v : 0;
+                const qty = row.quantity >= 1 ? row.quantity : 1;
+                updateLine(row.key, {
+                  unitPrice: qty > 0 ? amount / qty : 0,
+                });
+              }}
+            />
+          );
         },
       },
       {
@@ -1051,10 +1107,12 @@ function SoLinesEditor({
 
   const linesAmountTotal = useMemo(
     () =>
-      lines.reduce(
-        (sum, l) => sum + (l.productId ? l.quantity * l.unitPrice : 0),
-        0,
-      ),
+      lines.reduce((sum, l) => {
+        if (l.lineKind === "EXTRA") {
+          return sum + (l.title.trim() ? l.quantity * l.unitPrice : 0);
+        }
+        return sum + (l.productId ? l.quantity * l.unitPrice : 0);
+      }, 0),
     [lines],
   );
 
@@ -1071,10 +1129,20 @@ function SoLinesEditor({
         }}
       >
         <Typography.Text strong>销售明细</Typography.Text>
-        <SoLineColumnSettingButton
-          value={soLineColKeys}
-          onChange={setSoLineColKeys}
-        />
+        <Space size={8} wrap>
+          <Button
+            type="default"
+            size="small"
+            onClick={addExtraLine}
+            disabled={!customerId}
+          >
+            增加其它
+          </Button>
+          <SoLineColumnSettingButton
+            value={soLineColKeys}
+            onChange={setSoLineColKeys}
+          />
+        </Space>
       </div>
       <Table<SoLine>
         size="small"
@@ -1470,23 +1538,31 @@ export function SalesPage() {
     } catch {
       return;
     }
-    const filled = soLines.filter((l) => l.productId);
-    if (filled.length === 0) {
+    const productLines = soLines.filter(
+      (l) => l.lineKind !== "EXTRA" && l.productId,
+    );
+    if (productLines.length === 0) {
       message.error("请至少添加一行并选定商品（物料编号/型号/规格中匹配）");
       return;
     }
+    const extraLines = soLines.filter((l) => l.lineKind === "EXTRA");
+    if (extraLines.some((l) => !l.title.trim())) {
+      message.error("其它费用行请填写内容");
+      return;
+    }
+    const filled = [...productLines, ...extraLines];
     if (filled.some((l) => !l.quantity || l.quantity <= 0)) {
       message.error("每行数量须大于 0");
       return;
     }
     const reminderOk = await confirmPendingCustomerChanges(
       String(v.customerId),
-      filled.map((x) => String(x.productId)),
+      productLines.map((x) => String(x.productId)),
     );
     if (!reminderOk) return;
     setSubmitting(true);
     try {
-      const firstLine = soLines.find((l) => l.productId);
+      const firstLine = productLines[0];
       const firstProduct = firstLine?.productId
         ? presets?.products.find((p) => p.id === firstLine.productId)
         : undefined;
@@ -1500,12 +1576,29 @@ export function SalesPage() {
           : customerModelFromProduct,
         deliveryDueAt: dayjs(v.deliveryDueAt as Dayjs).toISOString(),
         remark: v.remark ?? "",
-        lines: filled.map((l) => ({
-          productId: l.productId,
-          quantity: l.quantity,
-          unitPrice: l.unitPrice,
-          remark: l.remark || undefined,
-        })),
+        lines: soLines
+          .filter((l) =>
+            l.lineKind === "EXTRA"
+              ? Boolean(l.title.trim())
+              : Boolean(l.productId),
+          )
+          .map((l) =>
+            l.lineKind === "EXTRA"
+              ? {
+                  lineKind: "EXTRA" as const,
+                  title: l.title.trim(),
+                  quantity: l.quantity,
+                  unitPrice: l.unitPrice,
+                  remark: l.remark || undefined,
+                }
+              : {
+                  lineKind: "PRODUCT" as const,
+                  productId: l.productId,
+                  quantity: l.quantity,
+                  unitPrice: l.unitPrice,
+                  remark: l.remark || undefined,
+                },
+          ),
       };
       if (editingOrderId) {
         await fetchJson(`/api/sales-orders/${editingOrderId}`, {
@@ -1581,10 +1674,12 @@ export function SalesPage() {
     if (!d) {
       return `${base}\n商品明细: ${hoverDetailLoading[r.id] ? "加载中..." : "停留片刻自动加载"}`;
     }
-    const lines = (d.lines ?? []).map(
-      (l, idx) =>
-        `${idx + 1}. ${l.product.customerMaterialCode || "—"} / ${l.product.model || "—"} / ${l.product.spec || "—"} ×${l.quantity}${l.product.unit ? ` ${l.product.unit}` : ""}`,
-    );
+    const lines = (d.lines ?? []).map((l, idx) => {
+      if (l.lineKind === "EXTRA" || !l.product) {
+        return `${idx + 1}. [其它] ${l.title?.trim() || "—"} ×${l.quantity}`;
+      }
+      return `${idx + 1}. ${l.product.customerMaterialCode || "—"} / ${l.product.model || "—"} / ${l.product.spec || "—"} ×${l.quantity}${l.product.unit ? ` ${l.product.unit}` : ""}`;
+    });
     return `${base}\n商品明细:\n${lines.length > 0 ? lines.join("\n") : "（无）"}`;
   }, [hoverDetailLoading, hoverDetailMap]);
 
@@ -1623,27 +1718,43 @@ export function SalesPage() {
           remark: data.remark ?? "",
         });
         setSoLines(
-          data.lines.map((l) => ({
-            key: l.id,
-            productId: l.product.id,
-            quantity: Math.trunc(Number(l.quantity)),
-            unitPrice: Number(l.unitPrice),
-            remark: l.remark ?? "",
-            productSnapshot: {
-              id: l.product.id,
-              customerId: data.customer.id,
-              customerMaterialCode: l.product.customerMaterialCode,
-              machineModel: data.customerModel,
-              model: l.product.model,
-              spec: l.product.spec,
-              unit: l.product.unit,
-              price: l.product.price,
-              inspectionNotes: l.product.inspectionNotes,
-              productRemark: null,
-              imageUrls: l.product.imageUrls,
-              customer: data.customer,
-            },
-          })),
+          data.lines.map((l) => {
+            const kind = l.lineKind === "EXTRA" ? "EXTRA" : "PRODUCT";
+            if (kind === "EXTRA" || !l.product) {
+              return {
+                key: l.id,
+                lineKind: "EXTRA" as const,
+                title: (l.title ?? "").trim(),
+                productId: undefined,
+                quantity: Math.trunc(Number(l.quantity)),
+                unitPrice: Number(l.unitPrice),
+                remark: l.remark ?? "",
+              };
+            }
+            return {
+              key: l.id,
+              lineKind: "PRODUCT" as const,
+              title: "",
+              productId: l.product.id,
+              quantity: Math.trunc(Number(l.quantity)),
+              unitPrice: Number(l.unitPrice),
+              remark: l.remark ?? "",
+              productSnapshot: {
+                id: l.product.id,
+                customerId: data.customer.id,
+                customerMaterialCode: l.product.customerMaterialCode,
+                machineModel: data.customerModel,
+                model: l.product.model,
+                spec: l.product.spec,
+                unit: l.product.unit,
+                price: l.product.price,
+                inspectionNotes: l.product.inspectionNotes,
+                productRemark: null,
+                imageUrls: l.product.imageUrls,
+                customer: data.customer,
+              },
+            };
+          }),
         );
         setCreateOpen(true);
       } catch (e) {
@@ -1655,7 +1766,7 @@ export function SalesPage() {
 
   const deleteUndeliveredSalesOrder = useCallback(
     (id: string) => {
-      Modal.confirm({
+      modal.confirm({
         title: "删除销售订单",
         content: "确定删除该订单？删除后不可恢复。",
         okText: "删除",
@@ -1679,7 +1790,7 @@ export function SalesPage() {
         },
       });
     },
-    [message, loadTodayOrders, loadPendingOrders],
+    [message, modal, loadTodayOrders, loadPendingOrders],
   );
 
   const todayListBaseCols = useMemo(
@@ -2250,32 +2361,48 @@ export function SalesPage() {
                   title: "物料编号",
                   width: 120,
                   ellipsis: true,
-                  render: (_, r) => r.product.customerMaterialCode || "—",
+                  render: (_, r) =>
+                    r.lineKind === "EXTRA"
+                      ? r.title?.trim() || "其它"
+                      : r.product?.customerMaterialCode || "—",
                 },
                 {
                   title: "商品型号",
                   width: 120,
                   ellipsis: true,
-                  render: (_, r) => r.product.model || "—",
+                  render: (_, r) =>
+                    r.lineKind === "EXTRA"
+                      ? "其它"
+                      : r.product?.model || "—",
                 },
                 {
                   title: "商品规格",
                   ellipsis: true,
-                  render: (_, r) => r.product.spec || "—",
+                  render: (_, r) =>
+                    r.lineKind === "EXTRA" ? "—" : r.product?.spec || "—",
                 },
                 {
                   title: "商品图片",
                   width: 120,
                   render: (_, r) =>
-                    renderLineProductThumbs(r.product.imageUrls ?? []),
+                    r.lineKind === "EXTRA"
+                      ? "—"
+                      : renderLineProductThumbs(r.product?.imageUrls ?? []),
                 },
-                { title: "单位", width: 64, render: (_, r) => r.product.unit },
+                {
+                  title: "单位",
+                  width: 64,
+                  render: (_, r) =>
+                    r.lineKind === "EXTRA" ? "项" : r.product?.unit || "—",
+                },
                 {
                   title: "注意事项",
                   width: 140,
                   ellipsis: true,
                   render: (_, r) =>
-                    r.product.inspectionNotes?.trim() || "—",
+                    r.lineKind === "EXTRA"
+                      ? "—"
+                      : r.product?.inspectionNotes?.trim() || "—",
                 },
                 { title: "数量", width: 100, render: (_, r) => r.quantity },
                 { title: "单价", width: 100, render: (_, r) => r.unitPrice },

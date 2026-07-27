@@ -35,6 +35,7 @@ export function buildSalesOrderMaterialNeedMap(
 ): Map<string, number> {
   const needMap = new Map<string, number>();
   for (const line of order.lines) {
+    if (!line.product) continue;
     for (const pm of line.product.productMaterials) {
       const mat = pm.material;
       if (mat.isCustomerSupplied) continue;

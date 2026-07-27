@@ -42,6 +42,7 @@ const shipLogInclude = {
       },
       salesOrder: {
         select: {
+          id: true,
           customerOrderNo: true,
           customerModel: true,
           actualDeliveredAt: true,
@@ -59,19 +60,47 @@ function shipLogToReconcileRow(log: ShipLogWithRelations): WarehouseReconcileRow
   const line = log.salesOrderLine;
   const o = line.salesOrder;
   const u = Number(line.unitPrice);
+  const product = line.product;
   return {
     送货日期: log.batchDeliveredAt.toISOString(),
     送货单号: log.deliveryNoteNo?.trim() || "—",
     项目型号: o.customerModel?.trim() || "—",
     订单数量: line.quantity,
     订单编号: o.customerOrderNo?.trim() || "—",
-    商品型号: line.product.model?.trim() || "—",
-    物料料号: line.product.customerMaterialCode?.trim() || "—",
-    单位: line.product.unit?.trim() || "—",
+    商品型号: product?.model?.trim() || "—",
+    物料料号: product?.customerMaterialCode?.trim() || "—",
+    单位: product?.unit?.trim() || "—",
     送货数量: log.quantity,
     单价: u,
     金额: log.quantity * u,
     备品数量: log.spareQty,
+  };
+}
+
+function extraLineToReconcileRow(input: {
+  title: string | null;
+  quantity: number;
+  unitPrice: unknown;
+  customerOrderNo: string | null;
+  customerModel: string | null;
+  deliveredAt: Date;
+}): WarehouseReconcileRow {
+  const u = Number(input.unitPrice);
+  const title = (input.title ?? "").trim() || "其它";
+  const label = title.startsWith("其它") ? title : `其它 · ${title}`;
+  return {
+    送货日期: input.deliveredAt.toISOString(),
+    送货单号: "—",
+    项目型号: input.customerModel?.trim() || "—",
+    订单数量: input.quantity,
+    订单编号: input.customerOrderNo?.trim() || "—",
+    商品型号: label,
+    物料料号: title,
+    单位: "项",
+    送货数量: input.quantity,
+    单价: u,
+    金额: input.quantity * u,
+    备品数量: 0,
   };
 }
 
@@ -111,7 +140,12 @@ export async function POST(req: Request) {
           actualDeliveredAt: { gte: from, lte: to, not: null },
           ...(customerId ? { customerId } : {}),
         },
-        select: { id: true },
+        select: {
+          id: true,
+          customerOrderNo: true,
+          customerModel: true,
+          actualDeliveredAt: true,
+        },
         take: 5000,
       });
       const orderIds = completedOrders.map((o) => o.id);
@@ -126,6 +160,34 @@ export async function POST(req: Request) {
         });
         for (const log of logs) {
           rows.push(shipLogToReconcileRow(log));
+        }
+
+        const extraLines = await prisma.salesOrderLine.findMany({
+          where: {
+            salesOrderId: { in: orderIds },
+            lineKind: "EXTRA",
+          },
+          select: {
+            salesOrderId: true,
+            title: true,
+            quantity: true,
+            unitPrice: true,
+          },
+        });
+        const orderById = new Map(completedOrders.map((o) => [o.id, o]));
+        for (const el of extraLines) {
+          const o = orderById.get(el.salesOrderId);
+          if (!o?.actualDeliveredAt) continue;
+          rows.push(
+            extraLineToReconcileRow({
+              title: el.title,
+              quantity: el.quantity,
+              unitPrice: el.unitPrice,
+              customerOrderNo: o.customerOrderNo,
+              customerModel: o.customerModel,
+              deliveredAt: o.actualDeliveredAt,
+            }),
+          );
         }
       }
     } else {
@@ -146,6 +208,68 @@ export async function POST(req: Request) {
       });
       for (const log of logs) {
         rows.push(shipLogToReconcileRow(log));
+      }
+
+      const earliestByOrder = new Map<
+        string,
+        {
+          at: Date;
+          customerOrderNo: string | null;
+          customerModel: string | null;
+        }
+      >();
+      for (const log of logs) {
+        const so = log.salesOrderLine.salesOrder;
+        const sid =
+          (log.salesOrderLine as { salesOrderId?: string }).salesOrderId ??
+          (so as { id?: string }).id;
+        if (!sid) continue;
+        const prev = earliestByOrder.get(sid);
+        if (!prev || log.batchDeliveredAt < prev.at) {
+          earliestByOrder.set(sid, {
+            at: log.batchDeliveredAt,
+            customerOrderNo: so.customerOrderNo ?? null,
+            customerModel: so.customerModel ?? null,
+          });
+        }
+      }
+
+      const splitOrderIds = [...earliestByOrder.keys()];
+      if (splitOrderIds.length > 0) {
+        const extraLines = await prisma.salesOrderLine.findMany({
+          where: {
+            salesOrderId: { in: splitOrderIds },
+            lineKind: "EXTRA",
+          },
+          select: {
+            salesOrderId: true,
+            title: true,
+            quantity: true,
+            unitPrice: true,
+            salesOrder: {
+              select: {
+                customerOrderNo: true,
+                customerModel: true,
+              },
+            },
+          },
+        });
+        for (const el of extraLines) {
+          const earliest = earliestByOrder.get(el.salesOrderId);
+          if (!earliest) continue;
+          rows.push(
+            extraLineToReconcileRow({
+              title: el.title,
+              quantity: el.quantity,
+              unitPrice: el.unitPrice,
+              customerOrderNo:
+                el.salesOrder.customerOrderNo ?? earliest.customerOrderNo,
+              customerModel:
+                el.salesOrder.customerModel ?? earliest.customerModel,
+              deliveredAt: earliest.at,
+            }),
+          );
+        }
       }
     }
 

@@ -50,6 +50,7 @@ export async function POST(req: Request) {
 
         const byProductId = new Map<string, number>();
         for (const ln of order.lines) {
+          if (!ln.productId) continue;
           const shipped = ln.shipLogs.reduce((s, x) => s + x.quantity, 0);
           if (shipped <= 0) continue;
           byProductId.set(ln.productId, (byProductId.get(ln.productId) ?? 0) + shipped);

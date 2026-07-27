@@ -165,6 +165,16 @@ export async function POST(
       if (!ln) {
         return NextResponse.json({ error: "存在无效的明细行" }, { status: 400 });
       }
+      if (
+        (ln as { lineKind?: string }).lineKind === "EXTRA" ||
+        !ln.productId ||
+        !ln.product
+      ) {
+        return NextResponse.json(
+          { error: "其它费用行不可出货" },
+          { status: 400 },
+        );
+      }
       const want = toNonNegInt(row.shipQty);
       if (want === 0) continue;
       increments.push({ lineId: row.lineId, add: want });
@@ -183,6 +193,13 @@ export async function POST(
 
     for (const inc of increments) {
       const ln = lineById.get(inc.lineId)!;
+      const productId = ln.productId;
+      if (!productId || !ln.product) {
+        return NextResponse.json(
+          { error: "其它费用行不可出货" },
+          { status: 400 },
+        );
+      }
       const prod = ln.product as {
         model: string;
         customerMaterialCode: string;
@@ -199,12 +216,12 @@ export async function POST(
 
       const isHybrid = prod.processingMode === "OUTSOURCE_INHOUSE";
       const agg = await prisma.productInbound.aggregate({
-        where: { productId: ln.productId },
+        where: { productId },
         _sum: { quantity: true },
       });
-      const have = Number(agg._sum.quantity ?? 0);
+      const have = Number(agg._sum?.quantity ?? 0);
       const recoveryHave = isHybrid
-        ? await getOutsourceRecoveryQtyByProductId(prisma, ln.productId)
+        ? await getOutsourceRecoveryQtyByProductId(prisma, productId)
         : 0;
       const short = isHybrid
         ? 0

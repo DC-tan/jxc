@@ -6,18 +6,17 @@ import {
   effectiveQuantityShipped,
   storedQuantityShipped,
 } from "@/lib/sales-order-shipping";
+import {
+  isProductSalesLine,
+  normalizeSalesOrderLines,
+  salesOrderLineCreateData,
+  salesOrderLineInputSchema,
+} from "@/lib/sales-order-lines";
 
 function parseImageUrls(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.filter((x): x is string => typeof x === "string");
 }
-
-const lineSchema = z.object({
-  productId: z.string().min(1),
-  quantity: z.union([z.number(), z.string()]),
-  unitPrice: z.union([z.number(), z.string()]).optional(),
-  remark: z.string().optional().nullable(),
-});
 
 const patchSchema = z.discriminatedUnion("action", [
   z.object({
@@ -42,23 +41,9 @@ const patchSchema = z.discriminatedUnion("action", [
       .transform((s) => new Date(s.trim()))
       .refine((d) => !Number.isNaN(d.getTime()), "要求交货时间无效"),
     remark: z.string().optional().nullable(),
-    lines: z.array(lineSchema).min(1, "请至少添加一行商品"),
+    lines: z.array(salesOrderLineInputSchema).min(1, "请至少添加一行"),
   }),
 ]);
-
-function toDecimal(v: unknown, fallback = "0"): string {
-  if (v === undefined || v === null) return fallback;
-  const n = Number(v);
-  if (Number.isNaN(n)) return fallback;
-  return String(v);
-}
-
-/** 数量：正整数 */
-function toPositiveInt(v: unknown, fallback = 1): number {
-  const n = Math.trunc(Number(v));
-  if (!Number.isFinite(n) || n < 1) return fallback;
-  return n;
-}
 
 async function loadScopedCustomerIds(customerId: string): Promise<Set<string>> {
   const relations = await prisma.customerRelation.findMany({
@@ -132,22 +117,31 @@ export async function GET(
           storedQuantityShipped(l),
           row.actualDeliveredAt,
         );
+        const lineKind =
+          (l as { lineKind?: string }).lineKind === "EXTRA"
+            ? "EXTRA"
+            : "PRODUCT";
+        const title = (l as { title?: string | null }).title ?? null;
         return {
           id: l.id,
+          lineKind,
+          title,
           quantity: String(l.quantity),
           quantityShipped: String(shipped),
           unitPrice: l.unitPrice.toString(),
           remark: l.remark,
-          product: {
-            id: l.product.id,
-            customerMaterialCode: l.product.customerMaterialCode,
-            model: l.product.model,
-            spec: l.product.spec,
-            unit: l.product.unit,
-            price: l.product.price.toString(),
-            inspectionNotes: l.product.inspectionNotes,
-            imageUrls: parseImageUrls(l.product.imageUrls),
-          },
+          product: l.product
+            ? {
+                id: l.product.id,
+                customerMaterialCode: l.product.customerMaterialCode,
+                model: l.product.model,
+                spec: l.product.spec,
+                unit: l.product.unit,
+                price: l.product.price.toString(),
+                inspectionNotes: l.product.inspectionNotes,
+                imageUrls: parseImageUrls(l.product.imageUrls),
+              }
+            : null,
         };
       }),
     });
@@ -207,9 +201,9 @@ export async function PATCH(
       await prisma.$transaction(async (tx) => {
         const lines = await tx.salesOrderLine.findMany({
           where: { salesOrderId: id },
-          select: { id: true, quantity: true },
         });
         for (const ln of lines) {
+          if (!isProductSalesLine(ln)) continue;
           await tx.salesOrderLine.update({
             where: { id: ln.id },
             data: { quantityShipped: ln.quantity } as object,
@@ -260,8 +254,18 @@ export async function PATCH(
     }
     const scopedCustomerIds = await loadScopedCustomerIds(d.customerId);
 
-    const productIds = d.lines.map((l) => l.productId);
-    const uniqueProductIds = [...new Set(productIds)];
+    const normalized = normalizeSalesOrderLines(d.lines);
+    if ("error" in normalized) {
+      return NextResponse.json({ error: normalized.error }, { status: 400 });
+    }
+
+    const uniqueProductIds = [
+      ...new Set(
+        normalized.lines
+          .filter((l) => l.lineKind === "PRODUCT" && l.productId)
+          .map((l) => l.productId as string),
+      ),
+    ];
 
     const products = await prisma.product.findMany({
       where: { id: { in: uniqueProductIds } },
@@ -276,7 +280,9 @@ export async function PATCH(
           where: { salesOrderId: id },
           select: { productId: true },
         })
-      ).map((l) => l.productId),
+      )
+        .map((l) => l.productId)
+        .filter((pid): pid is string => Boolean(pid)),
     );
     if (
       products.some(
@@ -298,20 +304,6 @@ export async function PATCH(
       );
     }
 
-    let totalAmount = 0;
-    const lineCreates = d.lines.map((l, i) => {
-      const qty = toPositiveInt(l.quantity, 1);
-      const up = Number(toDecimal(l.unitPrice ?? 0, "0"));
-      totalAmount += qty * up;
-      return {
-        productId: l.productId,
-        quantity: qty,
-        unitPrice: toDecimal(l.unitPrice ?? 0, "0"),
-        remark: l.remark?.trim() || null,
-        sortOrder: i,
-      };
-    });
-
     const row = await prisma.$transaction(async (tx) => {
       await tx.salesOrderLine.deleteMany({ where: { salesOrderId: id } });
       return tx.salesOrder.update({
@@ -321,10 +313,10 @@ export async function PATCH(
           customerOrderNo: d.customerOrderNo,
           customerModel: d.customerModel ?? "",
           deliveryDueAt: d.deliveryDueAt,
-          totalAmount: String(totalAmount),
+          totalAmount: String(normalized.totalAmount),
           remark: d.remark?.trim() || null,
           lines: {
-            create: lineCreates,
+            create: salesOrderLineCreateData(normalized.lines),
           },
         },
         include: {

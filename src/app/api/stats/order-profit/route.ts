@@ -249,6 +249,7 @@ export async function GET(req: Request) {
 
       for (const order of orders) {
         for (const line of order.lines) {
+          if (!line.product) continue;
           appendAggLine(byProduct, {
             quantity: Number(line.quantity ?? 0),
             unitPrice: Number(line.unitPrice ?? 0),

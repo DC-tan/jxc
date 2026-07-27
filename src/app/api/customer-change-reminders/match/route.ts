@@ -57,7 +57,9 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "销售订单不存在" }, { status: 400 });
       }
       customerId = so.customerId;
-      productIds = toUniqueStrings(so.lines.map((x) => x.productId));
+      productIds = toUniqueStrings(
+        so.lines.map((x) => x.productId).filter((id): id is string => Boolean(id)),
+      );
     }
 
     if (productIds.length === 0 && materialIds.length > 0) {

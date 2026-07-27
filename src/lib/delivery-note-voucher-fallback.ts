@@ -92,6 +92,7 @@ async function buildFromSalesShipLogs(
   for (const log of logs) {
     const ln = log.salesOrderLine;
     const prod = ln.product;
+    if (!prod) continue;
     const row: WarehouseDeliveryLineDraft = {
       lineId: ln.id,
       shipQty: log.quantity,

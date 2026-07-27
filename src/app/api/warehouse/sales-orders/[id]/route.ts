@@ -75,7 +75,20 @@ export async function GET(
       return NextResponse.json({ error: "销售订单不存在" }, { status: 404 });
     }
 
-    const productIds = [...new Set(row.lines.map((l) => l.productId))];
+    const productLines = row.lines.filter(
+      (l) =>
+        (l as { lineKind?: string }).lineKind !== "EXTRA" &&
+        Boolean(l.productId) &&
+        l.product,
+    );
+
+    const productIds = [
+      ...new Set(
+        productLines
+          .map((l) => l.productId)
+          .filter((pid): pid is string => Boolean(pid)),
+      ),
+    ];
     const stockGroups =
       productIds.length > 0
         ? await prisma.productInbound.groupBy({
@@ -91,12 +104,12 @@ export async function GET(
       ]),
     );
 
-    const inhouseMaterialIds = row.lines.flatMap((l) => {
-      const mode = l.product.processingMode;
+    const inhouseMaterialIds = productLines.flatMap((l) => {
+      const mode = l.product!.processingMode;
       if (mode !== "INHOUSE" && mode !== "OUTSOURCE_INHOUSE") return [];
       return productBomForInhouseProduction(
         mode,
-        l.product.productMaterials ?? [],
+        l.product!.productMaterials ?? [],
       ).map((pm) => pm.materialId);
     });
     const materialStockById = await getMaterialInboundTotalsByIds(
@@ -106,9 +119,9 @@ export async function GET(
 
     const hybridProductIds = [
       ...new Set(
-        row.lines
-          .filter((l) => l.product.processingMode === "OUTSOURCE_INHOUSE")
-          .map((l) => l.productId),
+        productLines
+          .filter((l) => l.product!.processingMode === "OUTSOURCE_INHOUSE")
+          .map((l) => l.productId!)
       ),
     ];
     const recoveryByProduct = new Map<string, number>();
@@ -132,7 +145,7 @@ export async function GET(
       customer: row.customer,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
-      lines: row.lines.map((l) => {
+      lines: productLines.map((l) => {
         const stored = storedQuantityShipped(l);
         const shipped = effectiveQuantityShipped(
           l.quantity,
@@ -169,22 +182,22 @@ export async function GET(
           unitPrice: l.unitPrice.toString(),
           remark: l.remark,
           product: {
-            id: l.product.id,
-            customerMaterialCode: l.product.customerMaterialCode,
-            model: l.product.model,
-            spec: l.product.spec,
-            unit: l.product.unit,
-            price: l.product.price.toString(),
-            inspectionNotes: l.product.inspectionNotes,
-            productRemark: l.product.productRemark,
-            imageUrls: parseImageUrls(l.product.imageUrls),
-            processingMode: l.product.processingMode,
+            id: l.product!.id,
+            customerMaterialCode: l.product!.customerMaterialCode,
+            model: l.product!.model,
+            spec: l.product!.spec,
+            unit: l.product!.unit,
+            price: l.product!.price.toString(),
+            inspectionNotes: l.product!.inspectionNotes,
+            productRemark: l.product!.productRemark,
+            imageUrls: parseImageUrls(l.product!.imageUrls),
+            processingMode: l.product!.processingMode,
             inhouseBom:
-              l.product.processingMode === "INHOUSE" ||
-              l.product.processingMode === "OUTSOURCE_INHOUSE"
+              l.product!.processingMode === "INHOUSE" ||
+              l.product!.processingMode === "OUTSOURCE_INHOUSE"
                 ? productBomForInhouseProduction(
-                    l.product.processingMode,
-                    l.product.productMaterials ?? [],
+                    l.product!.processingMode,
+                    l.product!.productMaterials ?? [],
                   ).map((pm) => ({
                     materialId: pm.materialId,
                     usageQty: Number(pm.usageQty),
@@ -194,10 +207,10 @@ export async function GET(
                   }))
                 : [],
             /** 成品入库累计（与出货预检、扣库逻辑一致） */
-            stockQuantity: stockByProduct.get(l.productId) ?? 0,
+            stockQuantity: stockByProduct.get(l.productId!) ?? 0,
             recoveryStockQuantity:
-              l.product.processingMode === "OUTSOURCE_INHOUSE"
-                ? recoveryByProduct.get(l.productId) ?? 0
+              l.product!.processingMode === "OUTSOURCE_INHOUSE"
+                ? recoveryByProduct.get(l.productId!) ?? 0
                 : undefined,
           },
         };

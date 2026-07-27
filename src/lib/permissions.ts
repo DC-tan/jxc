@@ -98,10 +98,12 @@ export const PERMISSION_DEFINITIONS: {
     "sales.view",
     "sales.create",
     "sales.edit",
+    "sales.delete",
   ] },
   { module: "销售订单", name: "销售未交付单", code: "tab.sales.undelivered", sortOrder: 61, expandTo: [
     "sales.view",
     "sales.edit",
+    "sales.delete",
   ] },
   { module: "销售订单", name: "销售订单查询", code: "tab.sales.query", sortOrder: 62, expandTo: [
     "sales.view",
