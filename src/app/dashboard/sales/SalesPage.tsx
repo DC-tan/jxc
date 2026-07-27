@@ -380,17 +380,12 @@ function soLineProduct(row: SoLine, pool: ProductOpt[]): ProductOpt | undefined 
 
 function soSelectProductOptions(
   pool: ProductOpt[],
-  lines: SoLine[],
+  _lines: SoLine[],
   row: SoLine,
   field: ProductMatchField,
 ): { value: string; label: string }[] {
-  const taken = new Set(
-    lines
-      .filter((l) => l.key !== row.key && l.productId)
-      .map((l) => l.productId as string),
-  );
-  const opts = pool.filter((p) => !taken.has(p.id) || p.id === row.productId);
-  const options = opts.map((p) => ({
+  // 允许同一商品多行（不同单价等）；不再排除其它行已选商品
+  const options = pool.map((p) => ({
     value: p.id,
     label: productFieldDisplay(p, field),
   }));

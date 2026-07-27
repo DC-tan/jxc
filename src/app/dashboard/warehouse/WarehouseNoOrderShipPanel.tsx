@@ -23,6 +23,7 @@ import {
 } from "@/lib/warehouse-delivery-draft";
 import { fetchJson } from "@/lib/fetch-json";
 import {
+  WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK,
   WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK,
   resolveNoOrderShipOutUserRemark,
   type ProductShipOutPreviewLine,
@@ -83,6 +84,8 @@ export function WarehouseNoOrderShipPanel() {
   );
   const [submitting, setSubmitting] = useState(false);
   const [shipRemark, setShipRemark] = useState("");
+  /** 预检弹窗是否按「免费赠送」出货（帐单金额 0） */
+  const [previewFree, setPreviewFree] = useState(false);
   const [debouncedModel, setDebouncedModel] = useState("");
   const loadSeqRef = useRef(0);
 
@@ -121,10 +124,10 @@ export function WarehouseNoOrderShipPanel() {
     [customers, customerId],
   );
 
-  const effectiveShipRemark = useMemo(
-    () => resolveNoOrderShipOutUserRemark(shipRemark),
-    [shipRemark],
-  );
+  const effectiveShipRemark = useMemo(() => {
+    if (previewFree) return WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK;
+    return resolveNoOrderShipOutUserRemark(shipRemark);
+  }, [previewFree, shipRemark]);
 
   const handleCustomerChange = useCallback((id: string | undefined) => {
     setCustomerId(id);
@@ -231,51 +234,59 @@ export function WarehouseNoOrderShipPanel() {
     );
   }, []);
 
-  const openPreview = useCallback(async () => {
-    if (!customerId) {
-      message.warning("请先选择客户");
-      return;
-    }
-    const filled = batchLines.filter((l) => l.shipQty > 0);
-    if (filled.length === 0) {
-      message.warning("请至少添加一行并填写出货数量");
-      return;
-    }
-    for (const l of filled) {
-      if (l.shipQty > l.stockQuantity) {
-        message.warning(
-          `「${l.model?.trim() || "—"}」出货数量不能超过现有库存 ${l.stockQuantity}`,
-        );
+  const openPreview = useCallback(
+    async (asFree = false) => {
+      if (!customerId) {
+        message.warning("请先选择客户");
         return;
       }
-    }
-    setPreviewOpen(true);
-    setPreviewLoading(true);
-    setPreviewLines([]);
-    try {
-      const data = await fetchJson<{ lines: ProductShipOutPreviewLine[] }>(
-        "/api/warehouse/product-ship-out/preview",
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            customerId,
-            lines: filled.map((l) => ({
-              productId: l.productId,
-              shipQty: l.shipQty,
-            })),
-          }),
-        },
-      );
-      setPreviewLines(data.lines ?? []);
-    } catch (e) {
-      message.error(e instanceof Error ? e.message : "预检失败");
-      setPreviewOpen(false);
-    } finally {
-      setPreviewLoading(false);
-    }
-  }, [batchLines, customerId, message]);
+      const filled = batchLines.filter((l) => l.shipQty > 0);
+      if (filled.length === 0) {
+        message.warning("请至少添加一行并填写出货数量");
+        return;
+      }
+      for (const l of filled) {
+        if (l.shipQty > l.stockQuantity) {
+          message.warning(
+            `「${l.model?.trim() || "—"}」出货数量不能超过现有库存 ${l.stockQuantity}`,
+          );
+          return;
+        }
+      }
+      setPreviewFree(asFree);
+      if (asFree) {
+        setShipRemark(WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK);
+      }
+      setPreviewOpen(true);
+      setPreviewLoading(true);
+      setPreviewLines([]);
+      try {
+        const data = await fetchJson<{ lines: ProductShipOutPreviewLine[] }>(
+          "/api/warehouse/product-ship-out/preview",
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              customerId,
+              lines: filled.map((l) => ({
+                productId: l.productId,
+                shipQty: l.shipQty,
+              })),
+            }),
+          },
+        );
+        setPreviewLines(data.lines ?? []);
+      } catch (e) {
+        message.error(e instanceof Error ? e.message : "预检失败");
+        setPreviewOpen(false);
+        setPreviewFree(false);
+      } finally {
+        setPreviewLoading(false);
+      }
+    },
+    [batchLines, customerId, message],
+  );
 
   const submitShipOut = useCallback(async () => {
     if (!customerId || !selectedCustomer) return;
@@ -295,6 +306,9 @@ export function WarehouseNoOrderShipPanel() {
           },
         ]),
       );
+      const remarkForShip = previewFree
+        ? WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK
+        : shipRemark.trim() || undefined;
       const draft = buildNoOrderDeliveryDraft({
         customerId,
         customer: {
@@ -308,19 +322,32 @@ export function WarehouseNoOrderShipPanel() {
           shipQty: l.shipQty,
         })),
         noOrderLineMeta,
-        noOrderShipOutRemark: shipRemark.trim() || undefined,
+        noOrderShipOutRemark: remarkForShip,
       });
       sessionStorage.setItem(WAREHOUSE_DELIVERY_DRAFT_KEY, JSON.stringify(draft));
       setPreviewOpen(false);
+      setPreviewFree(false);
       setBatchLines([]);
-      message.success("请打印送货单，确认后扣减库存");
+      message.success(
+        previewFree
+          ? "免费赠送：请打印送货单，确认后扣减库存（帐单金额为 0）"
+          : "请打印送货单，确认后扣减库存",
+      );
       router.push("/dashboard/warehouse/delivery-note");
     } catch (e) {
       message.error(e instanceof Error ? e.message : "出货失败");
     } finally {
       setSubmitting(false);
     }
-  }, [batchLines, customerId, message, router, selectedCustomer, shipRemark]);
+  }, [
+    batchLines,
+    customerId,
+    message,
+    previewFree,
+    router,
+    selectedCustomer,
+    shipRemark,
+  ]);
 
   const searchColumns: ColumnsType<ProductOption> = useMemo(
     () => [
@@ -469,7 +496,9 @@ export function WarehouseNoOrderShipPanel() {
     <Space direction="vertical" style={{ width: "100%" }} size="middle">
       <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
         无销售订单时，按<strong>客户</strong>从现有商品库存直接出货。可先选客户或输入商品型号相互带出；出货时间取系统当前时间，备注可手动填写（不填默认「
-        {WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK}」）。确认后进入送货单打印，点「确定」后扣减库存。
+        {WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK}」）。确认后进入送货单打印，点「确定」后扣减库存。点「
+        <strong>免费</strong>」出货：对帐仍有出货记录，但金额为 0，备注固定为「
+        {WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK}」。
       </Typography.Paragraph>
 
       <Space wrap align="start">
@@ -569,23 +598,41 @@ export function WarehouseNoOrderShipPanel() {
             />
           </Space>
         </Space>
-        <Button
-          type="primary"
-          disabled={!customerId || batchLines.length === 0}
-          onClick={() => void openPreview()}
-        >
-          预检并确认出货
-        </Button>
+        <Space>
+          <Button
+            disabled={!customerId || batchLines.length === 0}
+            onClick={() => void openPreview(true)}
+          >
+            免费
+          </Button>
+          <Button
+            type="primary"
+            disabled={!customerId || batchLines.length === 0}
+            onClick={() => void openPreview(false)}
+          >
+            预检并确认出货
+          </Button>
+        </Space>
       </Space>
 
       <Modal
-        title="确认无单出货"
+        title={previewFree ? "确认免费赠送出货" : "确认无单出货"}
         open={previewOpen}
-        onCancel={() => setPreviewOpen(false)}
+        onCancel={() => {
+          setPreviewOpen(false);
+          setPreviewFree(false);
+        }}
         width={720}
         footer={
           <Space>
-            <Button onClick={() => setPreviewOpen(false)}>取消</Button>
+            <Button
+              onClick={() => {
+                setPreviewOpen(false);
+                setPreviewFree(false);
+              }}
+            >
+              取消
+            </Button>
             <Button
               type="primary"
               loading={submitting}
@@ -614,7 +661,13 @@ export function WarehouseNoOrderShipPanel() {
             </Typography.Text>
             <Typography.Text type="secondary">
               出货时间：系统当前时间 · 备注：{effectiveShipRemark}
+              {previewFree ? " · 对帐金额为 0" : ""}
             </Typography.Text>
+            {previewFree ? (
+              <Typography.Text type="warning">
+                免费赠送：库存照常扣减，对帐/出货查询仍有记录，单价与金额计为 0。
+              </Typography.Text>
+            ) : null}
             <Table<ProductShipOutPreviewLine>
               size="small"
               rowKey="productId"

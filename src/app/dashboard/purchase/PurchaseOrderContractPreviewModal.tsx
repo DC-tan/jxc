@@ -17,6 +17,8 @@ type ContractDetailSupplier = ContractPreviewSupplier & {
 type ContractDetailPayload = {
   id: string;
   orderNo: string;
+  /** 采购单创建时间（签约日期取此值，落库后锁定） */
+  createdAt: string;
   /** 采购单「要求交货日期」（与销售订单交货日区分） */
   deliveryDueAt: string | null;
   supplier: ContractDetailSupplier;
@@ -253,6 +255,7 @@ export function PurchaseOrderContractPreviewModal({
                 deliveryDueAtIso={previewProps.deliveryDueAtIso}
                 customerLine={previewProps.customerLine}
                 contractNoOverride={orderNo ?? detail?.orderNo ?? null}
+                orderCreatedAtIso={detail?.createdAt ?? null}
                 extraFees={extraFees}
               />
             ) : !loading ? (

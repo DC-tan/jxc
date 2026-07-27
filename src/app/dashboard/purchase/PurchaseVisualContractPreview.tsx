@@ -41,10 +41,17 @@ function isAutoContractNoTemplate(template: string): boolean {
   return !t || t === "自动生成" || t.includes("自动");
 }
 
-function resolveAutoSignDate(template: string): string {
+/** 模板为「自动生成」时：已落库订单用创建日；未落库预览用当天 */
+function resolveAutoSignDate(
+  template: string,
+  orderCreatedAtIso?: string | null,
+): string {
   const t = template?.trim();
   if (!t || t === "自动生成" || t.includes("自动")) {
-    return dayjs().format("YYYY年MM月DD日");
+    const base = orderCreatedAtIso?.trim()
+      ? dayjs(orderCreatedAtIso)
+      : dayjs();
+    return (base.isValid() ? base : dayjs()).format("YYYY年MM月DD日");
   }
   return template;
 }
@@ -157,6 +164,8 @@ export function PurchaseVisualContractPreview({
   deliveryDueAtIso,
   customerLine,
   contractNoOverride,
+  /** 采购单创建时间；已落库订单签约日期取此值，锁定不再随打开日变化 */
+  orderCreatedAtIso = null,
   extraFees = [],
 }: {
   visual: VisualEditorState;
@@ -166,6 +175,7 @@ export function PurchaseVisualContractPreview({
   deliveryDueAtIso: string | null;
   /** 已保存采购单号或与规则一致的预览号；模板为自动生成时展示 */
   contractNoOverride?: string | null;
+  orderCreatedAtIso?: string | null;
   extraFees?: PurchaseExtraFeeRow[];
 }) {
   const t = visual.texts;
@@ -187,7 +197,7 @@ export function PurchaseVisualContractPreview({
     ? (contractNoOverride?.trim() ||
         `（预览单号获取中…）`)
     : contractTpl.trim();
-  const signDate = resolveAutoSignDate(t.signDateValue ?? "");
+  const signDate = resolveAutoSignDate(t.signDateValue ?? "", orderCreatedAtIso);
   const cols = visual.columns.length ? visual.columns : [];
   const amountIdx = cols.findIndex((c) => c.id === "c7");
 

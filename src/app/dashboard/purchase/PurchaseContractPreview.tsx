@@ -141,6 +141,8 @@ export function PurchaseContractPreview({
   customerOrderNo,
   customerName,
   template,
+  /** 已落库采购单创建时间；签约日期取此值 */
+  orderCreatedAtIso = null,
 }: {
   supplier: ContractPreviewSupplier;
   lines: ContractPreviewLine[];
@@ -148,6 +150,7 @@ export function PurchaseContractPreview({
   customerOrderNo: string;
   customerName: string;
   template?: PurchasePrintTemplateConfig | null;
+  orderCreatedAtIso?: string | null;
 }) {
   const cfg = template ?? DEFAULT_PURCHASE_PRINT_TEMPLATE;
   const pa = cfg.partyA;
@@ -155,8 +158,12 @@ export function PurchaseContractPreview({
     (s, l) => s + l.quantity * l.unitPriceNum,
     0,
   );
-  const signDate = dayjs().format("YYYY年MM月DD日");
-  const contractNoPreview = `${cfg.contractNoPreviewPrefix}-${supplier.code}-${dayjs().format("YYYYMMDD")}`;
+  const created = orderCreatedAtIso?.trim()
+    ? dayjs(orderCreatedAtIso)
+    : dayjs();
+  const signBase = created.isValid() ? created : dayjs();
+  const signDate = signBase.format("YYYY年MM月DD日");
+  const contractNoPreview = `${cfg.contractNoPreviewPrefix}-${supplier.code}-${signBase.format("YYYYMMDD")}`;
   const deliveryText = deliveryDueAtIso
     ? dayjs(deliveryDueAtIso).format("YYYY年MM月DD日")
     : null;

@@ -4,7 +4,12 @@ import {
   type WarehouseDeliveryDraft,
   type WarehouseNoOrderLineMeta,
 } from "@/lib/warehouse-delivery-draft";
-import { WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK } from "@/lib/warehouse-product-ship-out";
+import {
+  WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK,
+  WAREHOUSE_NO_ORDER_SHIP_OUT_PART_LEGACY,
+  WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK,
+  isNoOrderShipOutFreeRemark,
+} from "@/lib/warehouse-no-order-constants";
 
 export type NoOrderShipOutQueryRow = {
   id: string;
@@ -23,8 +28,6 @@ export type NoOrderShipOutQueryRow = {
   remark: string | null;
   deliveryNoteNo: string | null;
 };
-
-const NO_ORDER_PART_LEGACY = "无单出库";
 
 /** 从备注解析送货单号（兼容多种分隔符与无空格写法） */
 export function parseNoOrderDeliveryNoteNo(
@@ -132,13 +135,15 @@ export function isNoOrderShipOutInbound(row: {
   const remark = row.remark?.trim() ?? "";
   if (
     part === WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK ||
-    part === NO_ORDER_PART_LEGACY
+    part === WAREHOUSE_NO_ORDER_SHIP_OUT_PART_LEGACY ||
+    part === WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK
   ) {
     return true;
   }
   return (
     remark.includes(WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK) ||
-    remark.includes(NO_ORDER_PART_LEGACY)
+    remark.includes(WAREHOUSE_NO_ORDER_SHIP_OUT_PART_LEGACY) ||
+    remark.includes(WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK)
   );
 }
 
@@ -153,9 +158,11 @@ export function buildNoOrderShipOutInboundWhere(params: {
     {
       OR: [
         { partDescription: WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK },
-        { partDescription: NO_ORDER_PART_LEGACY },
+        { partDescription: WAREHOUSE_NO_ORDER_SHIP_OUT_PART_LEGACY },
+        { partDescription: WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK },
         { remark: { contains: WAREHOUSE_NO_ORDER_SHIP_OUT_REMARK } },
-        { remark: { contains: NO_ORDER_PART_LEGACY } },
+        { remark: { contains: WAREHOUSE_NO_ORDER_SHIP_OUT_PART_LEGACY } },
+        { remark: { contains: WAREHOUSE_NO_ORDER_SHIP_OUT_FREE_REMARK } },
       ],
     },
   ];
@@ -248,7 +255,8 @@ export async function listNoOrderShipOutRows(
       .filter((r) => isNoOrderShipOutInbound(r))
       .map((r) => {
         const shipQty = Math.abs(Number(r.quantity) || 0);
-        const unitPrice = Number(r.product.price ?? 0);
+        const free = isNoOrderShipOutFreeRemark(r.remark);
+        const unitPrice = free ? 0 : Number(r.product.price ?? 0);
         const customer = r.product.customer;
         return {
           id: r.id,
@@ -261,7 +269,7 @@ export async function listNoOrderShipOutRows(
           customerMaterialCode: r.product.customerMaterialCode?.trim() || "—",
           unit: r.product.unit?.trim() || "—",
           unitPrice,
-          amount: shipQty * unitPrice,
+          amount: free ? 0 : shipQty * unitPrice,
           orderRef: r.purchaseOrderNo?.trim() || customer.code?.trim() || "—",
           remark: r.remark?.trim() || null,
           deliveryNoteNo: parseNoOrderDeliveryNoteNo(r.remark),
@@ -341,7 +349,9 @@ export function noOrderShipOutToReconcileRow(
       "—",
     项目型号: "—",
     订单数量: row.shipQty,
-    订单编号: `${row.orderRef}（无单出货）`,
+    订单编号: `${row.orderRef}（无单出货${
+      isNoOrderShipOutFreeRemark(row.remark) ? "·免费赠送" : ""
+    }）`,
     商品型号: row.productModel,
     物料料号: row.customerMaterialCode,
     单位: row.unit,

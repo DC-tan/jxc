@@ -261,15 +261,13 @@ export async function PATCH(
     const scopedCustomerIds = await loadScopedCustomerIds(d.customerId);
 
     const productIds = d.lines.map((l) => l.productId);
-    if (new Set(productIds).size !== productIds.length) {
-      return NextResponse.json({ error: "商品不能重复添加" }, { status: 400 });
-    }
+    const uniqueProductIds = [...new Set(productIds)];
 
     const products = await prisma.product.findMany({
-      where: { id: { in: productIds } },
+      where: { id: { in: uniqueProductIds } },
       select: { id: true, customerId: true, isDeprecated: true },
     });
-    if (products.length !== productIds.length) {
+    if (products.length !== uniqueProductIds.length) {
       return NextResponse.json({ error: "存在无效的商品" }, { status: 400 });
     }
     const existingLineProductIds = new Set(
