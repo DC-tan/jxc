@@ -10,6 +10,7 @@ import {
   Empty,
   Input,
   List,
+  Modal,
   Popconfirm,
   Row,
   Space,
@@ -58,10 +59,19 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
   const [doneRange, setDoneRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
   const [selectingTodo, setSelectingTodo] = useState(false);
   const [selectedTodoIds, setSelectedTodoIds] = useState<string[]>([]);
-  const [batchTodoActing, setBatchTodoActing] = useState<null | "DEFERRED" | "DONE" | "DELETE">(null);
+  const [batchTodoActing, setBatchTodoActing] = useState<
+    null | "DEFERRED" | "DONE" | "DELETE" | "EDIT"
+  >(null);
   const [selectingDeferred, setSelectingDeferred] = useState(false);
   const [selectedDeferredIds, setSelectedDeferredIds] = useState<string[]>([]);
-  const [batchDeferredActing, setBatchDeferredActing] = useState<null | "TODO" | "DONE" | "DELETE">(null);
+  const [batchDeferredActing, setBatchDeferredActing] = useState<
+    null | "TODO" | "DONE" | "DELETE" | "EDIT"
+  >(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editSource, setEditSource] = useState<"todo" | "deferred" | null>(null);
 
   const [split, setSplit] = useState<number>(() => {
     if (typeof window === "undefined") return 0.56;
@@ -224,6 +234,69 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
       message.success("已删除");
     } catch (e) {
       message.error(e instanceof Error ? e.message : "删除失败");
+    }
+  };
+
+  const openEditSelected = (
+    selectedIds: string[],
+    source: "todo" | "deferred",
+  ) => {
+    if (selectedIds.length === 0) {
+      message.warning(source === "todo" ? "请先勾选待办事项" : "请先勾选延期事项");
+      return;
+    }
+    if (selectedIds.length > 1) {
+      message.warning("修改内容时请只勾选一条");
+      return;
+    }
+    const id = selectedIds[0]!;
+    const row = rows.find((r) => r.id === id);
+    if (!row) {
+      message.warning("事项不存在或已刷新，请重新勾选");
+      return;
+    }
+    setEditId(id);
+    setEditDraft(row.content);
+    setEditSource(source);
+    setEditOpen(true);
+  };
+
+  const saveEdit = async () => {
+    const content = editDraft.trim();
+    if (!content) {
+      message.warning("请填写待办内容");
+      return;
+    }
+    if (!editId) return;
+    setEditSaving(true);
+    if (editSource === "todo") setBatchTodoActing("EDIT");
+    if (editSource === "deferred") setBatchDeferredActing("EDIT");
+    try {
+      const row = await fetchJson<TodoRow>(`/api/todos/${editId}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      setRows((prev) => prev.map((r) => (r.id === row.id ? row : r)));
+      setEditOpen(false);
+      setEditId(null);
+      setEditDraft("");
+      if (editSource === "todo") {
+        setSelectedTodoIds([]);
+        setSelectingTodo(false);
+      } else if (editSource === "deferred") {
+        setSelectedDeferredIds([]);
+        setSelectingDeferred(false);
+      }
+      setEditSource(null);
+      message.success("已修改");
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : "修改失败");
+    } finally {
+      setEditSaving(false);
+      setBatchTodoActing(null);
+      setBatchDeferredActing(null);
     }
   };
 
@@ -567,6 +640,13 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                         <>
                           <Button
                             size="small"
+                            loading={batchTodoActing === "EDIT"}
+                            onClick={() => openEditSelected(selectedTodoIds, "todo")}
+                          >
+                            修改
+                          </Button>
+                          <Button
+                            size="small"
                             loading={batchTodoActing === "DEFERRED"}
                             onClick={() => void applyBatchStatusForTodo("DEFERRED")}
                           >
@@ -692,6 +772,15 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
                       </Button>
                       {selectingDeferred ? (
                         <>
+                          <Button
+                            size="small"
+                            loading={batchDeferredActing === "EDIT"}
+                            onClick={() =>
+                              openEditSelected(selectedDeferredIds, "deferred")
+                            }
+                          >
+                            修改
+                          </Button>
                           <Button
                             size="small"
                             loading={batchDeferredActing === "TODO"}
@@ -901,6 +990,36 @@ export function TodoBoard({ splitStorageKey }: { splitStorageKey: string }) {
           },
         ]}
       />
+      <Modal
+        title="修改事项"
+        open={editOpen}
+        onCancel={() => {
+          if (editSaving) return;
+          setEditOpen(false);
+          setEditId(null);
+          setEditDraft("");
+          setEditSource(null);
+        }}
+        onOk={() => void saveEdit()}
+        confirmLoading={editSaving}
+        okText="保存"
+        destroyOnHidden
+      >
+        <Input.TextArea
+          value={editDraft}
+          maxLength={500}
+          showCount
+          autoSize={{ minRows: 3, maxRows: 8 }}
+          placeholder="待办内容"
+          onChange={(e) => setEditDraft(e.target.value)}
+          onPressEnter={(e) => {
+            if (!e.shiftKey) {
+              e.preventDefault();
+              void saveEdit();
+            }
+          }}
+        />
+      </Modal>
     </div>
   );
 }

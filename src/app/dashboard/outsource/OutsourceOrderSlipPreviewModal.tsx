@@ -31,6 +31,8 @@ type SlipDetailPayload = {
   productQty: number;
   remark: string | null;
   createdAt: string;
+  /** 建单确认时锁定的发料人 */
+  issuerName?: string;
   supplier: {
     id: string;
     code: string;
@@ -131,24 +133,18 @@ export function OutsourceOrderSlipPreviewModal({
     setLoading(true);
     void (async () => {
       try {
-        const [d, tpl, me] = await Promise.all([
+        const [d, tpl] = await Promise.all([
           fetchJson<SlipDetailPayload>(`/api/outsource-orders/${outsourceOrderId}`, {
             credentials: "include",
           }),
           fetchJson<{ config: Record<string, unknown> }>("/api/outsource-print-template", {
             credentials: "include",
           }),
-          fetch("/api/me", { credentials: "include" }),
         ]);
-        let meName = "—";
-        if (me.ok) {
-          const u = (await me.json()) as { name?: string };
-          if (u.name?.trim()) meName = u.name.trim();
-        }
         if (!cancelled) {
           setDetail(d);
           setCfg(mergeOutsourcePrintConfig(tpl.config ?? {}));
-          setIssuerName(meName);
+          setIssuerName(d.issuerName?.trim() || "—");
         }
       } catch (e) {
         if (!cancelled) {

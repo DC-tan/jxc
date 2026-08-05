@@ -60,6 +60,9 @@ export async function GET(
     const row = await prisma.outsourceOrder.findUnique({
       where: { id },
       include: {
+        createdBy: {
+          select: { id: true, name: true, loginName: true },
+        },
         supplier: {
           select: { id: true, code: true, name: true, shortName: true },
         },
@@ -258,6 +261,29 @@ export async function GET(
           }))
         : [];
 
+    let issuerName =
+      row.createdBy?.name?.trim() ||
+      row.createdBy?.loginName?.trim() ||
+      "";
+    if (!issuerName) {
+      const outboundOp = await prisma.materialInbound.findFirst({
+        where: {
+          purchaseOrderNo: row.orderNo,
+          quantity: { lt: 0 },
+          partDescription: { startsWith: "外发出库（" },
+          operatorUserId: { not: null },
+        },
+        orderBy: { receivedAt: "asc" },
+        select: {
+          operator: { select: { name: true, loginName: true } },
+        },
+      });
+      issuerName =
+        outboundOp?.operator?.name?.trim() ||
+        outboundOp?.operator?.loginName?.trim() ||
+        "";
+    }
+
     return NextResponse.json({
       id: row.id,
       orderNo: row.orderNo,
@@ -266,6 +292,15 @@ export async function GET(
       productQty: row.productQty,
       remark: row.remark,
       createdAt: row.createdAt.toISOString(),
+      /** 建单确认时锁定的发料人（预览/打印勿用当前登录用户） */
+      issuerName: issuerName || "—",
+      createdBy: row.createdBy
+        ? {
+            id: row.createdBy.id,
+            name: row.createdBy.name,
+            loginName: row.createdBy.loginName,
+          }
+        : null,
       supplier: row.supplier,
       product: {
         ...row.product,

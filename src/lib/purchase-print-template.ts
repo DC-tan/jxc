@@ -18,20 +18,21 @@ export type TermClause = {
 };
 
 /**
- * 采购单号编码规则：`{前缀}-{供应商简称或编号}-{年度流水}`。
- * 流水按 UTC 自然年、按供应商独立递增，每年从 `startSequence` 起（默认 001）。
- * `dateFormat` 仅兼容旧版存库数据，不再参与单号拼接。
+ * 采购单号编码规则：`{前缀}-{供应商简称或编号}-{YYYYMM}{流水}`。
+ * 例：`GK-DC-202608001` → 下月可为 `GK-DC-202609002`（流水跨月连续）；
+ * 次年 1 月起重新从 `startSequence`（默认 001）。单号年月取开单当月。
+ * 外发单号规则复用本类型，其 `dateFormat` 仍为 `YYYYMMDD`（年月日单独成段）。
  */
 export type PurchaseOrderNumberRule = {
   /** 首段，如 GK */
   prefix: string;
   /** true：优先用供应商简称，无简称则用编号；false：固定用供应商编号 */
   useShortName: boolean;
-  /** 兼容旧配置，当前不参与单号生成 */
-  dateFormat: "YYYYMMDD";
+  /** 采购：YYYYMM（紧挨流水）；外发：YYYYMMDD（独立段） */
+  dateFormat: "YYYYMM" | "YYYYMMDD";
   /** 流水位数（如 3 → 001） */
   sequenceDigits: number;
-  /** 每个自然年首张单的起始流水（一般为 1） */
+  /** 该自然年尚无历史单时的起始流水（一般为 1） */
   startSequence: number;
 };
 
@@ -78,7 +79,8 @@ const partyASchema = z.object({
 const orderNumberRuleSchema = z.object({
   prefix: z.string().min(1).max(24),
   useShortName: z.boolean(),
-  dateFormat: z.literal("YYYYMMDD"),
+  // 兼容库内旧配置 YYYYMMDD；采购合并后会规范为 YYYYMM
+  dateFormat: z.enum(["YYYYMM", "YYYYMMDD"]),
   sequenceDigits: z.number().int().min(2).max(8),
   startSequence: z.number().int().min(1).max(99999),
 });
@@ -109,7 +111,7 @@ export const purchasePrintTemplateConfigSchema = z.object({
 export const DEFAULT_PURCHASE_ORDER_NUMBER_RULE: PurchaseOrderNumberRule = {
   prefix: "GK",
   useShortName: true,
-  dateFormat: "YYYYMMDD",
+  dateFormat: "YYYYMM",
   sequenceDigits: 3,
   startSequence: 1,
 };
@@ -220,10 +222,18 @@ function deepMerge<T extends Record<string, unknown>>(
 export function mergePurchasePrintConfig(
   raw: unknown,
 ): PurchasePrintTemplateConfig {
-  const patch =
+  const patch: Record<string, unknown> =
     raw && typeof raw === "object" && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>)
+      ? { ...(raw as Record<string, unknown>) }
       : {};
+  // 旧采购模板 dateFormat 为 YYYYMMDD；现规则改为年月紧挨流水（YYYYMM）
+  if (isPlainObject(patch.orderNumberRule)) {
+    const rule = { ...patch.orderNumberRule };
+    if (rule.dateFormat === "YYYYMMDD") {
+      rule.dateFormat = "YYYYMM";
+    }
+    patch.orderNumberRule = rule;
+  }
   const base = structuredClone(
     DEFAULT_PURCHASE_PRINT_TEMPLATE,
   ) as unknown as Record<string, unknown>;

@@ -3057,12 +3057,15 @@ export function MaterialsPage() {
                   rules={[{ required: true, message: "请选择供应商" }]}
                 >
                   <Select
+                    loading={loadingSuppliers}
                     options={suppliers.map((s) => ({
                       value: s.id,
-                      label: `${s.code} ${s.name}`,
+                      label: `${s.code} ${s.name}${s.shortName?.trim() ? `（${s.shortName.trim()}）` : ""}`,
+                      searchText: `${s.code} ${s.name} ${s.shortName ?? ""}`.toLowerCase(),
                     }))}
                     showSearch
-                    optionFilterProp="label"
+                    optionFilterProp="searchText"
+                    placeholder="选择供应商（支持编号/名称/简称）"
                   />
                 </Form.Item>
               </Col>

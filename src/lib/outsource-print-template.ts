@@ -69,6 +69,7 @@ export const outsourceMaterialSlipTemplateConfigSchema = z.object({
 export const DEFAULT_OUTSOURCE_ORDER_NUMBER_RULE: PurchaseOrderNumberRule = {
   ...DEFAULT_PURCHASE_ORDER_NUMBER_RULE,
   prefix: "WF",
+  dateFormat: "YYYYMMDD",
   sequenceDigits: 3,
   startSequence: 1,
 };

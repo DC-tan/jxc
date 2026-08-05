@@ -24,9 +24,15 @@ export function supplierMiddleSegment(
   return sanitizeOrderNoSegment(raw || sup.name.trim() || "NA");
 }
 
+/** 本地日历年月紧凑串，如 202608 */
+export function formatOrderNoYearMonth(when: Date): string {
+  const y = when.getFullYear();
+  const m = String(when.getMonth() + 1).padStart(2, "0");
+  return `${y}${m}`;
+}
+
 /**
- * 单号固定前缀（不含流水）：`{prefix}-{供应商简称或编号}-`
- * 流水为年度流水：同一供应商、同一自然年（UTC）内从 001 递增。
+ * 单号供应商段前缀（不含年月与流水）：`{prefix}-{供应商简称或编号}-`
  */
 export function buildPurchaseOrderNoPrefix(
   rule: PurchaseOrderNumberRule,
@@ -36,12 +42,16 @@ export function buildPurchaseOrderNoPrefix(
   return `${rule.prefix}-${mid}-`;
 }
 
-function utcYearBounds(when: Date): { gte: Date; lt: Date } {
-  const y = when.getUTCFullYear();
-  return {
-    gte: new Date(Date.UTC(y, 0, 1, 0, 0, 0, 0)),
-    lt: new Date(Date.UTC(y + 1, 0, 1, 0, 0, 0, 0)),
-  };
+/**
+ * 含当月年月的取号前缀（不含流水）：`{prefix}-{供应商}-{YYYYMM}`
+ * 例：`GK-DC-202608`
+ */
+export function buildPurchaseOrderNoPeriodPrefix(
+  rule: PurchaseOrderNumberRule,
+  sup: { shortName: string | null; code: string; name: string },
+  when: Date = new Date(),
+): string {
+  return `${buildPurchaseOrderNoPrefix(rule, sup)}${formatOrderNoYearMonth(when)}`;
 }
 
 function escapeRegExp(s: string): string {
@@ -49,71 +59,78 @@ function escapeRegExp(s: string): string {
 }
 
 /**
- * 从已存在的单号中解析「完全符合 `{prefix}{digits}`」的最大流水，返回下一流水。
- * 忽略旧版含日期的单号（无法匹配整单正则）。
+ * 从当年同前缀单号中取最大流水 +1。
+ * 匹配 `{stem}{YYYY}{MM}{流水}`（如 GK-DC-202608001 / GK-DC-202609002），
+ * 跨月连续，跨年重置；旧版无年月单号不参与。
  */
 export function computeNextSequenceFromMatchingOrderNos(
   orderNos: string[],
-  prefix: string,
+  stem: string,
+  year: number,
   rule: PurchaseOrderNumberRule,
 ): number {
   const w = rule.sequenceDigits;
-  const re = new RegExp(`^${escapeRegExp(prefix)}(\\d{${w}})$`);
+  const re = new RegExp(
+    `^${escapeRegExp(stem)}${year}(\\d{2})(\\d{${w}})$`,
+  );
   let max = 0;
   for (const no of orderNos) {
     const m = no.match(re);
-    if (m) max = Math.max(max, parseInt(m[1], 10));
+    if (m) max = Math.max(max, parseInt(m[2], 10));
   }
   const n = max > 0 ? max + 1 : Math.max(1, rule.startSequence);
   const cap = 10 ** w - 1;
   if (n > cap) {
     throw new Error(
-      `${w} 位流水号已用尽（每年每供应商上限 ${cap}），请联系管理员`,
+      `${w} 位流水号已用尽（每年每前缀上限 ${cap}），请联系管理员`,
     );
   }
   return n;
 }
 
 export function formatOrderNoWithSequence(
-  prefix: string,
+  periodPrefix: string,
   rule: PurchaseOrderNumberRule,
   sequence: number,
 ): string {
-  return `${prefix}${String(sequence).padStart(rule.sequenceDigits, "0")}`;
+  return `${periodPrefix}${String(sequence).padStart(rule.sequenceDigits, "0")}`;
 }
 
 type PurchaseOrderDb = Pick<PrismaClient, "purchaseOrder">;
 
 /**
- * 按模板规则生成下一采购单号（不写库）。同一供应商、UTC 自然年内流水递增，每年重置。
+ * 按模板规则生成下一采购单号（不写库）。
+ * 格式：`{前缀}-{供应商}-{YYYYMM}{流水}`，如 GK-DC-202608001。
+ * 流水按自然年、按前缀连续递增（跨月不重置）；跨年从 startSequence 起。
+ * 单号中的年月始终为开单当月。
  */
 export async function generateNextPurchaseOrderNumber(
   db: PurchaseOrderDb,
   rule: PurchaseOrderNumberRule,
-  supplierId: string,
+  _supplierId: string,
   sup: { shortName: string | null; code: string; name: string },
   when: Date = new Date(),
 ): Promise<string> {
-  const prefix = buildPurchaseOrderNoPrefix(rule, sup);
-  const { gte, lt } = utcYearBounds(when);
+  const stem = buildPurchaseOrderNoPrefix(rule, sup);
+  const year = when.getFullYear();
+  const yearPrefix = `${stem}${year}`;
+  const periodPrefix = buildPurchaseOrderNoPeriodPrefix(rule, sup, when);
+
   const rows = await db.purchaseOrder.findMany({
-    where: {
-      supplierId,
-      createdAt: { gte, lt },
-      orderNo: { startsWith: prefix },
-    },
+    where: { orderNo: { startsWith: yearPrefix } },
     select: { orderNo: true },
   });
   const seq = computeNextSequenceFromMatchingOrderNos(
     rows.map((r) => r.orderNo),
-    prefix,
+    stem,
+    year,
     rule,
   );
-  return formatOrderNoWithSequence(prefix, rule, seq);
+  return formatOrderNoWithSequence(periodPrefix, rule, seq);
 }
 
 /**
- * 按全局模板中的规则生成新采购单号（每年每供应商独立流水，格式 GK-简称-001）。
+ * 按全局模板规则生成新采购单号（格式 GK-DC-202608001）。
  */
 export async function allocatePurchaseOrderNo(
   tx: Prisma.TransactionClient,

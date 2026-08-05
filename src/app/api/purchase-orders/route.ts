@@ -300,9 +300,15 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     console.error("[POST /api/purchase-orders]", e);
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "创建失败" },
-      { status: 500 },
-    );
+    const msg = e instanceof Error ? e.message : "创建失败";
+    if (/Unique constraint failed/i.test(msg)) {
+      return NextResponse.json(
+        {
+          error: "采购单号与已有单据冲突，请重试创建；若仍失败请联系管理员检查单号规则",
+        },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

@@ -252,9 +252,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, orders: created });
   } catch (e) {
     console.error("[POST /api/purchase-orders/batch-from-sales]", e);
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "创建失败" },
-      { status: 500 },
-    );
+    const msg = e instanceof Error ? e.message : "创建失败";
+    // 竞态下仍可能撞唯一约束；提示可重试，避免把 Prisma 原文堆栈抛到前端
+    if (/Unique constraint failed/i.test(msg)) {
+      return NextResponse.json(
+        {
+          error:
+            "采购单号与已有单据冲突，请关闭预览后重试「仅已确认项生成」；若仍失败请联系管理员检查单号规则",
+        },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
