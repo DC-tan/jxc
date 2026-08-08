@@ -137,7 +137,7 @@ export async function GET(
                 model: l.product.model,
                 spec: l.product.spec,
                 unit: l.product.unit,
-                price: l.product.price.toString(),
+                price: l.product.price?.toString() ?? null,
                 inspectionNotes: l.product.inspectionNotes,
                 imageUrls: parseImageUrls(l.product.imageUrls),
               }

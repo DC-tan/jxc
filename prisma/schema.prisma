@@ -66,6 +66,7 @@ model User {
   salesConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderSalesConfirmer")
   purchaseConfirmedChangeReminders CustomerChangeReminder[] @relation("ChangeReminderPurchaseConfirmer")
   todoItems TodoItem[]
+  archiveChangeRecords ArchiveChangeRecord[] @relation("ArchiveChangeRecordCreator")
 }
 
 model TodoItem {
@@ -592,7 +593,10 @@ model Product {
   /// 商品规格
   spec            String   @default("") @db.Text
   unit            String
-  price           Decimal  @db.Decimal(14, 4)
+  /// 未税售价（未税客户建档时必填；含税客户可空）
+  price           Decimal? @db.Decimal(14, 4)
+  /// 含税售价（含税客户建档时必填；销售下单按客户标价选用）
+  priceTaxInclusive Decimal? @db.Decimal(14, 4)
   processingCost  Decimal  @db.Decimal(14, 4) @default(0)
   /// 安全库存（数量，未设置时为 null）
   safetyStock     Decimal? @db.Decimal(14, 4)
@@ -614,6 +618,37 @@ model Product {
 
   @@index([customerId])
   @@index([isDeprecated])
+}
+
+/// 商品/物料档案变更记录类型
+enum ArchiveChangeKind {
+  VERSION
+  PRICE
+}
+
+/// 商品/物料档案变更记录归属
+enum ArchiveChangeTarget {
+  PRODUCT
+  MATERIAL
+}
+
+/// 商品与物料的版本变更、价格变更手工记录（便于后续查询）
+model ArchiveChangeRecord {
+  id          String              @id @default(cuid())
+  targetType  ArchiveChangeTarget
+  targetId    String
+  kind        ArchiveChangeKind
+  /// 业务变更日期
+  changedAt   DateTime
+  beforeText  String              @db.Text
+  afterText   String              @db.Text
+  reason      String?             @db.Text
+  createdById String?
+  createdBy   User?               @relation("ArchiveChangeRecordCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime            @default(now())
+
+  @@index([targetType, targetId, kind, changedAt])
+  @@index([createdById])
 }
 
 /// 客户提出但延后在下次订单执行的变更提醒

@@ -44,6 +44,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
+import {
+  ArchiveChangeRecordsModal,
+  type ArchiveChangeKind,
+} from "@/components/ArchiveChangeRecordsModal";
 import { MaterialSettingsTab } from "./MaterialSettingsTab";
 
 /** 物料信息页 TAB ↔ 权限矩阵 code */
@@ -453,6 +457,9 @@ export function MaterialsPage() {
   const [detail, setDetail] = useState<DetailPayload | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [usedByProductsOpen, setUsedByProductsOpen] = useState(false);
+  const [changeRecordsOpen, setChangeRecordsOpen] = useState(false);
+  const [changeRecordsKind, setChangeRecordsKind] =
+    useState<ArchiveChangeKind>("VERSION");
 
   const [addOpen, setAddOpen] = useState(false);
 
@@ -3195,9 +3202,35 @@ export function MaterialsPage() {
                         : "—"
                       : `${detail.supplier.code} ${detail.supplier.name}`}
                   </Typography.Paragraph>
-                  <Typography.Paragraph style={{ marginBottom: 0 }}>
+                  <Typography.Paragraph style={{ marginBottom: 4 }}>
                     <strong>库存合计：</strong>
                     {detail.totalQty}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph style={{ marginBottom: 4 }}>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, height: "auto" }}
+                      onClick={() => {
+                        setChangeRecordsKind("VERSION");
+                        setChangeRecordsOpen(true);
+                      }}
+                    >
+                      版本变更记录
+                    </Button>
+                  </Typography.Paragraph>
+                  <Typography.Paragraph style={{ marginBottom: 0 }}>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, height: "auto" }}
+                      onClick={() => {
+                        setChangeRecordsKind("PRICE");
+                        setChangeRecordsOpen(true);
+                      }}
+                    >
+                      价格变更记录
+                    </Button>
                   </Typography.Paragraph>
                 </Space>
               </Col>
@@ -3318,6 +3351,16 @@ export function MaterialsPage() {
           columns={usedByProductColumns}
         />
       </Modal>
+
+      <ArchiveChangeRecordsModal
+        open={changeRecordsOpen}
+        onClose={() => setChangeRecordsOpen(false)}
+        targetType="MATERIAL"
+        targetId={detail?.id ?? null}
+        kind={changeRecordsKind}
+        subjectLabel={detail ? `${detail.code} ${detail.name}` : undefined}
+        canEdit={allowed("material.edit")}
+      />
     </Card>
   );
 }

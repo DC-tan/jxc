@@ -147,6 +147,7 @@ export async function GET(req: Request) {
           model: true,
           customerMaterialCode: true,
           price: true,
+          priceTaxInclusive: true,
           processingCost: true,
           customer: {
             select: { id: true, code: true, name: true, priceIncludesTax: true },
@@ -175,9 +176,12 @@ export async function GET(req: Request) {
       customers = [
         { id: product.customer.id, code: product.customer.code, name: product.customer.name },
       ];
+      const catalogUnitPrice = product.customer.priceIncludesTax
+        ? Number(product.priceTaxInclusive ?? product.price ?? 0)
+        : Number(product.price ?? 0);
       appendAggLine(byProduct, {
         quantity: 1,
-        unitPrice: Number(product.price ?? 0),
+        unitPrice: catalogUnitPrice,
         customerPriceIncludesTax: product.customer.priceIncludesTax,
         product: {
           id: product.id,

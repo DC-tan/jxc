@@ -1,4 +1,9 @@
-export type CustomerLookup = { id: string; code: string; name: string };
+export type CustomerLookup = {
+  id: string;
+  code: string;
+  name: string;
+  priceIncludesTax?: boolean;
+};
 
 /** 与导入模板表头一致 */
 export const PRODUCT_IMPORT_HEADERS = [
@@ -8,7 +13,8 @@ export const PRODUCT_IMPORT_HEADERS = [
   "商品型号",
   "商品规格",
   "单位",
-  "价格",
+  "未税价",
+  "含税价",
   "加工成本",
   "安全库存",
   "最大库存",

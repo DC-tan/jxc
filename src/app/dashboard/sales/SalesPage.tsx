@@ -39,6 +39,7 @@ import type {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
+import { productUnitPriceForOrderCustomer } from "@/lib/price-tax";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import { CustomerChangeReminderTab } from "./CustomerChangeReminderTab";
 
@@ -49,7 +50,13 @@ const SALES_TAB_PERM: Record<string, string> = {
   reminder: "tab.sales.changeReminder",
 };
 
-type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
+type CustomerOpt = {
+  id: string;
+  code: string;
+  name: string;
+  shortName?: string | null;
+  priceIncludesTax?: boolean;
+};
 
 type PendingCustomerOption = {
   value: string;
@@ -113,7 +120,8 @@ type ProductOpt = {
   model: string;
   spec: string;
   unit: string;
-  price: string;
+  price: string | null;
+  priceTaxInclusive?: string | null;
   inspectionNotes: string | null;
   productRemark: string | null;
   imageUrls: string[];
@@ -166,7 +174,7 @@ type DetailLine = {
     model: string;
     spec: string;
     unit: string;
-    price: string;
+    price: string | null;
     inspectionNotes: string | null;
     imageUrls: string[];
   } | null;
@@ -788,12 +796,14 @@ function SoLinesEditor({
   setLines,
   products,
   customerId,
+  customerPriceIncludesTax,
   customerScopes,
 }: {
   lines: SoLine[];
   setLines: Dispatch<SetStateAction<SoLine[]>>;
   products: ProductOpt[];
   customerId: string | undefined;
+  customerPriceIncludesTax: boolean;
   customerScopes?: Record<string, string[]>;
 }) {
   const scopedCustomerIds = useMemo(() => {
@@ -927,14 +937,16 @@ function SoLinesEditor({
             const pr = pool.find((x) => x.id === pid);
             updateLine(row.key, {
               productId: pid,
-              unitPrice: pr ? Number(pr.price) : 0,
+              unitPrice: pr
+                ? productUnitPriceForOrderCustomer(pr, customerPriceIncludesTax)
+                : 0,
               productSnapshot: undefined,
             });
           }}
         />
       );
     },
-    [customerId, lines, pool, updateLine],
+    [customerId, customerPriceIncludesTax, lines, pool, updateLine],
   );
 
   const allColumns: ColumnsType<SoLine> = useMemo(
@@ -1273,6 +1285,10 @@ export function SalesPage() {
   const createCustomerId = Form.useWatch("customerId", createForm) as
     | string
     | undefined;
+  const createCustomerPriceIncludesTax = useMemo(() => {
+    const c = (presets?.customers ?? []).find((x) => x.id === createCustomerId);
+    return Boolean(c?.priceIncludesTax);
+  }, [createCustomerId, presets?.customers]);
 
   const confirmPendingCustomerChanges = useCallback(
     async (customerId: string, productIds: string[]): Promise<boolean> => {
@@ -2288,6 +2304,7 @@ export function SalesPage() {
           setLines={setSoLines}
           products={presets?.products ?? []}
           customerId={createCustomerId}
+          customerPriceIncludesTax={createCustomerPriceIncludesTax}
           customerScopes={presets?.customerScopes}
         />
       </Modal>

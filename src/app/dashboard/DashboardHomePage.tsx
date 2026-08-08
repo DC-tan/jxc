@@ -137,15 +137,19 @@ type HomePayload = {
 /** antd Table small 表头高度约值，用于 scroll.y = 容器高度 − 表头 */
 const TABLE_HEAD_APPROX = 39;
 
+/** 首页各提醒看板统一固定高度，超出在卡片内滚动，完整列表点「放大」 */
+const BOARD_CARD_HEIGHT = 360;
+
 const cardShell: React.CSSProperties = {
-  height: "100%",
+  height: BOARD_CARD_HEIGHT,
+  maxHeight: BOARD_CARD_HEIGHT,
   background: "#fff",
   border: "1px solid #f0f0f0",
   borderRadius: 8,
   padding: 16,
   display: "flex",
   flexDirection: "column",
-  minHeight: 268,
+  overflow: "hidden",
 };
 
 function dayLabel(days: number) {
@@ -231,17 +235,27 @@ type PurchaseOrderHoverDetail = {
 };
 
 function toExpandedColumns<T extends object>(columns: ColumnsType<T>): ColumnsType<T> {
-  const flatCount = columns.length > 0 ? columns.length : 1;
-  const width = `${(100 / flatCount).toFixed(2)}%`;
-  return columns.map((col) => {
-    const prevOnCell = col.onCell;
-    return {
+  const dataCols = columns.length > 0 ? columns.length : 1;
+  const width = `${(100 / dataCols).toFixed(2)}%`;
+  const indexCol: ColumnsType<T>[number] = {
+    title: "序号",
+    key: "__seq",
+    width: 56,
+    align: "center",
+    render: (_value, _record, index) => index + 1,
+  };
+  const body = columns.map((col) => {
+    const prevOnCell = "onCell" in col ? col.onCell : undefined;
+    const next: ColumnsType<T>[number] = {
       ...col,
       width,
       fixed: undefined,
       ellipsis: false,
-      onCell: (record, rowIndex) => {
-        const base = prevOnCell?.(record, rowIndex) ?? {};
+      onCell: (record: T, rowIndex?: number) => {
+        const base =
+          typeof prevOnCell === "function"
+            ? (prevOnCell(record, rowIndex) ?? {})
+            : {};
         return {
           ...base,
           style: {
@@ -253,7 +267,9 @@ function toExpandedColumns<T extends object>(columns: ColumnsType<T>): ColumnsTy
         };
       },
     };
+    return next;
   });
+  return [indexCol, ...body];
 }
 
 export function DashboardHomePage() {
@@ -894,7 +910,7 @@ export function DashboardHomePage() {
 
           {hasPurchase && data.purchaseSummary && (
             <Col xs={24} sm={12} lg={8}>
-              <div style={{ ...cardShell, minHeight: 400 }}>
+              <div style={cardShell}>
                 <div
                   style={{
                     display: "flex",
@@ -1011,7 +1027,7 @@ export function DashboardHomePage() {
 
           {hasOut && data.needOutsourceRows && (
             <Col xs={24} sm={12} lg={8}>
-              <div style={{ ...cardShell, minHeight: 400 }}>
+              <div style={cardShell}>
                 <Space size={6} style={{ marginBottom: 10 }}>
                   <Typography.Title level={5} style={{ margin: 0, fontSize: 16 }}>
                     外发提醒

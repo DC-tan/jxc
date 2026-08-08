@@ -13,7 +13,13 @@ export async function GET() {
     const [customers, units] = await Promise.all([
       prisma.customer.findMany({
         orderBy: { name: "asc" },
-        select: { id: true, code: true, name: true, shortName: true },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          shortName: true,
+          priceIncludesTax: true,
+        },
       }),
       prisma.materialPresetUnit.findMany({
         orderBy: { sortOrder: "asc" },

@@ -44,7 +44,7 @@ export async function GET(req: Request) {
 
     const list = await prisma.supplier.findMany({
       where: outsourceOnly ? { attrProcessing: true } : undefined,
-      orderBy: { updatedAt: "desc" },
+      orderBy: { code: "desc" },
     });
     return NextResponse.json({ list });
   } catch (e) {

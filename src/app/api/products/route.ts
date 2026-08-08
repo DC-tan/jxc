@@ -27,7 +27,8 @@ const createSchema = z.object({
   model: z.string().optional(),
   spec: z.string().optional(),
   unit: z.string().min(1, "请选择单位"),
-  price: z.union([z.number(), z.string()]).transform((v) => String(v)),
+  price: z.union([z.number(), z.string()]).optional(),
+  priceTaxInclusive: z.union([z.number(), z.string()]).optional().nullable(),
   processingCost: z.union([z.number(), z.string()]).optional(),
   safetyStock: z.union([z.number(), z.string()]).optional(),
   maxStock: z.union([z.number(), z.string()]).optional(),
@@ -40,10 +41,55 @@ const createSchema = z.object({
 });
 
 function toDecimal(v: unknown, fallback = "0"): string {
-  if (v === undefined || v === null) return fallback;
+  if (v === undefined || v === null || String(v).trim() === "") return fallback;
   const n = Number(v);
   if (Number.isNaN(n)) return fallback;
   return String(v);
+}
+
+function parseOptionalPrice(
+  v: unknown,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (v === undefined || v === null || String(v).trim() === "") {
+    return { ok: true, value: null };
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) {
+    return { ok: false, error: "价格须为非负数" };
+  }
+  return { ok: true, value: String(v) };
+}
+
+/** 未税客户必填未税价；含税客户必填含税价；另一项可空 */
+function resolveCreateProductPrices(
+  priceIncludesTax: boolean,
+  priceRaw: unknown,
+  taxInclusiveRaw: unknown,
+):
+  | { ok: true; price: string | null; priceTaxInclusive: string | null }
+  | { ok: false; error: string } {
+  const priceParsed = parseOptionalPrice(priceRaw);
+  if (!priceParsed.ok) return priceParsed;
+  const taxParsed = parseOptionalPrice(taxInclusiveRaw);
+  if (!taxParsed.ok) return taxParsed;
+  if (priceIncludesTax) {
+    if (taxParsed.value === null) {
+      return { ok: false, error: "含税客户须填写含税价" };
+    }
+    return {
+      ok: true,
+      price: priceParsed.value,
+      priceTaxInclusive: taxParsed.value,
+    };
+  }
+  if (priceParsed.value === null) {
+    return { ok: false, error: "未税客户须填写未税价" };
+  }
+  return {
+    ok: true,
+    price: priceParsed.value,
+    priceTaxInclusive: taxParsed.value,
+  };
 }
 
 function toOptionalPositiveIntegerString(
@@ -93,7 +139,7 @@ export async function GET(req: Request) {
       where,
       orderBy: { updatedAt: "desc" },
       include: {
-        customer: { select: { id: true, code: true, name: true } },
+        customer: { select: { id: true, code: true, name: true, priceIncludesTax: true } },
         inbounds: { select: { quantity: true } },
       },
     });
@@ -112,7 +158,8 @@ export async function GET(req: Request) {
         model: p.model,
         spec: p.spec,
         unit: p.unit,
-        price: p.price.toString(),
+        price: p.price?.toString() ?? null,
+        priceTaxInclusive: p.priceTaxInclusive?.toString() ?? null,
         processingCost: p.processingCost.toString(),
         safetyStock: p.safetyStock?.toString() ?? null,
         maxStock: p.maxStock?.toString() ?? null,
@@ -157,12 +204,23 @@ export async function POST(req: Request) {
   }
 
   const d = parsed.data;
-  const cust = await prisma.customer.findUnique({ where: { id: d.customerId } });
+  const cust = await prisma.customer.findUnique({
+    where: { id: d.customerId },
+    select: { id: true, priceIncludesTax: true },
+  });
   if (!cust) {
     return NextResponse.json({ error: "客户不存在" }, { status: 400 });
   }
 
-  const price = toDecimal(d.price, "0");
+  const prices = resolveCreateProductPrices(
+    cust.priceIncludesTax,
+    d.price,
+    d.priceTaxInclusive,
+  );
+  if (!prices.ok) {
+    return NextResponse.json({ error: prices.error }, { status: 400 });
+  }
+  const { price, priceTaxInclusive } = prices;
   const processingCost = toDecimal(d.processingCost, "0");
   const safetyStockParsed = toOptionalPositiveIntegerString(
     d.safetyStock,
@@ -247,6 +305,7 @@ export async function POST(req: Request) {
         spec: (d.spec ?? "").trim(),
         unit: d.unit.trim(),
         price,
+        priceTaxInclusive,
         processingCost,
         safetyStock,
         maxStock,
@@ -263,7 +322,7 @@ export async function POST(req: Request) {
         },
       },
       include: {
-        customer: { select: { id: true, code: true, name: true } },
+        customer: { select: { id: true, code: true, name: true, priceIncludesTax: true } },
         inbounds: { select: { quantity: true } },
       },
     });
@@ -277,7 +336,8 @@ export async function POST(req: Request) {
       model: row.model,
       spec: row.spec,
       unit: row.unit,
-      price: row.price.toString(),
+      price: row.price?.toString() ?? null,
+      priceTaxInclusive: row.priceTaxInclusive?.toString() ?? null,
       processingCost: row.processingCost.toString(),
       safetyStock: row.safetyStock?.toString() ?? null,
       maxStock: row.maxStock?.toString() ?? null,

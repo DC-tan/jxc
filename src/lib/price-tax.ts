@@ -43,3 +43,28 @@ export function unitPriceToInclusive(
       : CUSTOMER_TAX_INCLUSIVE_DIVISOR;
   return unitPrice * multiplier;
 }
+
+/**
+ * 销售下单选商品时：按「下单客户」标价选用商品档案未税价 / 含税价。
+ * 缺对应价时回退另一价，都没有则 0。
+ */
+export function productUnitPriceForOrderCustomer(
+  product: {
+    price: string | number | null | undefined;
+    priceTaxInclusive?: string | number | null;
+  },
+  orderCustomerPriceIncludesTax: boolean,
+): number {
+  const exclusive = Number(product.price ?? 0);
+  const inclusiveRaw = product.priceTaxInclusive;
+  const inclusive =
+    inclusiveRaw === null || inclusiveRaw === undefined || inclusiveRaw === ""
+      ? NaN
+      : Number(inclusiveRaw);
+  if (orderCustomerPriceIncludesTax) {
+    if (Number.isFinite(inclusive)) return inclusive;
+    return Number.isFinite(exclusive) ? exclusive : 0;
+  }
+  if (Number.isFinite(exclusive)) return exclusive;
+  return Number.isFinite(inclusive) ? inclusive : 0;
+}

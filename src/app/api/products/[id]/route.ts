@@ -24,6 +24,7 @@ const patchSchema = z.object({
   spec: z.string().optional(),
   unit: z.string().min(1).optional(),
   price: z.union([z.number(), z.string()]).optional(),
+  priceTaxInclusive: z.union([z.number(), z.string()]).optional().nullable(),
   processingCost: z.union([z.number(), z.string()]).optional(),
   safetyStock: z.union([z.number(), z.string()]).optional(),
   maxStock: z.union([z.number(), z.string()]).optional(),
@@ -35,9 +36,24 @@ const patchSchema = z.object({
 
 function toDecimal(v: unknown): string | undefined {
   if (v === undefined) return undefined;
+  if (v === null || String(v).trim() === "") return undefined;
   const n = Number(v);
   if (Number.isNaN(n)) return undefined;
   return String(v);
+}
+
+function parseOptionalPrice(
+  v: unknown,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (v === undefined) return { ok: true, value: null }; // sentinel unused
+  if (v === null || String(v).trim() === "") {
+    return { ok: true, value: null };
+  }
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) {
+    return { ok: false, error: "价格须为非负数" };
+  }
+  return { ok: true, value: String(v) };
 }
 
 function toOptionalPositiveIntegerString(v: unknown): string | null | undefined {
@@ -76,7 +92,9 @@ export async function GET(
     const p = await prisma.product.findUnique({
       where: { id },
       include: {
-        customer: { select: { id: true, code: true, name: true } },
+        customer: {
+          select: { id: true, code: true, name: true, priceIncludesTax: true },
+        },
         inbounds: {
           orderBy: { receivedAt: "desc" },
           include: {
@@ -138,7 +156,8 @@ export async function GET(
       model: p.model,
       spec: p.spec,
       unit: p.unit,
-      price: p.price.toString(),
+      price: p.price?.toString() ?? null,
+      priceTaxInclusive: p.priceTaxInclusive?.toString() ?? null,
       processingCost: p.processingCost.toString(),
       safetyStock: p.safetyStock?.toString() ?? null,
       maxStock: p.maxStock?.toString() ?? null,
@@ -216,9 +235,42 @@ export async function PATCH(
   }
 
   const data = parsed.data;
-  if (data.customerId) {
-    const c = await prisma.customer.findUnique({ where: { id: data.customerId } });
-    if (!c) return NextResponse.json({ error: "客户不存在" }, { status: 400 });
+  const nextCustomerId = data.customerId ?? exists.customerId;
+  const cust = await prisma.customer.findUnique({
+    where: { id: nextCustomerId },
+    select: { id: true, priceIncludesTax: true },
+  });
+  if (!cust) {
+    return NextResponse.json({ error: "客户不存在" }, { status: 400 });
+  }
+
+  let nextPrice = exists.price?.toString() ?? null;
+  let nextTaxInclusive = exists.priceTaxInclusive?.toString() ?? null;
+  if (data.price !== undefined) {
+    const parsedPrice = parseOptionalPrice(data.price);
+    if (!parsedPrice.ok) {
+      return NextResponse.json({ error: parsedPrice.error }, { status: 400 });
+    }
+    if (parsedPrice.value === null && !cust.priceIncludesTax) {
+      return NextResponse.json({ error: "未税客户须填写未税价" }, { status: 400 });
+    }
+    nextPrice = parsedPrice.value;
+  }
+  if (data.priceTaxInclusive !== undefined) {
+    const parsedTax = parseOptionalPrice(data.priceTaxInclusive);
+    if (!parsedTax.ok) {
+      return NextResponse.json({ error: parsedTax.error }, { status: 400 });
+    }
+    if (parsedTax.value === null && cust.priceIncludesTax) {
+      return NextResponse.json({ error: "含税客户须填写含税价" }, { status: 400 });
+    }
+    nextTaxInclusive = parsedTax.value;
+  }
+  if (cust.priceIncludesTax && nextTaxInclusive === null) {
+    return NextResponse.json({ error: "含税客户须填写含税价" }, { status: 400 });
+  }
+  if (!cust.priceIncludesTax && nextPrice === null) {
+    return NextResponse.json({ error: "未税客户须填写未税价" }, { status: 400 });
   }
 
   const update: Prisma.ProductUpdateInput = {};
@@ -237,9 +289,14 @@ export async function PATCH(
   if (data.model !== undefined) update.model = data.model.trim();
   if (data.spec !== undefined) update.spec = data.spec.trim();
   if (data.unit !== undefined) update.unit = data.unit.trim();
-  if (data.price !== undefined) {
-    const p = toDecimal(data.price);
-    if (p !== undefined) update.price = p;
+  if (data.price !== undefined || data.customerId !== undefined) {
+    update.price = nextPrice;
+  }
+  if (
+    data.priceTaxInclusive !== undefined ||
+    data.customerId !== undefined
+  ) {
+    update.priceTaxInclusive = nextTaxInclusive;
   }
   if (data.processingCost !== undefined) {
     const p = toDecimal(data.processingCost);

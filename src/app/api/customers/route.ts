@@ -24,7 +24,7 @@ export async function GET() {
   }
 
   const list = await prisma.customer.findMany({
-    orderBy: { updatedAt: "desc" },
+    orderBy: { code: "desc" },
     include: {
       linkedCustomersAsSource: {
         select: { relatedCustomerId: true },

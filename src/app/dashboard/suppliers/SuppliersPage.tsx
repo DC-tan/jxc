@@ -19,7 +19,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PlusOutlined } from "@ant-design/icons";
 import { fetchJson } from "@/lib/fetch-json";
 
@@ -49,6 +49,7 @@ export function SuppliersPage() {
   const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<Row[]>([]);
+  const [keyword, setKeyword] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Row | null>(null);
   const [form] = Form.useForm();
@@ -70,6 +71,32 @@ export function SuppliersPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const filteredRows = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => {
+      const hay = [
+        r.code,
+        r.name,
+        r.shortName,
+        r.contactPerson,
+        r.phone,
+        r.address,
+        r.materialType,
+        r.level,
+        r.bankName,
+        r.bankAccount,
+        r.taxRegistrationNo,
+        r.attrProduction ? "生产" : "",
+        r.attrProcessing ? "加工" : "",
+        r.priceIncludesTax ? "含税" : "",
+      ]
+        .map((x) => (x ?? "").toLowerCase())
+        .join(" ");
+      return hay.includes(q);
+    });
+  }, [keyword, rows]);
 
   const columns: ColumnsType<Row> = [
     { title: "供应商编号", dataIndex: "code", width: 140 },
@@ -236,19 +263,38 @@ export function SuppliersPage() {
 
   return (
     <Card title="供应商信息">
-      <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          新增供应商
-        </Button>
-        <Typography.Text type="secondary">
-          供应商等级可用文字自定义，例如：优 / 良 / 一般
-        </Typography.Text>
-      </Space>
+      <div
+        style={{
+          marginBottom: 16,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <Space wrap>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            新增供应商
+          </Button>
+          <Typography.Text type="secondary">
+            供应商等级可用文字自定义，例如：优 / 良 / 一般
+          </Typography.Text>
+        </Space>
+        <Input.Search
+          allowClear
+          placeholder="筛选：编号 / 名称 / 简称 / 联系人…"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          onSearch={setKeyword}
+          style={{ width: 280 }}
+        />
+      </div>
       <Table<Row>
         rowKey="id"
         loading={loading}
         columns={columns}
-        dataSource={rows}
+        dataSource={filteredRows}
         pagination={{ pageSize: 10 }}
       />
 

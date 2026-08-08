@@ -53,6 +53,10 @@ import type { MaterialInventoryListRow } from "@/lib/materialInventoryQuery";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import { ResizableTableTitle } from "@/components/ResizableTableTitle";
+import {
+  ArchiveChangeRecordsModal,
+  type ArchiveChangeKind,
+} from "@/components/ArchiveChangeRecordsModal";
 
 import { ProductStockInTab } from "./ProductStockInTab";
 
@@ -96,7 +100,8 @@ const PROD_COL_OPTIONS: { label: string; value: string }[] = [
   { label: "商品规格", value: "spec" },
   { label: "商品图片", value: "productImages" },
   { label: "单位", value: "unit" },
-  { label: "价格", value: "price" },
+  { label: "未税价", value: "price" },
+  { label: "含税价", value: "priceTaxInclusive" },
   { label: "加工成本", value: "processingCost" },
   { label: "安全库存", value: "safetyStock" },
   { label: "最大库存", value: "maxStock" },
@@ -114,7 +119,8 @@ const INV_COL_OPTIONS: { label: string; value: string }[] = [
   { label: "商品规格", value: "spec" },
   { label: "商品图片", value: "productImages" },
   { label: "单位", value: "unit" },
-  { label: "价格", value: "price" },
+  { label: "未税价", value: "price" },
+  { label: "含税价", value: "priceTaxInclusive" },
   { label: "加工成本", value: "processingCost" },
   { label: "安全库存", value: "safetyStock" },
   { label: "最大库存", value: "maxStock" },
@@ -160,6 +166,7 @@ const DEFAULT_PROD_COL_WIDTH: Record<string, number> = {
   productImages: 108,
   unit: 72,
   price: 96,
+  priceTaxInclusive: 96,
   processingCost: 96,
   safetyStock: 96,
   maxStock: 96,
@@ -178,6 +185,7 @@ const DEFAULT_INV_COL_WIDTH: Record<string, number> = {
   productImages: 108,
   unit: 72,
   price: 96,
+  priceTaxInclusive: 96,
   processingCost: 96,
   safetyStock: 96,
   maxStock: 96,
@@ -300,7 +308,13 @@ function HelpTip({ text }: { text: string }) {
   );
 }
 
-type CustomerOpt = { id: string; code: string; name: string; shortName?: string | null };
+type CustomerOpt = {
+  id: string;
+  code: string;
+  name: string;
+  shortName?: string | null;
+  priceIncludesTax?: boolean;
+};
 type UnitOpt = { id: string; name: string; isDefault: boolean; sortOrder: number };
 
 type ProductPresetBundle = {
@@ -320,7 +334,8 @@ type ProductRow = {
   model: string;
   spec: string;
   unit: string;
-  price: string;
+  price: string | null;
+  priceTaxInclusive: string | null;
   processingCost: string;
   safetyStock: string;
   maxStock: string;
@@ -344,7 +359,8 @@ type InventoryRow = {
   model: string;
   spec: string;
   unit: string;
-  price: string;
+  price: string | null;
+  priceTaxInclusive: string | null;
   processingCost: string;
   safetyStock: string;
   maxStock: string;
@@ -462,7 +478,8 @@ type DetailPayload = {
   model: string;
   spec: string;
   unit: string;
-  price: string;
+  price: string | null;
+  priceTaxInclusive: string | null;
   processingCost: string;
   safetyStock: string;
   maxStock: string;
@@ -1169,6 +1186,13 @@ export function ProductsPage() {
     useState<ProductProcessingMode>("INHOUSE");
   const addFormFieldsPendingRef = useRef<Record<string, unknown> | null>(null);
   const [sampleUrls, setSampleUrls] = useState<string[]>([]);
+  const addCustomerId = Form.useWatch("customerId", addForm) as
+    | string
+    | undefined;
+  const addCustomerPriceIncludesTax = useMemo(() => {
+    const c = (presets?.customers ?? []).find((x) => x.id === addCustomerId);
+    return Boolean(c?.priceIncludesTax);
+  }, [addCustomerId, presets?.customers]);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1184,10 +1208,20 @@ export function ProductsPage() {
     useState<ProductProcessingMode>("INHOUSE");
   const editFormFieldsPendingRef = useRef<Record<string, unknown> | null>(null);
   const [editSamples, setEditSamples] = useState<string[]>([]);
+  const editCustomerId = Form.useWatch("customerId", editForm) as
+    | string
+    | undefined;
+  const editCustomerPriceIncludesTax = useMemo(() => {
+    const c = (presets?.customers ?? []).find((x) => x.id === editCustomerId);
+    return Boolean(c?.priceIncludesTax);
+  }, [editCustomerId, presets?.customers]);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<DetailPayload | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [changeRecordsOpen, setChangeRecordsOpen] = useState(false);
+  const [changeRecordsKind, setChangeRecordsKind] =
+    useState<ArchiveChangeKind>("VERSION");
 
   const [materialOptions, setMaterialOptions] = useState<MaterialOption[]>([]);
   const [addBomLines, setAddBomLines] = useState<BomLine[]>([]);
@@ -1796,7 +1830,12 @@ export function ProductsPage() {
         processingMode: d.processingMode ?? "INHOUSE",
         spec: d.spec,
         unit: d.unit,
-        price: Number(d.price),
+        price:
+          d.price != null && d.price !== "" ? Number(d.price) : undefined,
+        priceTaxInclusive:
+          d.priceTaxInclusive != null && d.priceTaxInclusive !== ""
+            ? Number(d.priceTaxInclusive)
+            : undefined,
         processingCost: Number(d.processingCost),
         safetyStock: Number(d.safetyStock),
         maxStock: Number(d.maxStock),
@@ -2106,7 +2145,14 @@ export function ProductsPage() {
       render: (urls: string[]) => <ProductImageThumbs urls={urls ?? []} />,
     },
     { key: "unit", title: "单位", dataIndex: "unit", width: 72 },
-    { key: "price", title: "价格", dataIndex: "price", width: 100 },
+    { key: "price", title: "未税价", dataIndex: "price", width: 100, render: (v: string | null) => v ?? "—" },
+    {
+      key: "priceTaxInclusive",
+      title: "含税价",
+      dataIndex: "priceTaxInclusive",
+      width: 100,
+      render: (v: string | null) => v ?? "—",
+    },
     {
       key: "processingCost",
       title: "加工成本",
@@ -2198,7 +2244,14 @@ export function ProductsPage() {
       render: (urls: string[]) => <ProductImageThumbs urls={urls ?? []} />,
     },
     { key: "unit", title: "单位", dataIndex: "unit", width: 72 },
-    { key: "price", title: "价格", dataIndex: "price", width: 100 },
+    { key: "price", title: "未税价", dataIndex: "price", width: 100, render: (v: string | null) => v ?? "—" },
+    {
+      key: "priceTaxInclusive",
+      title: "含税价",
+      dataIndex: "priceTaxInclusive",
+      width: 100,
+      render: (v: string | null) => v ?? "—",
+    },
     {
       key: "processingCost",
       title: "加工成本",
@@ -2319,7 +2372,8 @@ export function ProductsPage() {
       加工方式: PRODUCT_PROCESSING_LABEL[r.processingMode] ?? "",
       商品规格: r.spec ?? "",
       单位: r.unit,
-      价格: r.price,
+      未税价: r.price ?? "",
+      含税价: r.priceTaxInclusive ?? "",
       加工成本: r.processingCost,
       安全库存: r.safetyStock,
       最大库存: r.maxStock,
@@ -2988,8 +3042,39 @@ export function ProductsPage() {
             <Col xs={24} sm={12}>
               <Form.Item
                 name="price"
-                label="价格"
-                rules={[{ required: true, message: "请填写价格" }]}
+                label="未税价"
+                rules={
+                  addCustomerPriceIncludesTax
+                    ? []
+                    : [{ required: true, message: "未税客户须填写未税价" }]
+                }
+                extra={
+                  addCustomerPriceIncludesTax
+                    ? "可选；关联未税客户下单时用"
+                    : "当前客户为未税，必填"
+                }
+              >
+                <InputNumber
+                  min={0}
+                  precision={4}
+                  style={{ width: "100%" }}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="priceTaxInclusive"
+                label="含税价"
+                rules={
+                  addCustomerPriceIncludesTax
+                    ? [{ required: true, message: "含税客户须填写含税价" }]
+                    : []
+                }
+                extra={
+                  addCustomerPriceIncludesTax
+                    ? "当前客户为含税，必填"
+                    : "可选；关联含税客户下单时用"
+                }
               >
                 <InputNumber
                   min={0}
@@ -3212,8 +3297,39 @@ export function ProductsPage() {
             <Col xs={24} sm={12}>
               <Form.Item
                 name="price"
-                label="价格"
-                rules={[{ required: true, message: "请填写价格" }]}
+                label="未税价"
+                rules={
+                  editCustomerPriceIncludesTax
+                    ? []
+                    : [{ required: true, message: "未税客户须填写未税价" }]
+                }
+                extra={
+                  editCustomerPriceIncludesTax
+                    ? "可选；关联未税客户下单时用"
+                    : "当前客户为未税，必填"
+                }
+              >
+                <InputNumber
+                  min={0}
+                  precision={4}
+                  style={{ width: "100%" }}
+                />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="priceTaxInclusive"
+                label="含税价"
+                rules={
+                  editCustomerPriceIncludesTax
+                    ? [{ required: true, message: "含税客户须填写含税价" }]
+                    : []
+                }
+                extra={
+                  editCustomerPriceIncludesTax
+                    ? "当前客户为含税，必填"
+                    : "可选；关联含税客户下单时用"
+                }
               >
                 <InputNumber
                   min={0}
@@ -3362,8 +3478,9 @@ export function ProductsPage() {
                     {detail.spec || "—"}
                   </Typography.Paragraph>
                   <Typography.Paragraph style={{ marginBottom: 4 }}>
-                    <strong>单位 / 价格 / 加工成本：</strong>
-                    {detail.unit} / {detail.price} / {detail.processingCost}
+                    <strong>单位 / 未税价 / 含税价 / 加工成本：</strong>
+                    {detail.unit} / {detail.price ?? "—"} /{" "}
+                    {detail.priceTaxInclusive ?? "—"} / {detail.processingCost}
                   </Typography.Paragraph>
                   <Typography.Paragraph style={{ marginBottom: 4 }}>
                     <strong>安全库存 / 最大库存：</strong>
@@ -3373,9 +3490,35 @@ export function ProductsPage() {
                     <strong>建档日期：</strong>
                     {dayjs(detail.createdAt).format("YYYY-MM-DD HH:mm")}
                   </Typography.Paragraph>
-                  <Typography.Paragraph style={{ marginBottom: 0 }}>
+                  <Typography.Paragraph style={{ marginBottom: 4 }}>
                     <strong>库存合计：</strong>
                     {detail.totalQty}
+                  </Typography.Paragraph>
+                  <Typography.Paragraph style={{ marginBottom: 4 }}>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, height: "auto" }}
+                      onClick={() => {
+                        setChangeRecordsKind("VERSION");
+                        setChangeRecordsOpen(true);
+                      }}
+                    >
+                      版本变更记录
+                    </Button>
+                  </Typography.Paragraph>
+                  <Typography.Paragraph style={{ marginBottom: 0 }}>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, height: "auto" }}
+                      onClick={() => {
+                        setChangeRecordsKind("PRICE");
+                        setChangeRecordsOpen(true);
+                      }}
+                    >
+                      价格变更记录
+                    </Button>
                   </Typography.Paragraph>
                 </Space>
               </Col>
@@ -3544,6 +3687,20 @@ export function ProductsPage() {
           </Space>
         ) : null}
       </Modal>
+
+      <ArchiveChangeRecordsModal
+        open={changeRecordsOpen}
+        onClose={() => setChangeRecordsOpen(false)}
+        targetType="PRODUCT"
+        targetId={detail?.id ?? null}
+        kind={changeRecordsKind}
+        subjectLabel={
+          detail
+            ? `${detail.customerMaterialCode || detail.model || detail.id.slice(0, 8)}`
+            : undefined
+        }
+        canEdit={allowed("product.edit")}
+      />
     </Card>
   );
 }

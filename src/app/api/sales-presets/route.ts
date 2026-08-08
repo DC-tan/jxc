@@ -18,7 +18,13 @@ export async function GET() {
     const [customers, relations, products] = await Promise.all([
       prisma.customer.findMany({
         orderBy: { code: "asc" },
-        select: { id: true, code: true, name: true, shortName: true },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          shortName: true,
+          priceIncludesTax: true,
+        },
       }),
       prisma.customerRelation.findMany({
         select: { customerId: true, relatedCustomerId: true },
@@ -35,6 +41,7 @@ export async function GET() {
           spec: true,
           unit: true,
           price: true,
+          priceTaxInclusive: true,
           inspectionNotes: true,
           productRemark: true,
           imageUrls: true,
@@ -74,7 +81,8 @@ export async function GET() {
         model: p.model,
         spec: p.spec,
         unit: p.unit,
-        price: p.price.toString(),
+        price: p.price?.toString() ?? null,
+        priceTaxInclusive: p.priceTaxInclusive?.toString() ?? null,
         inspectionNotes: p.inspectionNotes,
         productRemark: p.productRemark,
         imageUrls: parseImageUrls(p.imageUrls),

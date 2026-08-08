@@ -68,8 +68,11 @@ export async function POST(req: Request) {
   }
 
   const customerList = await prisma.customer.findMany({
-    select: { id: true, code: true, name: true },
+    select: { id: true, code: true, name: true, priceIncludesTax: true },
   });
+  const customerTaxById = new Map(
+    customerList.map((c) => [c.id, c.priceIncludesTax]),
+  );
 
   const buf = Buffer.from(await file.arrayBuffer());
   let wb: XLSX.WorkBook;
@@ -97,7 +100,12 @@ export async function POST(req: Request) {
 
   const headerRow = rows[0] ?? [];
   const colMap = mapHeaderRow(headerRow);
+  // 旧模板「价格」等同「未税价」
+  if (!colMap.has(normalizeHeaderKey("未税价")) && colMap.has(normalizeHeaderKey("价格"))) {
+    colMap.set(normalizeHeaderKey("未税价"), colMap.get(normalizeHeaderKey("价格"))!);
+  }
   for (const h of PRODUCT_IMPORT_HEADERS) {
+    if (h === "含税价") continue; // 含税价列可缺，按客户标价校验
     if (!colMap.has(normalizeHeaderKey(h))) {
       return NextResponse.json(
         {
@@ -116,7 +124,8 @@ export async function POST(req: Request) {
     model: string;
     spec: string;
     unit: string;
-    price: string;
+    price: string | null;
+    priceTaxInclusive: string | null;
     processingCost: string;
     safetyStock: string | null;
     maxStock: string | null;
@@ -139,7 +148,8 @@ export async function POST(req: Request) {
     const model = String(cell(row, colMap, "商品型号") ?? "").trim();
     const spec = String(cell(row, colMap, "商品规格") ?? "").trim();
     const unit = String(cell(row, colMap, "单位") ?? "").trim();
-    const priceRaw = cell(row, colMap, "价格");
+    const priceRaw = cell(row, colMap, "未税价");
+    const taxPriceRaw = cell(row, colMap, "含税价");
     const pcRaw = cell(row, colMap, "加工成本");
     const safeRaw = cell(row, colMap, "安全库存");
     const maxRaw = cell(row, colMap, "最大库存");
@@ -172,9 +182,39 @@ export async function POST(req: Request) {
       continue;
     }
 
-    const price = parseNonNegativeDecimal(priceRaw);
-    if (price === null) {
-      validationErrors.push({ row: excelRow, message: "价格须为非负数字" });
+    const priceIncludesTax = customerTaxById.get(customerId) ?? false;
+    const priceExclusive = parseNonNegativeDecimal(priceRaw);
+    const priceTaxInclusive = parseNonNegativeDecimal(taxPriceRaw);
+    const hasExclusive =
+      priceRaw !== null &&
+      priceRaw !== undefined &&
+      String(priceRaw).trim() !== "";
+    const hasTaxInclusive =
+      taxPriceRaw !== null &&
+      taxPriceRaw !== undefined &&
+      String(taxPriceRaw).trim() !== "";
+
+    if (hasExclusive && priceExclusive === null) {
+      validationErrors.push({ row: excelRow, message: "未税价须为非负数字" });
+      continue;
+    }
+    if (hasTaxInclusive && priceTaxInclusive === null) {
+      validationErrors.push({ row: excelRow, message: "含税价须为非负数字" });
+      continue;
+    }
+    if (priceIncludesTax) {
+      if (!hasTaxInclusive || priceTaxInclusive === null) {
+        validationErrors.push({
+          row: excelRow,
+          message: "含税客户须填写含税价",
+        });
+        continue;
+      }
+    } else if (!hasExclusive || priceExclusive === null) {
+      validationErrors.push({
+        row: excelRow,
+        message: "未税客户须填写未税价",
+      });
       continue;
     }
 
@@ -198,7 +238,8 @@ export async function POST(req: Request) {
       model,
       spec,
       unit,
-      price,
+      price: priceExclusive,
+      priceTaxInclusive: priceTaxInclusive,
       processingCost,
       safetyStock: safetyStockParsed.value,
       maxStock: maxStockParsed.value,
@@ -230,6 +271,7 @@ export async function POST(req: Request) {
           spec: p.spec,
           unit: p.unit,
           price: p.price,
+          priceTaxInclusive: p.priceTaxInclusive,
           processingCost: p.processingCost,
           safetyStock: p.safetyStock,
           maxStock: p.maxStock,
