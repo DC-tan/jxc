@@ -3032,7 +3032,9 @@ export function OutsourcePage() {
             tableLayout="fixed"
             scroll={{ x: "max-content" }}
             components={OS_RESIZABLE_TABLE}
-            columns={attachResizeOutsource(
+            columns={attachResizeOutsource<
+              NonNullable<OutsourceRecoveryStockRow["sharedProducts"]>[number]
+            >(
               [
                 {
                   title: "客户",
@@ -3077,7 +3079,7 @@ export function OutsourcePage() {
             tableLayout="fixed"
             scroll={{ x: "max-content" }}
             components={OS_RESIZABLE_TABLE}
-            columns={attachResizeOutsource(
+            columns={attachResizeOutsource<OutsourceRecoveryHistoryRow>(
               [
                 {
                   title: "时间",
@@ -3170,7 +3172,7 @@ export function OutsourcePage() {
           scroll={{ x: 1120 }}
           tableLayout="fixed"
           components={OS_RESIZABLE_TABLE}
-          columns={attachResizeOutsource(
+          columns={attachResizeOutsource<OutsourceStockReturnInput>(
             [
               {
                 title: "加工方",
@@ -3576,7 +3578,7 @@ export function OutsourcePage() {
               tableLayout="fixed"
               scroll={{ x: "max-content" }}
               components={OS_RESIZABLE_TABLE}
-              columns={attachResizeOutsource(
+              columns={attachResizeOutsource<CloseLineInput>(
                 [
                   { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
                   {
@@ -3720,7 +3722,7 @@ export function OutsourcePage() {
                 tableLayout="fixed"
                 scroll={{ x: "max-content" }}
                 components={OS_RESIZABLE_TABLE}
-                columns={attachResizeOutsource(
+                columns={attachResizeOutsource<EditOrderLine>(
                   [
                     { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
                     {
@@ -3850,7 +3852,7 @@ export function OutsourcePage() {
               tableLayout="fixed"
               scroll={{ x: "max-content" }}
               components={OS_RESIZABLE_TABLE}
-              columns={attachResizeOutsource(
+              columns={attachResizeOutsource<EditOrderLine>(
                 [
                   { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
                   {
