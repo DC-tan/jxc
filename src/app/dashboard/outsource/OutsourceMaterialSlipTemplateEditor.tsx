@@ -18,6 +18,8 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchJson } from "@/lib/fetch-json";
 import {
   DEFAULT_OUTSOURCE_MATERIAL_SLIP_TEMPLATE,
+  OUTSOURCE_SLIP_COLUMN_KEYS,
+  OUTSOURCE_SLIP_DEFAULT_COLUMN_LABELS,
   mergeOutsourcePrintConfig,
   parseOutsourcePrintConfigForSave,
   type OutsourceMaterialSlipTemplateConfig,
@@ -70,6 +72,7 @@ function applyOutsourceTemplatePatch(
         ? { ...prev.orderNumberRule, ...patch.orderNumberRule }
         : prev.orderNumberRule,
     tableColumnHeaders: patch.tableColumnHeaders ?? prev.tableColumnHeaders,
+    tableColumnKeys: patch.tableColumnKeys ?? prev.tableColumnKeys,
     specialNoticeItems: patch.specialNoticeItems ?? prev.specialNoticeItems,
   };
   return mergeOutsourcePrintConfig(mergedTop);
@@ -154,11 +157,19 @@ export function OutsourceMaterialSlipTemplateEditor() {
   };
 
   const addColumn = () => {
-    if (draft.tableColumnHeaders.length >= 12) {
-      message.warning("最多 12 列");
+    const used = new Set(draft.tableColumnKeys);
+    const nextKey = OUTSOURCE_SLIP_COLUMN_KEYS.find((k) => !used.has(k));
+    if (!nextKey) {
+      message.warning("可用列已全部添加");
       return;
     }
-    patchDraft({ tableColumnHeaders: [...draft.tableColumnHeaders, "新列"] });
+    patchDraft({
+      tableColumnHeaders: [
+        ...draft.tableColumnHeaders,
+        OUTSOURCE_SLIP_DEFAULT_COLUMN_LABELS[nextKey],
+      ],
+      tableColumnKeys: [...draft.tableColumnKeys, nextKey],
+    });
   };
 
   const addNotice = () => {

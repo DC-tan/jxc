@@ -2,7 +2,11 @@
 
 import type { CSSProperties } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
-import type { OutsourceMaterialSlipTemplateConfig } from "@/lib/outsource-print-template";
+import type {
+  OutsourceMaterialSlipTemplateConfig,
+  OutsourceSlipColumnKey,
+} from "@/lib/outsource-print-template";
+import { normalizeOutsourceSlipColumns } from "@/lib/outsource-print-template";
 
 /** 导出 PDF 前挂到 `.outsource-slip-print-root`，使 html2canvas 应用与打印一致的紧凑版式（print 媒体对截图无效） */
 export const OUTSOURCE_SLIP_SHEET_FIT_CLASS = "outsource-slip--sheet-fit";
@@ -120,21 +124,45 @@ export function OutsourceMaterialSlipPreview({
   onTemplatePatch,
   onOpenOrderNumberRule,
 }: OutsourceMaterialSlipPreviewProps) {
-  const headers = cfg.tableColumnHeaders;
+  const { headers, keys: columnKeys } = normalizeOutsourceSlipColumns(
+    cfg.tableColumnHeaders,
+    cfg.tableColumnKeys,
+  );
   const w = cfg.paperMaxWidthPx;
   const edit = templateEditMode && !!onTemplatePatch;
 
-  const rowValues = (row: OutsourceSlipPreviewLine) => [
-    row.materialCode ?? row.kind,
-    row.materialName,
-    row.partDescription,
-    row.brand,
-    row.unit,
-    row.quantity,
-    row.remark,
-  ];
+  const cellValue = (
+    row: OutsourceSlipPreviewLine,
+    key: OutsourceSlipColumnKey,
+  ): string | number => {
+    switch (key) {
+      case "materialCode":
+        return row.materialCode?.trim() || row.kind || "";
+      case "materialName":
+        return row.materialName;
+      case "partDescription":
+        return row.partDescription;
+      case "brand":
+        return row.brand;
+      case "unit":
+        return row.unit;
+      case "quantity":
+        return row.quantity;
+      case "remark":
+        return row.remark;
+      default:
+        return "";
+    }
+  };
 
   const patch = onTemplatePatch ?? (() => {});
+
+  const patchColumns = (
+    nextHeaders: string[],
+    nextKeys: OutsourceSlipColumnKey[],
+  ) => {
+    patch({ tableColumnHeaders: nextHeaders, tableColumnKeys: nextKeys });
+  };
 
   return (
     <div
@@ -147,12 +175,13 @@ export function OutsourceMaterialSlipPreview({
       style={{
         maxWidth: w,
         margin: "0 auto",
-        padding: "14px 16px 16px",
+        padding: "8px 12px 10px",
         background: "#fff",
         border: "1px solid #ddd",
         fontFamily: '"Microsoft YaHei", "SimHei", sans-serif',
         fontSize: 12,
         color: "#111",
+        lineHeight: 1.2,
       }}
     >
       <style
@@ -160,11 +189,16 @@ export function OutsourceMaterialSlipPreview({
           __html: `
 .outsource-slip-print-root--template-edit { box-shadow: 0 0 0 2px #e6f4ff; }
 .outsource-slip-editable:hover { background: rgba(24, 144, 255, 0.06); }
+.outsource-slip-print-root .outsource-slip-table th,
+.outsource-slip-print-root .outsource-slip-table td {
+  line-height: 1.15;
+}
 /* 打印：单页 A5 横向内尽量排下；页脚说明非业务单据内容，不打印 */
 @media print {
   .outsource-slip-print-root {
-    padding: 3.5mm 4.5mm !important;
-    font-size: 8.8pt !important;
+    padding: 2.5mm 3.5mm !important;
+    font-size: 8.5pt !important;
+    line-height: 1.15 !important;
     border: none !important;
     max-width: 100% !important;
     width: 100% !important;
@@ -174,19 +208,20 @@ export function OutsourceMaterialSlipPreview({
     border-bottom: none !important;
     background: transparent !important;
   }
-  .outsource-slip-print-root .outsource-slip-company-cn { font-size: 10pt !important; margin-bottom: 1mm !important; }
-  .outsource-slip-print-root .outsource-slip-company-en { font-size: 8pt !important; }
+  .outsource-slip-print-root .outsource-slip-company-cn { font-size: 10pt !important; margin-bottom: 0 !important; line-height: 1.15 !important; }
+  .outsource-slip-print-root .outsource-slip-company-en { display: none !important; }
   .outsource-slip-print-root .outsource-slip-doc-title {
-    font-size: 12.5pt !important;
+    font-size: 12pt !important;
     letter-spacing: 1px !important;
-    margin: 2.5mm 0 3mm !important;
+    margin: 1mm 0 1.5mm !important;
+    line-height: 1.15 !important;
   }
-  .outsource-slip-print-root .outsource-slip-header-pack { margin-bottom: 2mm !important; gap: 2mm 4mm !important; }
-  .outsource-slip-print-root .outsource-slip-header-left .outsource-slip-meta-row { margin-bottom: 2mm !important; line-height: 1.35 !important; }
-  .outsource-slip-print-root .outsource-slip-header-left .outsource-slip-date-row { margin-bottom: 0 !important; gap: 8px 16px !important; }
-  .outsource-slip-print-root .outsource-slip-header-right .outsource-slip-meta-row { margin-bottom: 1.5mm !important; line-height: 1.35 !important; }
+  .outsource-slip-print-root .outsource-slip-header-pack { margin-bottom: 1.2mm !important; gap: 1mm 3mm !important; }
+  .outsource-slip-print-root .outsource-slip-header-left .outsource-slip-meta-row { margin-bottom: 0.8mm !important; line-height: 1.2 !important; }
+  .outsource-slip-print-root .outsource-slip-header-left .outsource-slip-date-row { margin-bottom: 0 !important; gap: 4px 10px !important; line-height: 1.2 !important; }
+  .outsource-slip-print-root .outsource-slip-header-right .outsource-slip-meta-row { margin-bottom: 0.6mm !important; line-height: 1.2 !important; }
   .outsource-slip-print-root .outsource-slip-table {
-    margin-bottom: 2mm !important;
+    margin-bottom: 1.2mm !important;
     break-inside: avoid;
     page-break-inside: avoid;
     width: 100% !important;
@@ -195,54 +230,63 @@ export function OutsourceMaterialSlipPreview({
   }
   .outsource-slip-print-root .outsource-slip-table th,
   .outsource-slip-print-root .outsource-slip-table td {
-    padding: 2px 4px !important;
-    font-size: 8.2pt !important;
+    padding: 1px 3px !important;
+    font-size: 8pt !important;
+    line-height: 1.1 !important;
     text-align: center !important;
     vertical-align: middle !important;
   }
-  .outsource-slip-print-root .outsource-slip-notice-title { margin-bottom: 1mm !important; }
-  .outsource-slip-print-root .outsource-slip-notice-list { line-height: 1.32 !important; padding-left: 1.1em !important; font-size: 8.2pt !important; }
-  .outsource-slip-print-root .outsource-slip-quad { font-size: 8pt !important; margin-bottom: 2mm !important; line-height: 1.3 !important; }
-  .outsource-slip-print-root .outsource-slip-sign-row { margin-top: 3mm !important; padding-top: 2mm !important; }
+  .outsource-slip-print-root .outsource-slip-notice-wrap { margin-bottom: 1mm !important; }
+  .outsource-slip-print-root .outsource-slip-notice-title { margin-bottom: 0.4mm !important; line-height: 1.15 !important; }
+  .outsource-slip-print-root .outsource-slip-notice-list { line-height: 1.2 !important; padding-left: 1em !important; font-size: 7.8pt !important; margin: 0 !important; }
+  .outsource-slip-print-root .outsource-slip-notice-list li { margin: 0 !important; padding: 0 !important; }
+  .outsource-slip-print-root .outsource-slip-quad { font-size: 7.5pt !important; margin-bottom: 1mm !important; line-height: 1.15 !important; }
+  .outsource-slip-print-root .outsource-slip-sign-row { margin-top: 1.5mm !important; padding-top: 1mm !important; line-height: 1.2 !important; }
   .outsource-slip-print-root .outsource-slip-footer-note { display: none !important; }
   .outsource-slip-print-root .outsource-slip-col-remove { display: none !important; }
 }
 /* PDF：html2canvas 不应用 @media print，用此类名复刻紧凑样式 */
 .outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} {
-  padding: 10px 12px 10px !important;
-  font-size: 11px !important;
+  padding: 6px 8px 6px !important;
+  font-size: 10px !important;
+  line-height: 1.15 !important;
   border: none !important;
   max-width: 100% !important;
   width: 100% !important;
   box-sizing: border-box !important;
 }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-company-cn { font-size: 12px !important; margin-bottom: 2px !important; }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-company-en { font-size: 10px !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-company-cn { font-size: 12px !important; margin-bottom: 0 !important; line-height: 1.15 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-company-en { display: none !important; }
 .outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-doc-title {
-  font-size: 15px !important;
+  font-size: 14px !important;
   letter-spacing: 1px !important;
-  margin: 6px 0 8px !important;
+  margin: 3px 0 4px !important;
+  line-height: 1.15 !important;
 }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-pack { margin-bottom: 6px !important; gap: 8px 20px !important; }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-left .outsource-slip-meta-row { margin-bottom: 6px !important; line-height: 1.35 !important; }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-left .outsource-slip-date-row { margin-bottom: 0 !important; gap: 8px 16px !important; }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-right .outsource-slip-meta-row { margin-bottom: 4px !important; line-height: 1.35 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-pack { margin-bottom: 4px !important; gap: 4px 12px !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-left .outsource-slip-meta-row { margin-bottom: 2px !important; line-height: 1.2 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-left .outsource-slip-date-row { margin-bottom: 0 !important; gap: 4px 10px !important; line-height: 1.2 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-header-right .outsource-slip-meta-row { margin-bottom: 2px !important; line-height: 1.2 !important; }
 .outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-table {
-  margin-bottom: 6px !important;
+  margin-bottom: 4px !important;
   width: 100% !important;
   max-width: 100% !important;
   table-layout: auto !important;
 }
 .outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-table th,
 .outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-table td {
-  padding: 3px 3px !important;
-  font-size: 10px !important;
+  padding: 1px 3px !important;
+  font-size: 9.5px !important;
+  line-height: 1.1 !important;
   text-align: center !important;
   vertical-align: middle !important;
 }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-notice-list { line-height: 1.32 !important; padding-left: 1.1em !important; font-size: 10px !important; }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-quad { font-size: 10px !important; margin-bottom: 6px !important; }
-.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-sign-row { margin-top: 8px !important; padding-top: 4px !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-notice-wrap { margin-bottom: 3px !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-notice-title { margin-bottom: 1px !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-notice-list { line-height: 1.2 !important; padding-left: 1em !important; font-size: 9.5px !important; margin: 0 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-notice-list li { margin: 0 !important; padding: 0 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-quad { font-size: 9.5px !important; margin-bottom: 3px !important; line-height: 1.15 !important; }
+.outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-sign-row { margin-top: 4px !important; padding-top: 2px !important; }
 .outsource-slip-print-root.${OUTSOURCE_SLIP_SHEET_FIT_CLASS} .outsource-slip-footer-note { display: none !important; }
 `,
         }}
@@ -250,8 +294,8 @@ export function OutsourceMaterialSlipPreview({
       {cfg.customCss ? (
         <style dangerouslySetInnerHTML={{ __html: cfg.customCss }} />
       ) : null}
-      <div style={{ textAlign: "center", marginBottom: 4 }}>
-        <div className="outsource-slip-company-cn" style={{ fontSize: 14, fontWeight: 600 }}>
+      <div style={{ textAlign: "center", marginBottom: 0 }}>
+        <div className="outsource-slip-company-cn" style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.15 }}>
           <SlipInlineEditable
             templateEditMode={edit}
             value={cfg.companyNameCn}
@@ -259,23 +303,16 @@ export function OutsourceMaterialSlipPreview({
             style={{ fontSize: "inherit", fontWeight: 600 }}
           />
         </div>
-        <div className="outsource-slip-company-en" style={{ fontSize: 11, marginTop: 2 }}>
-          <SlipInlineEditable
-            templateEditMode={edit}
-            value={cfg.companyNameEn}
-            onCommit={(v) => patch({ companyNameEn: v })}
-            style={{ fontSize: "inherit" }}
-          />
-        </div>
       </div>
       <div
         className="outsource-slip-doc-title"
         style={{
           textAlign: "center",
-          fontSize: 17,
+          fontSize: 16,
           fontWeight: 700,
           letterSpacing: 2,
-          margin: "8px 0 10px",
+          margin: "4px 0 6px",
+          lineHeight: 1.15,
         }}
       >
         <SlipInlineEditable
@@ -296,13 +333,13 @@ export function OutsourceMaterialSlipPreview({
           flexWrap: "wrap",
           alignItems: "flex-start",
           justifyContent: "space-between",
-          columnGap: 28,
-          rowGap: 10,
-          marginBottom: 10,
+          columnGap: 20,
+          rowGap: 4,
+          marginBottom: 6,
         }}
       >
         <div className="outsource-slip-header-left" style={{ flex: "1 1 240px", minWidth: 0 }}>
-          <div className="outsource-slip-meta-row" style={{ marginBottom: 8, lineHeight: 1.55 }}>
+          <div className="outsource-slip-meta-row" style={{ marginBottom: 3, lineHeight: 1.25 }}>
             <span>
               <strong>
                 <SlipInlineEditable
@@ -323,7 +360,13 @@ export function OutsourceMaterialSlipPreview({
           </div>
           <div
             className="outsource-slip-date-row"
-            style={{ display: "flex", flexWrap: "wrap", gap: "10px 24px", marginBottom: 0 }}
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: "4px 16px",
+              marginBottom: 0,
+              lineHeight: 1.25,
+            }}
           >
             <div>
               <strong>
@@ -382,7 +425,7 @@ export function OutsourceMaterialSlipPreview({
         </div>
 
         <div className="outsource-slip-header-right outsource-slip-product-rows" style={{ flex: "1 1 260px", minWidth: 0 }}>
-          <div className="outsource-slip-meta-row" style={{ marginBottom: 6, lineHeight: 1.55, textAlign: "left" }}>
+          <div className="outsource-slip-meta-row" style={{ marginBottom: 3, lineHeight: 1.25, textAlign: "left" }}>
             <span>
               <strong>
                 <SlipInlineEditable
@@ -401,7 +444,7 @@ export function OutsourceMaterialSlipPreview({
               style={dyn}
             />
           </div>
-          <div className="outsource-slip-meta-row" style={{ lineHeight: 1.55, textAlign: "left" }}>
+          <div className="outsource-slip-meta-row" style={{ lineHeight: 1.25, textAlign: "left" }}>
             <span>
               <strong>
                 <SlipInlineEditable
@@ -431,7 +474,7 @@ export function OutsourceMaterialSlipPreview({
             maxWidth: "100%",
             borderCollapse: "collapse",
             tableLayout: "auto",
-            marginBottom: 10,
+            marginBottom: 6,
           }}
         >
           <thead>
@@ -441,8 +484,9 @@ export function OutsourceMaterialSlipPreview({
                   key={`col-${hi}`}
                   style={{
                     border: "1px solid #333",
-                    padding: "6px 8px",
-                    fontSize: 12,
+                    padding: "2px 4px",
+                    fontSize: 11,
+                    lineHeight: 1.15,
                     background: "#f5f5f5",
                     fontWeight: 600,
                     textAlign: "center",
@@ -455,12 +499,12 @@ export function OutsourceMaterialSlipPreview({
                     templateEditMode={edit}
                     value={h}
                     onCommit={(v) => {
-                      const next = [...cfg.tableColumnHeaders];
+                      const next = [...headers];
                       next[hi] = v;
-                      patch({ tableColumnHeaders: next });
+                      patchColumns(next, columnKeys);
                     }}
                   />
-                  {edit && headers.length > 5 ? (
+                  {edit && headers.length > 1 ? (
                     <button
                       type="button"
                       className="outsource-slip-col-remove"
@@ -480,9 +524,10 @@ export function OutsourceMaterialSlipPreview({
                       }}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
-                        patch({
-                          tableColumnHeaders: cfg.tableColumnHeaders.filter((_, i) => i !== hi),
-                        });
+                        patchColumns(
+                          headers.filter((_, i) => i !== hi),
+                          columnKeys.filter((_, i) => i !== hi),
+                        );
                       }}
                     >
                       ×
@@ -493,24 +538,21 @@ export function OutsourceMaterialSlipPreview({
             </tr>
           </thead>
           <tbody>
-            {lines.map((row, i) => {
-              const vals = rowValues(row);
-              return (
-                <tr key={i}>
-                  {headers.map((_, ci) => (
-                    <td key={ci} style={cell}>
-                      {vals[ci] ?? ""}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
+            {lines.map((row, i) => (
+              <tr key={i}>
+                {columnKeys.map((key, ci) => (
+                  <td key={`${key}-${ci}`} style={cell}>
+                    {cellValue(row, key)}
+                  </td>
+                ))}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
 
-      <div style={{ marginBottom: 6 }}>
-        <div className="outsource-slip-notice-title" style={{ fontWeight: 700, marginBottom: 4 }}>
+      <div className="outsource-slip-notice-wrap" style={{ marginBottom: 4 }}>
+        <div className="outsource-slip-notice-title" style={{ fontWeight: 700, marginBottom: 2, lineHeight: 1.2 }}>
           <SlipInlineEditable
             templateEditMode={edit}
             value={cfg.specialNoticeTitle}
@@ -518,12 +560,13 @@ export function OutsourceMaterialSlipPreview({
             style={{ fontWeight: 700 }}
           />
         </div>
-        <ol className="outsource-slip-notice-list" style={{ margin: 0, paddingLeft: 18, lineHeight: 1.45 }}>
+        <ol className="outsource-slip-notice-list" style={{ margin: 0, paddingLeft: 16, lineHeight: 1.25 }}>
           {cfg.specialNoticeItems.map((t, idx) => (
             <li
               key={idx}
               style={{
                 position: "relative",
+                margin: 0,
                 paddingRight: edit && cfg.specialNoticeItems.length > 1 ? 22 : 0,
               }}
             >
@@ -569,7 +612,7 @@ export function OutsourceMaterialSlipPreview({
       </div>
 
       {cfg.quadruplicateNote.trim() || edit ? (
-        <div className="outsource-slip-quad" style={{ fontSize: 11, marginBottom: 8, lineHeight: 1.4 }}>
+        <div className="outsource-slip-quad" style={{ fontSize: 11, marginBottom: 4, lineHeight: 1.2 }}>
           <SlipInlineEditable
             templateEditMode={edit}
             multiline
@@ -584,9 +627,10 @@ export function OutsourceMaterialSlipPreview({
         style={{
           display: "flex",
           justifyContent: "space-between",
-          marginTop: 12,
-          paddingTop: 6,
+          marginTop: 6,
+          paddingTop: 3,
           borderTop: "1px solid #eee",
+          lineHeight: 1.25,
         }}
       >
         <div>
@@ -620,8 +664,12 @@ export function OutsourceMaterialSlipPreview({
         </div>
       </div>
 
-      {cfg.footerNote.trim() || edit ? (
-        <div className="outsource-slip-footer-note" style={{ marginTop: 10, fontSize: 11, color: "#666" }}>
+      {/* 仅模版设置页展示；打印与 PDF 导出已隐藏，不占纸面 */}
+      {edit ? (
+        <div
+          className="outsource-slip-footer-note"
+          style={{ marginTop: 6, fontSize: 10, color: "#666", lineHeight: 1.25 }}
+        >
           <SlipInlineEditable
             templateEditMode={edit}
             multiline
@@ -637,8 +685,9 @@ export function OutsourceMaterialSlipPreview({
 
 const cell: CSSProperties = {
   border: "1px solid #333",
-  padding: "4px 8px",
+  padding: "1px 4px",
   fontSize: 11,
+  lineHeight: 1.15,
   textAlign: "center",
   verticalAlign: "middle",
   wordBreak: "break-word",

@@ -264,8 +264,8 @@ export async function POST(req: Request) {
     if (mode === "split") {
       const inbounds = await prisma.materialInbound.findMany({
         where: {
-          receivedAt: { gte: from, lte: to },
           ...purchaseInboundWhere,
+          receivedAt: { gte: from, lte: to },
         },
         orderBy: { receivedAt: "asc" },
         take: 10000,
@@ -292,8 +292,9 @@ export async function POST(req: Request) {
       if (orderNos.length > 0) {
         const inbounds = await prisma.materialInbound.findMany({
           where: {
-            purchaseOrderNo: { in: orderNos },
             ...purchaseInboundWhere,
+            // 必须写在展开之后，否则 purchaseInboundWhere.purchaseOrderNo 会盖掉 in 条件
+            purchaseOrderNo: { in: orderNos },
           },
           orderBy: { receivedAt: "asc" },
           take: 10000,

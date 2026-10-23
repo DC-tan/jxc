@@ -6,6 +6,7 @@ import { productBomForOutsource } from "@/lib/product-bom-scope";
 import {
   outsourceMaterialFlowDirection,
   outsourceMaterialFlowQuantity,
+  withOutsourceStockHistoryBalance,
 } from "@/lib/outsource-material-stock-history";
 
 type HistoryRow = {
@@ -16,6 +17,7 @@ type HistoryRow = {
   direction: "IN" | "OUT";
   partDescription: string;
   operatorName: string;
+  balanceAfter?: number;
 };
 
 function buildRecycleConsumeFlow(input: {
@@ -230,9 +232,12 @@ export async function GET(req: Request) {
         .filter((x): x is HistoryRow => x != null),
     ];
 
-    const list = [...materialFlowRows, ...receiveConsumeFlows].sort(
-      (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime(),
-    );
+    const sorted = [...materialFlowRows, ...receiveConsumeFlows].sort((a, b) => {
+      const tb = new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime();
+      if (tb !== 0) return tb;
+      return b.id.localeCompare(a.id);
+    });
+    const list = withOutsourceStockHistoryBalance(sorted);
 
     return NextResponse.json({ list });
   } catch (e) {

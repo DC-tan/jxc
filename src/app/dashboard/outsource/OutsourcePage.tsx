@@ -24,8 +24,10 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import type { ReactNode } from "react";
+import type { Dispatch, ReactNode, SetStateAction, SyntheticEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ResizeCallbackData } from "react-resizable";
+import { ResizableTableTitle } from "@/components/ResizableTableTitle";
 import { fetchJson } from "@/lib/fetch-json";
 import { useMeTabPermissions } from "@/lib/use-me-tab-permissions";
 import { formatOutsourceRecoveryMaterialCode } from "@/lib/outsource-recovery-display";
@@ -35,6 +37,8 @@ import {
   defaultOutsourceWarehouseSend,
   outsourcePoolUseForNeed,
 } from "@/lib/outsource-lines";
+import { OutsourceOrderSlipPreviewModal } from "./OutsourceOrderSlipPreviewModal";
+import { OutsourceSettingsTab } from "./OutsourceSettingsTab";
 
 const OUTSOURCE_TAB_PERM: Record<string, string> = {
   add: "tab.os.add",
@@ -44,8 +48,157 @@ const OUTSOURCE_TAB_PERM: Record<string, string> = {
   recovery: "tab.os.recovery",
   settings: "tab.os.settings",
 };
-import { OutsourceOrderSlipPreviewModal } from "./OutsourceOrderSlipPreviewModal";
-import { OutsourceSettingsTab } from "./OutsourceSettingsTab";
+
+const DEFAULT_OS_ORDER_COL_WIDTH: Record<string, number> = {
+  orderNo: 160,
+  supplier: 160,
+  status: 88,
+  p: 220,
+  productQty: 96,
+  createdAt: 168,
+  receivedAt: 168,
+  lines: 108,
+  remark: 160,
+  slipPreview: 104,
+  op: 260,
+  todayOp: 140,
+};
+
+const DEFAULT_OS_LINE_EDIT_COL_WIDTH: Record<string, number> = {
+  code: 120,
+  name: 160,
+  partDescription: 180,
+  unit: 72,
+  materialStock: 92,
+  outsourceStock: 110,
+  quantity: 132,
+};
+
+const DEFAULT_OS_STOCK_COL_WIDTH: Record<string, number> = {
+  supplier: 180,
+  materialCode: 140,
+  materialName: 220,
+  partDescription: 220,
+  quantity: 120,
+  openQty: 126,
+  orderCount: 96,
+  detail: 88,
+};
+
+const DEFAULT_OS_RECOVERY_COL_WIDTH: Record<string, number> = {
+  customer: 220,
+  recoveryMaterialCode: 148,
+  model: 180,
+  unit: 80,
+  quantity: 120,
+  sharedProductCount: 108,
+  lastReceivedAt: 170,
+  actions: 200,
+};
+
+const DEFAULT_OS_STOCK_HISTORY_COL_WIDTH: Record<string, number> = {
+  receivedAt: 170,
+  direction: 80,
+  quantity: 96,
+  orderNo: 200,
+  partDescription: 320,
+  balanceAfter: 110,
+  operatorName: 120,
+};
+
+const DEFAULT_OS_STOCK_RETURN_COL_WIDTH: Record<string, number> = {
+  supplierName: 160,
+  materialCode: 120,
+  materialName: 160,
+  unit: 72,
+  maxReturnQty: 100,
+  returnQty: 120,
+  scrapQty: 120,
+  remain: 110,
+};
+
+const DEFAULT_OS_RECOVERY_POOL_COL_WIDTH: Record<string, number> = {
+  customer: 220,
+  recoveryMaterialCode: 150,
+  customerMaterialCode: 150,
+  model: 180,
+  unit: 90,
+};
+
+const DEFAULT_OS_RECOVERY_HISTORY_COL_WIDTH: Record<string, number> = {
+  receivedAt: 170,
+  direction: 80,
+  quantity: 90,
+  orderNo: 180,
+  partDescription: 220,
+  operatorName: 120,
+};
+
+const DEFAULT_OS_CLOSE_COL_WIDTH: Record<string, number> = {
+  code: 120,
+  name: 160,
+  unit: 64,
+  currentQty: 96,
+  lossBySets: 108,
+  returnQty: 120,
+};
+
+const DEFAULT_OS_EDIT_LINE_COL_WIDTH: Record<string, number> = {
+  code: 120,
+  name: 160,
+  partDescription: 180,
+  unit: 64,
+  materialStock: 92,
+  outsourceStock: 110,
+  quantity: 132,
+};
+
+const DEFAULT_OS_EDIT_VIEW_COL_WIDTH: Record<string, number> = {
+  code: 120,
+  name: 160,
+  partDescription: 180,
+  unit: 72,
+  quantity: 112,
+};
+
+const DEFAULT_OS_RECYCLE_COL_WIDTH: Record<string, number> = {
+  materialCode: 140,
+  productName: 180,
+  unit: 72,
+  productQty: 100,
+  recoveredSets: 112,
+  pendingSets: 100,
+  thisSets: 120,
+};
+
+function attachResizeOutsource<T extends object>(
+  columns: ColumnsType<T>,
+  widths: Record<string, number>,
+  setWidths: Dispatch<SetStateAction<Record<string, number>>>,
+  defaults: Record<string, number>,
+): ColumnsType<T> {
+  return columns.map((col) => {
+    const keyFromDataIndex =
+      "dataIndex" in col && typeof col.dataIndex === "string" ? col.dataIndex : "";
+    const key = col.key != null ? String(col.key) : keyFromDataIndex;
+    if (!key) return col;
+    const w = widths[key] ?? defaults[key] ?? (col.width as number) ?? 120;
+    return {
+      ...col,
+      width: w,
+      onHeaderCell: () => ({
+        width: w,
+        onResize: (_e: SyntheticEvent, data: ResizeCallbackData) => {
+          setWidths((prev) => ({ ...prev, [key]: data.size.width }));
+        },
+      }),
+    };
+  });
+}
+
+const OS_RESIZABLE_TABLE = {
+  header: { cell: ResizableTableTitle },
+} as const;
 
 type OutsourceProductBomRow = {
   materialId: string;
@@ -265,6 +418,7 @@ type OutsourceStockHistoryRow = {
   quantity: number;
   direction: "IN" | "OUT";
   partDescription: string;
+  balanceAfter: number;
   operatorName: string;
 };
 
@@ -462,6 +616,24 @@ export function OutsourcePage() {
     useState<OutsourceRecoveryStockRow | null>(null);
   const [recoveryHistoryLoading, setRecoveryHistoryLoading] = useState(false);
   const [recoveryHistoryRows, setRecoveryHistoryRows] = useState<OutsourceRecoveryHistoryRow[]>([]);
+  const [osOrderColWidths, setOsOrderColWidths] = useState<Record<string, number>>({});
+  const [osLineEditColWidths, setOsLineEditColWidths] = useState<Record<string, number>>({});
+  const [osStockColWidths, setOsStockColWidths] = useState<Record<string, number>>({});
+  const [osRecoveryColWidths, setOsRecoveryColWidths] = useState<Record<string, number>>({});
+  const [osStockHistoryColWidths, setOsStockHistoryColWidths] = useState<Record<string, number>>(
+    {},
+  );
+  const [osStockReturnColWidths, setOsStockReturnColWidths] = useState<Record<string, number>>({});
+  const [osRecoveryPoolColWidths, setOsRecoveryPoolColWidths] = useState<Record<string, number>>(
+    {},
+  );
+  const [osRecoveryHistoryColWidths, setOsRecoveryHistoryColWidths] = useState<
+    Record<string, number>
+  >({});
+  const [osCloseColWidths, setOsCloseColWidths] = useState<Record<string, number>>({});
+  const [osEditLineColWidths, setOsEditLineColWidths] = useState<Record<string, number>>({});
+  const [osEditViewColWidths, setOsEditViewColWidths] = useState<Record<string, number>>({});
+  const [osRecycleColWidths, setOsRecycleColWidths] = useState<Record<string, number>>({});
   const recoveryKeywordRef = useRef("");
   const [closeOpen, setCloseOpen] = useState(false);
   const [closeLoading, setCloseLoading] = useState(false);
@@ -1411,6 +1583,7 @@ export function OutsourcePage() {
         数量: x.quantity,
         外发单号: x.orderNo || "—",
         说明: x.partDescription || "—",
+        结余数: x.balanceAfter,
         操作人: x.operatorName || "—",
       }));
       const ws = XLSX.utils.json_to_sheet(rows);
@@ -1769,7 +1942,7 @@ export function OutsourcePage() {
 
   const orderColumns: ColumnsType<OutsourceOrderRow> = useMemo(
     () => [
-    { title: "外发单号", dataIndex: "orderNo", width: 160, ellipsis: true },
+    { title: "外发单号", key: "orderNo", dataIndex: "orderNo", width: 160, ellipsis: true },
     {
       title: "加工方",
       key: "supplier",
@@ -1779,6 +1952,7 @@ export function OutsourcePage() {
     },
     {
       title: "状态",
+      key: "status",
       dataIndex: "status",
       width: 88,
       render: (s: OutsourceOrderRow["status"]) => {
@@ -1789,19 +1963,22 @@ export function OutsourcePage() {
     {
       title: "客户名称 / 型号",
       key: "p",
+      width: 220,
       ellipsis: true,
       render: (_, r) =>
         `${r.product.customer.name || "—"} / ${r.product.model?.trim() || "—"}`,
     },
-    { title: "加工套数", dataIndex: "productQty", width: 96 },
+    { title: "加工套数", key: "productQty", dataIndex: "productQty", width: 96 },
     {
       title: "建单时间",
+      key: "createdAt",
       dataIndex: "createdAt",
       width: 168,
       render: (t: string) => dayjs(t).format("YYYY-MM-DD HH:mm"),
     },
     {
       title: "回收时间",
+      key: "receivedAt",
       dataIndex: "receivedAt",
       width: 168,
       render: (t: string | null) => (t ? dayjs(t).format("YYYY-MM-DD HH:mm") : "—"),
@@ -1818,7 +1995,9 @@ export function OutsourcePage() {
     },
     {
       title: "备注",
+      key: "remark",
       dataIndex: "remark",
+      width: 160,
       ellipsis: true,
       render: (t: string | null) => t?.trim() || "—",
     },
@@ -1958,16 +2137,19 @@ export function OutsourcePage() {
     [canDeleteOutsource, confirmCancelTodayOrder],
   );
 
-  const lineEditColumns: ColumnsType<EditableLine> = [
-    { title: "物料编号", dataIndex: "code" },
-    { title: "物料名称", dataIndex: "name", ellipsis: true },
+  const lineEditColumns: ColumnsType<EditableLine> = useMemo(
+    () => [
+    { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
+    { title: "物料名称", key: "name", dataIndex: "name", width: 160, ellipsis: true },
     {
       title: "部件描述",
+      key: "partDescription",
       dataIndex: "partDescription",
+      width: 180,
       ellipsis: true,
       render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
     },
-    { title: "单位", dataIndex: "unit" },
+    { title: "单位", key: "unit", dataIndex: "unit", width: 72 },
     {
       title: "物料库存",
       key: "materialStock",
@@ -1982,7 +2164,7 @@ export function OutsourcePage() {
     {
       title: "外发物料库存",
       key: "outsourceStock",
-      width: 92,
+      width: 110,
       render: (_, row) =>
         loadingOutsourceStock ? (
           <Typography.Text type="secondary">…</Typography.Text>
@@ -1994,6 +2176,7 @@ export function OutsourcePage() {
     },
     {
       title: "外发数量（实发）",
+      key: "quantity",
       dataIndex: "quantity",
       width: 132,
       render: (_, row, index) => {
@@ -2046,7 +2229,283 @@ export function OutsourcePage() {
         );
       },
     },
-  ];
+  ],
+    [
+      loadingStock,
+      loadingOutsourceStock,
+      stockByMaterial,
+      outsourceStockByMaterial,
+      addSupplierId,
+      createBomNeedByMaterial,
+    ],
+  );
+
+  const resizedTodayOrderColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        [...orderColumns, todayActionColumn],
+        osOrderColWidths,
+        setOsOrderColWidths,
+        DEFAULT_OS_ORDER_COL_WIDTH,
+      ),
+    [orderColumns, todayActionColumn, osOrderColWidths],
+  );
+
+  const resizedOpenOrderColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        [...orderColumns, openActionColumn],
+        osOrderColWidths,
+        setOsOrderColWidths,
+        DEFAULT_OS_ORDER_COL_WIDTH,
+      ),
+    [orderColumns, openActionColumn, osOrderColWidths],
+  );
+
+  const resizedQueryOrderColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        orderColumns,
+        osOrderColWidths,
+        setOsOrderColWidths,
+        DEFAULT_OS_ORDER_COL_WIDTH,
+      ),
+    [orderColumns, osOrderColWidths],
+  );
+
+  const resizedLineEditColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        lineEditColumns,
+        osLineEditColWidths,
+        setOsLineEditColWidths,
+        DEFAULT_OS_LINE_EDIT_COL_WIDTH,
+      ),
+    [lineEditColumns, osLineEditColWidths],
+  );
+
+  const stockListColumns: ColumnsType<OutsourceMaterialStockRow> = useMemo(
+    () => [
+      {
+        title: "加工方",
+        key: "supplier",
+        width: 180,
+        render: (_, r) =>
+          r.supplierName?.trim() || r.supplierCode?.trim() || "未指定加工方",
+      },
+      {
+        title: "物料编号",
+        key: "materialCode",
+        dataIndex: "materialCode",
+        width: 140,
+      },
+      {
+        title: "物料名称",
+        key: "materialName",
+        dataIndex: "materialName",
+        width: 220,
+        ellipsis: true,
+      },
+      {
+        title: "部件描述",
+        key: "partDescription",
+        dataIndex: "partDescription",
+        width: 220,
+        ellipsis: true,
+        render: (v: string | null) => v?.trim() || "—",
+      },
+      {
+        title: "外发物料库存",
+        key: "quantity",
+        dataIndex: "quantity",
+        width: 120,
+        align: "right",
+      },
+      {
+        title: "未回收单占用",
+        key: "openQty",
+        dataIndex: "openQty",
+        width: 126,
+        align: "right",
+      },
+      {
+        title: "关联单数",
+        key: "orderCount",
+        dataIndex: "orderCount",
+        width: 96,
+        align: "right",
+      },
+      {
+        title: "详情",
+        key: "detail",
+        width: 88,
+        render: (_, r) => (
+          <Button type="link" size="small" onClick={() => void openStockHistory(r)}>
+            详情
+          </Button>
+        ),
+      },
+    ],
+    [openStockHistory],
+  );
+
+  const resizedStockListColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        stockListColumns,
+        osStockColWidths,
+        setOsStockColWidths,
+        DEFAULT_OS_STOCK_COL_WIDTH,
+      ),
+    [stockListColumns, osStockColWidths],
+  );
+
+  const recoveryListColumns: ColumnsType<OutsourceRecoveryStockRow> = useMemo(
+    () => [
+      {
+        title: "客户",
+        key: "customer",
+        width: 220,
+        render: (_, r) => `${r.customerCode} ${r.customerName}`,
+      },
+      {
+        title: "回收料号",
+        key: "recoveryMaterialCode",
+        dataIndex: "recoveryMaterialCode",
+        width: 148,
+        render: (v: string, r) =>
+          v || formatOutsourceRecoveryMaterialCode(r.customerMaterialCode),
+      },
+      {
+        title: "商品型号",
+        key: "model",
+        dataIndex: "model",
+        width: 180,
+        ellipsis: true,
+      },
+      { title: "单位", key: "unit", dataIndex: "unit", width: 80 },
+      {
+        title: "回收库库存",
+        key: "quantity",
+        dataIndex: "quantity",
+        width: 120,
+        align: "right",
+      },
+      {
+        title: "共享商品数",
+        key: "sharedProductCount",
+        dataIndex: "sharedProductCount",
+        width: 108,
+        align: "right",
+        render: (v: number | undefined) => v ?? 1,
+      },
+      {
+        title: "最近变动",
+        key: "lastReceivedAt",
+        dataIndex: "lastReceivedAt",
+        width: 170,
+        render: (v: string | null) =>
+          v ? dayjs(v).format("YYYY-MM-DD HH:mm:ss") : "—",
+      },
+      {
+        title: "操作",
+        key: "actions",
+        width: 200,
+        render: (_, r) => (
+          <Space size={6} wrap>
+            <Button size="small" onClick={() => openRecoveryPoolDetail(r)}>
+              详情
+            </Button>
+            {canAdjustRecovery ? (
+              <Button size="small" onClick={() => openRecoveryAdjust(r)}>
+                手动调整
+              </Button>
+            ) : null}
+          </Space>
+        ),
+      },
+    ],
+    [canAdjustRecovery, openRecoveryAdjust, openRecoveryPoolDetail],
+  );
+
+  const resizedRecoveryListColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        recoveryListColumns,
+        osRecoveryColWidths,
+        setOsRecoveryColWidths,
+        DEFAULT_OS_RECOVERY_COL_WIDTH,
+      ),
+    [recoveryListColumns, osRecoveryColWidths],
+  );
+
+  const stockHistoryColumns: ColumnsType<OutsourceStockHistoryRow> = useMemo(
+    () => [
+      {
+        title: "时间",
+        key: "receivedAt",
+        dataIndex: "receivedAt",
+        width: 170,
+        render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm:ss"),
+      },
+      {
+        title: "方向",
+        key: "direction",
+        dataIndex: "direction",
+        width: 80,
+        render: (v: OutsourceStockHistoryRow["direction"]) =>
+          v === "IN" ? <Tag color="green">入库</Tag> : <Tag color="orange">出库</Tag>,
+      },
+      {
+        title: "数量",
+        key: "quantity",
+        dataIndex: "quantity",
+        width: 96,
+        align: "right",
+      },
+      {
+        title: "外发单号",
+        key: "orderNo",
+        dataIndex: "orderNo",
+        width: 200,
+        ellipsis: true,
+      },
+      {
+        title: "说明",
+        key: "partDescription",
+        dataIndex: "partDescription",
+        width: 320,
+        ellipsis: true,
+      },
+      {
+        title: "结余数",
+        key: "balanceAfter",
+        dataIndex: "balanceAfter",
+        width: 110,
+        align: "right",
+        render: (v: number) => (Number.isFinite(v) ? v : "—"),
+      },
+      {
+        title: "操作人",
+        key: "operatorName",
+        dataIndex: "operatorName",
+        width: 120,
+        ellipsis: true,
+      },
+    ],
+    [],
+  );
+
+  const resizedStockHistoryColumns = useMemo(
+    () =>
+      attachResizeOutsource(
+        stockHistoryColumns,
+        osStockHistoryColWidths,
+        setOsStockHistoryColWidths,
+        DEFAULT_OS_STOCK_HISTORY_COL_WIDTH,
+      ),
+    [stockHistoryColumns, osStockHistoryColWidths],
+  );
 
   const visibleOutsourceTabKeys = useMemo(
     () =>
@@ -2142,7 +2601,9 @@ export function OutsourcePage() {
                       loading={loadingTodayOrders}
                       dataSource={todayOrders}
                       onRow={(r) => ({ title: orderHoverTitle(r) })}
-                      columns={[...orderColumns, todayActionColumn]}
+                      columns={resizedTodayOrderColumns}
+                      components={OS_RESIZABLE_TABLE}
+                      tableLayout="fixed"
                       scroll={{ x: "max-content" }}
                       pagination={{ pageSize: 8, showSizeChanger: false }}
                       locale={{ emptyText: "今日尚无外发单" }}
@@ -2195,7 +2656,10 @@ export function OutsourcePage() {
                         size="small"
                         rowKey="materialId"
                         pagination={false}
-                        columns={lineEditColumns}
+                        columns={resizedLineEditColumns}
+                        components={OS_RESIZABLE_TABLE}
+                        tableLayout="fixed"
+                        scroll={{ x: "max-content" }}
                         dataSource={lines}
                         locale={{ emptyText: "无 BOM 物料" }}
                         onRow={(record) => ({
@@ -2242,7 +2706,9 @@ export function OutsourcePage() {
                   loading={loadingOpen}
                   dataSource={openOrders}
                   onRow={(r) => ({ title: orderHoverTitle(r) })}
-                  columns={[...orderColumns, openActionColumn]}
+                  columns={resizedOpenOrderColumns}
+                  components={OS_RESIZABLE_TABLE}
+                  tableLayout="fixed"
                   scroll={{ x: "max-content" }}
                   pagination={{ pageSize: 10 }}
                 />
@@ -2296,7 +2762,9 @@ export function OutsourcePage() {
                   loading={loadingQuery}
                   dataSource={queryOrders}
                   onRow={(r) => ({ title: orderHoverTitle(r) })}
-                  columns={orderColumns}
+                  columns={resizedQueryOrderColumns}
+                  components={OS_RESIZABLE_TABLE}
+                  tableLayout="fixed"
                   scroll={{ x: "max-content" }}
                   pagination={{
                     defaultPageSize: 10,
@@ -2412,6 +2880,8 @@ export function OutsourcePage() {
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
                   scroll={{ x: "max-content" }}
+                  tableLayout="fixed"
+                  components={OS_RESIZABLE_TABLE}
                   rowSelection={{
                     selectedRowKeys: stockSelectedRowKeys,
                     onChange: (keys) => setStockSelectedRowKeys(keys.map((k) => String(k))),
@@ -2419,36 +2889,7 @@ export function OutsourcePage() {
                       disabled: r.closedCarryQty <= 0,
                     }),
                   }}
-                  columns={[
-                    {
-                      title: "加工方",
-                      key: "supplier",
-                      width: 180,
-                      render: (_, r) => r.supplierName?.trim() || r.supplierCode?.trim() || "未指定加工方",
-                    },
-                    { title: "物料编号", dataIndex: "materialCode", width: 140 },
-                    { title: "物料名称", dataIndex: "materialName", width: 220, ellipsis: true },
-                    {
-                      title: "部件描述",
-                      dataIndex: "partDescription",
-                      width: 220,
-                      ellipsis: true,
-                      render: (v: string | null) => v?.trim() || "—",
-                    },
-                    { title: "外发物料库存", dataIndex: "quantity", width: 120, align: "right" },
-                    { title: "未回收单占用", dataIndex: "openQty", width: 126, align: "right" },
-                    { title: "关联单数", dataIndex: "orderCount", width: 96, align: "right" },
-                    {
-                      title: "详情",
-                      key: "detail",
-                      width: 88,
-                      render: (_, r) => (
-                        <Button type="link" size="small" onClick={() => void openStockHistory(r)}>
-                          详情
-                        </Button>
-                      ),
-                    },
-                  ]}
+                  columns={resizedStockListColumns}
                   locale={{ emptyText: "暂无在外物料库存" }}
                 />
               </Space>
@@ -2498,56 +2939,9 @@ export function OutsourcePage() {
                     pageSizeOptions: [10, 20, 50, 100],
                   }}
                   scroll={{ x: "max-content" }}
-                  columns={[
-                    {
-                      title: "客户",
-                      key: "customer",
-                      width: 220,
-                      render: (_, r) => `${r.customerCode} ${r.customerName}`,
-                    },
-                    {
-                      title: "回收料号",
-                      dataIndex: "recoveryMaterialCode",
-                      width: 148,
-                      render: (v: string, r) =>
-                        v ||
-                        formatOutsourceRecoveryMaterialCode(r.customerMaterialCode),
-                    },
-                    { title: "商品型号", dataIndex: "model", width: 180, ellipsis: true },
-                    { title: "单位", dataIndex: "unit", width: 80 },
-                    { title: "回收库库存", dataIndex: "quantity", width: 120, align: "right" },
-                    {
-                      title: "共享商品数",
-                      dataIndex: "sharedProductCount",
-                      width: 108,
-                      align: "right",
-                      render: (v: number | undefined) => v ?? 1,
-                    },
-                    {
-                      title: "最近变动",
-                      dataIndex: "lastReceivedAt",
-                      width: 170,
-                      render: (v: string | null) =>
-                        v ? dayjs(v).format("YYYY-MM-DD HH:mm:ss") : "—",
-                    },
-                    {
-                      title: "操作",
-                      key: "actions",
-                      width: 200,
-                      render: (_, r) => (
-                        <Space size={6} wrap>
-                          <Button size="small" onClick={() => openRecoveryPoolDetail(r)}>
-                            详情
-                          </Button>
-                          {canAdjustRecovery ? (
-                            <Button size="small" onClick={() => openRecoveryAdjust(r)}>
-                              手动调整
-                            </Button>
-                          ) : null}
-                        </Space>
-                      ),
-                    },
-                  ]}
+                  tableLayout="fixed"
+                  components={OS_RESIZABLE_TABLE}
+                  columns={resizedRecoveryListColumns}
                   locale={{ emptyText: "暂无外发回收库存" }}
                 />
               </Space>
@@ -2635,18 +3029,42 @@ export function OutsourcePage() {
             rowKey={(r) => r.productId}
             pagination={false}
             dataSource={recoveryPoolDetailTarget?.sharedProducts ?? []}
-            columns={[
-              {
-                title: "客户",
-                key: "customer",
-                width: 220,
-                render: (_, r) => `${r.customerCode} ${r.customerName}`,
-              },
-              { title: "回收料号", dataIndex: "recoveryMaterialCode", width: 150 },
-              { title: "客户料号", dataIndex: "customerMaterialCode", width: 150 },
-              { title: "商品型号", dataIndex: "model", ellipsis: true },
-              { title: "单位", dataIndex: "unit", width: 90 },
-            ]}
+            tableLayout="fixed"
+            scroll={{ x: "max-content" }}
+            components={OS_RESIZABLE_TABLE}
+            columns={attachResizeOutsource(
+              [
+                {
+                  title: "客户",
+                  key: "customer",
+                  width: 220,
+                  render: (_, r) => `${r.customerCode} ${r.customerName}`,
+                },
+                {
+                  title: "回收料号",
+                  key: "recoveryMaterialCode",
+                  dataIndex: "recoveryMaterialCode",
+                  width: 150,
+                },
+                {
+                  title: "客户料号",
+                  key: "customerMaterialCode",
+                  dataIndex: "customerMaterialCode",
+                  width: 150,
+                },
+                {
+                  title: "商品型号",
+                  key: "model",
+                  dataIndex: "model",
+                  width: 180,
+                  ellipsis: true,
+                },
+                { title: "单位", key: "unit", dataIndex: "unit", width: 90 },
+              ],
+              osRecoveryPoolColWidths,
+              setOsRecoveryPoolColWidths,
+              DEFAULT_OS_RECOVERY_POOL_COL_WIDTH,
+            )}
             locale={{ emptyText: "无共享商品明细" }}
           />
           <Typography.Text strong>出入库记录</Typography.Text>
@@ -2656,39 +3074,63 @@ export function OutsourcePage() {
             loading={recoveryHistoryLoading}
             pagination={false}
             dataSource={recoveryHistoryRows}
-            columns={[
-              {
-                title: "时间",
-                dataIndex: "receivedAt",
-                width: 170,
-                render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm:ss"),
-              },
-              {
-                title: "方向",
-                dataIndex: "direction",
-                width: 80,
-                render: (v: OutsourceRecoveryHistoryRow["direction"]) =>
-                  v === "IN" ? (
-                    <Typography.Text type="success">入库</Typography.Text>
-                  ) : (
-                    <Typography.Text type="danger">出库</Typography.Text>
-                  ),
-              },
-              { title: "数量", dataIndex: "quantity", width: 90, align: "right" },
-              {
-                title: "单号/备注",
-                dataIndex: "orderNo",
-                width: 180,
-                render: (v: string) => v || "—",
-              },
-              { title: "说明", dataIndex: "partDescription", ellipsis: true },
-              {
-                title: "操作人",
-                dataIndex: "operatorName",
-                width: 120,
-                render: (v: string) => v || "—",
-              },
-            ]}
+            tableLayout="fixed"
+            scroll={{ x: "max-content" }}
+            components={OS_RESIZABLE_TABLE}
+            columns={attachResizeOutsource(
+              [
+                {
+                  title: "时间",
+                  key: "receivedAt",
+                  dataIndex: "receivedAt",
+                  width: 170,
+                  render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm:ss"),
+                },
+                {
+                  title: "方向",
+                  key: "direction",
+                  dataIndex: "direction",
+                  width: 80,
+                  render: (v: OutsourceRecoveryHistoryRow["direction"]) =>
+                    v === "IN" ? (
+                      <Typography.Text type="success">入库</Typography.Text>
+                    ) : (
+                      <Typography.Text type="danger">出库</Typography.Text>
+                    ),
+                },
+                {
+                  title: "数量",
+                  key: "quantity",
+                  dataIndex: "quantity",
+                  width: 90,
+                  align: "right",
+                },
+                {
+                  title: "单号/备注",
+                  key: "orderNo",
+                  dataIndex: "orderNo",
+                  width: 180,
+                  render: (v: string) => v || "—",
+                },
+                {
+                  title: "说明",
+                  key: "partDescription",
+                  dataIndex: "partDescription",
+                  width: 220,
+                  ellipsis: true,
+                },
+                {
+                  title: "操作人",
+                  key: "operatorName",
+                  dataIndex: "operatorName",
+                  width: 120,
+                  render: (v: string) => v || "—",
+                },
+              ],
+              osRecoveryHistoryColWidths,
+              setOsRecoveryHistoryColWidths,
+              DEFAULT_OS_RECOVERY_HISTORY_COL_WIDTH,
+            )}
             locale={{ emptyText: "暂无出入库记录" }}
           />
         </Space>
@@ -2726,80 +3168,118 @@ export function OutsourcePage() {
           pagination={false}
           dataSource={stockReturnLines}
           scroll={{ x: 1120 }}
-          columns={[
-            { title: "加工方", dataIndex: "supplierName", width: 160, ellipsis: true },
-            { title: "物料编号", dataIndex: "materialCode", width: 140 },
-            { title: "物料名称", dataIndex: "materialName", width: 220, ellipsis: true },
-            { title: "单位", dataIndex: "unit", width: 70 },
-            { title: "可退数量", dataIndex: "maxReturnQty", width: 100, align: "right" },
-            {
-              title: "退料数量",
-              width: 120,
-              render: (_, row, idx) => (
-                <InputNumber
-                  min={0}
-                  max={row.maxReturnQty}
-                  precision={0}
-                  value={row.returnQty}
-                  style={{ width: "100%" }}
-                  onChange={(v) => {
-                    const n = Math.max(0, Math.trunc(Number(v) || 0));
-                    const nextReturn = Math.min(row.maxReturnQty, n);
-                    setStockReturnLines((prev) =>
-                      prev.map((x, i) =>
-                        i === idx
-                          ? {
-                              ...x,
-                              returnQty: nextReturn,
-                            }
-                          : x,
-                      ),
-                    );
-                  }}
-                />
-              ),
-            },
-            {
-              title: "报废数量",
-              width: 120,
-              render: (_, row, idx) => (
-                <InputNumber
-                  min={0}
-                  max={row.maxReturnQty}
-                  precision={0}
-                  value={row.scrapQty}
-                  style={{ width: "100%" }}
-                  onChange={(v) => {
-                    const n = Math.max(0, Math.trunc(Number(v) || 0));
-                    const nextScrap = Math.min(row.maxReturnQty, n);
-                    setStockReturnLines((prev) =>
-                      prev.map((x, i) => {
-                        if (i !== idx) return x;
-                        return {
-                          ...x,
-                          scrapQty: nextScrap,
-                        };
-                      }),
-                    );
-                  }}
-                />
-              ),
-            },
-            {
-              title: "未退数量",
-              width: 110,
-              align: "right",
-              render: (_, row) =>
-                Math.max(0, row.maxReturnQty - row.returnQty - row.scrapQty),
-            },
-          ]}
+          tableLayout="fixed"
+          components={OS_RESIZABLE_TABLE}
+          columns={attachResizeOutsource(
+            [
+              {
+                title: "加工方",
+                key: "supplierName",
+                dataIndex: "supplierName",
+                width: 160,
+                ellipsis: true,
+              },
+              {
+                title: "物料编号",
+                key: "materialCode",
+                dataIndex: "materialCode",
+                width: 140,
+              },
+              {
+                title: "物料名称",
+                key: "materialName",
+                dataIndex: "materialName",
+                width: 220,
+                ellipsis: true,
+              },
+              { title: "单位", key: "unit", dataIndex: "unit", width: 72 },
+              {
+                title: "可退数量",
+                key: "maxReturnQty",
+                dataIndex: "maxReturnQty",
+                width: 100,
+                align: "right",
+              },
+              {
+                title: "退料数量",
+                key: "returnQty",
+                width: 120,
+                render: (_, row, idx) => (
+                  <InputNumber
+                    min={0}
+                    max={row.maxReturnQty}
+                    precision={0}
+                    value={row.returnQty}
+                    style={{ width: "100%" }}
+                    onChange={(v) => {
+                      const n = Math.max(0, Math.trunc(Number(v) || 0));
+                      const nextReturn = Math.min(row.maxReturnQty, n);
+                      setStockReturnLines((prev) =>
+                        prev.map((x, i) =>
+                          i === idx
+                            ? {
+                                ...x,
+                                returnQty: nextReturn,
+                              }
+                            : x,
+                        ),
+                      );
+                    }}
+                  />
+                ),
+              },
+              {
+                title: "报废数量",
+                key: "scrapQty",
+                width: 120,
+                render: (_, row, idx) => (
+                  <InputNumber
+                    min={0}
+                    max={row.maxReturnQty}
+                    precision={0}
+                    value={row.scrapQty}
+                    style={{ width: "100%" }}
+                    onChange={(v) => {
+                      const n = Math.max(0, Math.trunc(Number(v) || 0));
+                      const nextScrap = Math.min(row.maxReturnQty, n);
+                      setStockReturnLines((prev) =>
+                        prev.map((x, i) => {
+                          if (i !== idx) return x;
+                          return {
+                            ...x,
+                            scrapQty: nextScrap,
+                          };
+                        }),
+                      );
+                    }}
+                  />
+                ),
+              },
+              {
+                title: "未退数量",
+                key: "remain",
+                width: 110,
+                align: "right",
+                render: (_, row) =>
+                  Math.max(0, row.maxReturnQty - row.returnQty - row.scrapQty),
+              },
+            ],
+            osStockReturnColWidths,
+            setOsStockReturnColWidths,
+            DEFAULT_OS_STOCK_RETURN_COL_WIDTH,
+          )}
         />
       </Modal>
 
       <Modal
         title={
           stockHistoryTarget
-            ? `出入库明细 · ${stockHistoryTarget.materialCode} ${stockHistoryTarget.materialName}`
+            ? (() => {
+                const desc = stockHistoryTarget.partDescription?.trim();
+                return `出入库明细 · ${stockHistoryTarget.materialCode} ${stockHistoryTarget.materialName}${
+                  desc ? ` · ${desc}` : ""
+                }`;
+              })()
             : "出入库明细"
         }
         open={stockHistoryOpen}
@@ -2809,8 +3289,14 @@ export function OutsourcePage() {
           setStockHistoryTarget(null);
         }}
         footer={
-          <Space>
-            <Button onClick={() => setStockHistoryOpen(false)}>关闭</Button>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              width: "100%",
+            }}
+          >
             <Button
               type="primary"
               onClick={() => void exportStockHistoryToExcel()}
@@ -2819,9 +3305,10 @@ export function OutsourcePage() {
             >
               导出 Excel
             </Button>
-          </Space>
+            <Button onClick={() => setStockHistoryOpen(false)}>关闭</Button>
+          </div>
         }
-        width={980}
+        width={1280}
         destroyOnHidden
       >
         <Table<OutsourceStockHistoryRow>
@@ -2829,26 +3316,10 @@ export function OutsourcePage() {
           loading={stockHistoryLoading}
           dataSource={stockHistoryRows}
           pagination={{ pageSize: 12 }}
-          scroll={{ x: "max-content" }}
-          columns={[
-            {
-              title: "时间",
-              dataIndex: "receivedAt",
-              width: 160,
-              render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm:ss"),
-            },
-            {
-              title: "方向",
-              dataIndex: "direction",
-              width: 80,
-              render: (v: OutsourceStockHistoryRow["direction"]) =>
-                v === "IN" ? <Tag color="green">入库</Tag> : <Tag color="orange">出库</Tag>,
-            },
-            { title: "数量", dataIndex: "quantity", width: 96, align: "right" },
-            { title: "外发单号", dataIndex: "orderNo", width: 180, ellipsis: true },
-            { title: "说明", dataIndex: "partDescription", ellipsis: true },
-            { title: "操作人", dataIndex: "operatorName", width: 120, ellipsis: true },
-          ]}
+          scroll={{ x: 1180 }}
+          tableLayout="fixed"
+          components={OS_RESIZABLE_TABLE}
+          columns={resizedStockHistoryColumns}
           locale={{ emptyText: "暂无出入库记录" }}
         />
       </Modal>
@@ -2910,9 +3381,13 @@ export function OutsourcePage() {
               pagination={false}
               dataSource={[{ key: "product" }]}
               scroll={{ x: "max-content" }}
-              columns={[
+              tableLayout="fixed"
+              components={OS_RESIZABLE_TABLE}
+              columns={attachResizeOutsource(
+              [
                 {
                   title: "物料编号",
+                  key: "materialCode",
                   width: 140,
                   ellipsis: true,
                   render: () =>
@@ -2920,6 +3395,7 @@ export function OutsourcePage() {
                 },
                 {
                   title: "商品名称",
+                  key: "productName",
                   width: 180,
                   ellipsis: true,
                   render: () =>
@@ -2929,17 +3405,20 @@ export function OutsourcePage() {
                 },
                 {
                   title: "单位",
+                  key: "unit",
                   width: 72,
                   render: () => recycleDetail.product.unit?.trim() || "—",
                 },
                 {
                   title: "外发数量",
+                  key: "productQty",
                   width: 100,
                   align: "right",
                   render: () => recycleDetail.productQty,
                 },
                 {
                   title: "已回收数量",
+                  key: "recoveredSets",
                   width: 112,
                   align: "right",
                   render: () => {
@@ -2997,12 +3476,14 @@ export function OutsourcePage() {
                 },
                 {
                   title: "待收数量",
+                  key: "pendingSets",
                   width: 100,
                   align: "right",
                   render: () => setsPendingByMaterials(recycleDetail),
                 },
                 {
                   title: "本次回收",
+                  key: "thisSets",
                   width: 140,
                   render: () => {
                     const cap = Math.min(
@@ -3030,7 +3511,11 @@ export function OutsourcePage() {
                     );
                   },
                 },
-              ]}
+              ],
+              osRecycleColWidths,
+              setOsRecycleColWidths,
+              DEFAULT_OS_RECYCLE_COL_WIDTH,
+              )}
             />
           </Space>
         ) : null}
@@ -3088,24 +3573,46 @@ export function OutsourcePage() {
               size="small"
               pagination={false}
               dataSource={closeLines}
-              columns={[
-                { title: "物料编号", dataIndex: "code", width: 120 },
-                { title: "物料名称", dataIndex: "name", ellipsis: true },
-                { title: "单位", dataIndex: "unit", width: 64 },
-                { title: "当前占用", dataIndex: "currentQty", width: 96, align: "right" },
-                {
-                  title: "损耗折算",
-                  dataIndex: "lossBySets",
-                  width: 108,
-                  align: "right",
-                },
-                {
-                  title: "退回数量",
-                  dataIndex: "returnQty",
-                  width: 120,
-                  align: "right",
-                },
-              ]}
+              tableLayout="fixed"
+              scroll={{ x: "max-content" }}
+              components={OS_RESIZABLE_TABLE}
+              columns={attachResizeOutsource(
+                [
+                  { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
+                  {
+                    title: "物料名称",
+                    key: "name",
+                    dataIndex: "name",
+                    width: 160,
+                    ellipsis: true,
+                  },
+                  { title: "单位", key: "unit", dataIndex: "unit", width: 64 },
+                  {
+                    title: "当前占用",
+                    key: "currentQty",
+                    dataIndex: "currentQty",
+                    width: 96,
+                    align: "right",
+                  },
+                  {
+                    title: "损耗折算",
+                    key: "lossBySets",
+                    dataIndex: "lossBySets",
+                    width: 108,
+                    align: "right",
+                  },
+                  {
+                    title: "退回数量",
+                    key: "returnQty",
+                    dataIndex: "returnQty",
+                    width: 120,
+                    align: "right",
+                  },
+                ],
+                osCloseColWidths,
+                setOsCloseColWidths,
+                DEFAULT_OS_CLOSE_COL_WIDTH,
+              )}
             />
           </Space>
         )}
@@ -3210,98 +3717,115 @@ export function OutsourcePage() {
                 pagination={false}
                 dataSource={editLines}
                 locale={{ emptyText: "无明细" }}
-                columns={[
-                  { title: "物料编号", dataIndex: "code" },
-                  { title: "物料名称", dataIndex: "name", ellipsis: true },
-                  {
-                    title: "部件描述",
-                    dataIndex: "partDescription",
-                    ellipsis: true,
-                    render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
-                  },
-                  { title: "单位", dataIndex: "unit", width: 64 },
-                  {
-                    title: "物料库存",
-                    key: "materialStock",
-                    width: 92,
-                    render: (_, row) =>
-                      editLoadingStock ? (
-                        <Typography.Text type="secondary">…</Typography.Text>
-                      ) : (
-                        <Typography.Text>
-                          {editStockByMaterial[row.materialId] ?? 0}
-                        </Typography.Text>
-                      ),
-                  },
-                  {
-                    title: "外发物料库存",
-                    key: "outsourceStock",
-                    width: 92,
-                    render: (_, row) =>
-                      editLoadingOutsourceStock ? (
-                        <Typography.Text type="secondary">…</Typography.Text>
-                      ) : (
-                        <Typography.Text>
-                          {editOutsourceStockByMaterial[row.materialId] ?? 0}
-                        </Typography.Text>
-                      ),
-                  },
-                  {
-                    title: "外发数量",
-                    dataIndex: "quantity",
-                    width: 132,
-                    render: (_, row, index) => {
-                      const bomNeed = editBomNeedByMaterial[row.materialId] ?? 0;
-                      const availMaterial = editStockByMaterial[row.materialId] ?? 0;
-                      const availOutsource =
-                        editOutsourceStockByMaterial[row.materialId] ?? 0;
-                      const stockErr =
-                        !editLoadingStock && !editLoadingOutsourceStock
-                          ? outsourceLineStockError(
-                              row.quantity,
-                              bomNeed,
-                              availMaterial,
-                              availOutsource,
-                            )
-                          : null;
-                      return (
-                        <div>
-                          <InputNumber
-                            min={0}
-                            max={999999999}
-                            precision={0}
-                            value={row.quantity}
-                            status={stockErr ? "error" : undefined}
-                            onChange={(val) => {
-                              const n =
-                                val === null || val === undefined
-                                  ? 0
-                                  : Math.max(0, Math.trunc(Number(val)));
-                              setEditLines((prev) =>
-                                prev.map((l, i) =>
-                                  i === index ? { ...l, quantity: n } : l,
-                                ),
-                              );
-                            }}
-                          />
-                          {stockErr ? (
-                            <div>
-                              <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                                {stockErr}
-                              </Typography.Text>
-                            </div>
-                          ) : row.quantity <= 0 && bomNeed > 0 ? (
-                            <div>
-                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                仅扣外发库存（BOM 需 {bomNeed}）
-                              </Typography.Text>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
+                tableLayout="fixed"
+                scroll={{ x: "max-content" }}
+                components={OS_RESIZABLE_TABLE}
+                columns={attachResizeOutsource(
+                  [
+                    { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
+                    {
+                      title: "物料名称",
+                      key: "name",
+                      dataIndex: "name",
+                      width: 160,
+                      ellipsis: true,
                     },
-                  },
-                ]}
+                    {
+                      title: "部件描述",
+                      key: "partDescription",
+                      dataIndex: "partDescription",
+                      width: 180,
+                      ellipsis: true,
+                      render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
+                    },
+                    { title: "单位", key: "unit", dataIndex: "unit", width: 64 },
+                    {
+                      title: "物料库存",
+                      key: "materialStock",
+                      width: 92,
+                      render: (_, row) =>
+                        editLoadingStock ? (
+                          <Typography.Text type="secondary">…</Typography.Text>
+                        ) : (
+                          <Typography.Text>
+                            {editStockByMaterial[row.materialId] ?? 0}
+                          </Typography.Text>
+                        ),
+                    },
+                    {
+                      title: "外发物料库存",
+                      key: "outsourceStock",
+                      width: 110,
+                      render: (_, row) =>
+                        editLoadingOutsourceStock ? (
+                          <Typography.Text type="secondary">…</Typography.Text>
+                        ) : (
+                          <Typography.Text>
+                            {editOutsourceStockByMaterial[row.materialId] ?? 0}
+                          </Typography.Text>
+                        ),
+                    },
+                    {
+                      title: "外发数量",
+                      key: "quantity",
+                      dataIndex: "quantity",
+                      width: 132,
+                      render: (_, row, index) => {
+                        const bomNeed = editBomNeedByMaterial[row.materialId] ?? 0;
+                        const availMaterial = editStockByMaterial[row.materialId] ?? 0;
+                        const availOutsource =
+                          editOutsourceStockByMaterial[row.materialId] ?? 0;
+                        const stockErr =
+                          !editLoadingStock && !editLoadingOutsourceStock
+                            ? outsourceLineStockError(
+                                row.quantity,
+                                bomNeed,
+                                availMaterial,
+                                availOutsource,
+                              )
+                            : null;
+                        return (
+                          <div>
+                            <InputNumber
+                              min={0}
+                              max={999999999}
+                              precision={0}
+                              value={row.quantity}
+                              status={stockErr ? "error" : undefined}
+                              onChange={(val) => {
+                                const n =
+                                  val === null || val === undefined
+                                    ? 0
+                                    : Math.max(0, Math.trunc(Number(val)));
+                                setEditLines((prev) =>
+                                  prev.map((l, i) =>
+                                    i === index ? { ...l, quantity: n } : l,
+                                  ),
+                                );
+                              }}
+                            />
+                            {stockErr ? (
+                              <div>
+                                <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                                  {stockErr}
+                                </Typography.Text>
+                              </div>
+                            ) : row.quantity <= 0 && bomNeed > 0 ? (
+                              <div>
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                  仅扣外发库存（BOM 需 {bomNeed}）
+                                </Typography.Text>
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      },
+                    },
+                  ],
+                  osEditLineColWidths,
+                  setOsEditLineColWidths,
+                  DEFAULT_OS_EDIT_LINE_COL_WIDTH,
+                )}
                 onRow={(record) => ({
                   style:
                     !editLoadingStock &&
@@ -3323,18 +3847,40 @@ export function OutsourcePage() {
               rowKey="lineId"
               pagination={false}
               dataSource={editLines}
-              columns={[
-                { title: "物料编号", dataIndex: "code" },
-                { title: "物料名称", dataIndex: "name", ellipsis: true },
-                {
-                  title: "部件描述",
-                  dataIndex: "partDescription",
-                  ellipsis: true,
-                  render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
-                },
-                { title: "单位", dataIndex: "unit" },
-                { title: "待回收数量", dataIndex: "quantity", width: 112, align: "right" },
-              ]}
+              tableLayout="fixed"
+              scroll={{ x: "max-content" }}
+              components={OS_RESIZABLE_TABLE}
+              columns={attachResizeOutsource(
+                [
+                  { title: "物料编号", key: "code", dataIndex: "code", width: 120 },
+                  {
+                    title: "物料名称",
+                    key: "name",
+                    dataIndex: "name",
+                    width: 160,
+                    ellipsis: true,
+                  },
+                  {
+                    title: "部件描述",
+                    key: "partDescription",
+                    dataIndex: "partDescription",
+                    width: 180,
+                    ellipsis: true,
+                    render: (v) => (String(v ?? "").trim() ? String(v) : "—"),
+                  },
+                  { title: "单位", key: "unit", dataIndex: "unit", width: 72 },
+                  {
+                    title: "待回收数量",
+                    key: "quantity",
+                    dataIndex: "quantity",
+                    width: 112,
+                    align: "right",
+                  },
+                ],
+                osEditViewColWidths,
+                setOsEditViewColWidths,
+                DEFAULT_OS_EDIT_VIEW_COL_WIDTH,
+              )}
             />
           )
         ) : null}
